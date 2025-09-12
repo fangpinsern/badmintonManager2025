@@ -1029,7 +1029,7 @@ function DraggableChip({ id, children }: { id: string; children: React.ReactNode
       {...attributes}
       {...listeners}
       style={style}
-      className={`cursor-grab select-none active:cursor-grabbing ${isDragging ? "opacity-70" : ""}`}
+      className={`cursor-grab active:cursor-grabbing ${isDragging ? "opacity-70" : ""}`}
     >
       {children}
     </div>
