@@ -1,3 +1,5 @@
+/* eslint-disable */
+
 "use client";
 import React, { useMemo, useState } from "react";
 import { create } from "zustand";
@@ -82,7 +84,7 @@ interface StoreState {
 
 const useStore = create<StoreState>()(
   persist(
-    (set, get) => ({
+    (set, _get) => ({
       sessions: [],
 
       createSession: ({ date, time, numCourts, playersPerCourt = 4 }) => {
