@@ -42,6 +42,26 @@ type Game = {
   players: string[]; // snapshot A+B (ids)
 };
 
+type PlayerAggregate = {
+  playerId: string;
+  name: string;
+  wins: number;
+  losses: number;
+  games: number;
+  points: number;
+  winRate: number;
+};
+
+type SessionStats = {
+  totalGames: number;
+  leaderboard: PlayerAggregate[]; // sorted by wins desc, then winRate desc
+  topWinner?: PlayerAggregate;
+  topLoser?: PlayerAggregate; // fewest wins among players who played >= 1
+  topScorer?: { playerId: string; name: string; points: number };
+  mostActive?: { playerId: string; name: string; games: number };
+  bestPair?: { pair: string[]; names: string[]; wins: number };
+};
+
 type Session = {
   id: string;
   date: string; // YYYY-MM-DD
@@ -51,6 +71,9 @@ type Session = {
   players: Player[];
   courts: Court[];
   games: Game[];
+  ended?: boolean;
+  endedAt?: string;
+  stats?: SessionStats;
 };
 
 // -----------------------------
@@ -80,6 +103,7 @@ interface StoreState {
     pair: 'A' | 'B' | null
   ) => void;
   endGame: (sessionId: string, courtIndex: number, scoreA: number, scoreB: number) => void;
+  endSession: (sessionId: string) => void;
 }
 
 const useStore = create<StoreState>()(
@@ -105,6 +129,7 @@ const useStore = create<StoreState>()(
           players: [],
           courts,
           games: [],
+          ended: false,
         };
         set((s) => ({ sessions: [session, ...s.sessions] }));
         return id;
@@ -117,6 +142,7 @@ const useStore = create<StoreState>()(
         set((s) => ({
           sessions: s.sessions.map((ss) => {
             if (ss.id !== sessionId) return ss;
+            if (ss.ended) return ss;
             const trimmed = name.trim();
             if (!trimmed) return ss;
             const newP: Player = { id: nanoid(8), name: trimmed };
@@ -128,6 +154,7 @@ const useStore = create<StoreState>()(
         set((s) => ({
           sessions: s.sessions.map((ss) => {
             if (ss.id !== sessionId) return ss;
+            if (ss.ended) return ss;
             // remove from any court first
             const courts = ss.courts.map((c) => ({
               ...c,
@@ -144,6 +171,7 @@ const useStore = create<StoreState>()(
         set((s) => ({
           sessions: s.sessions.map((ss) => {
             if (ss.id !== sessionId) return ss;
+            if (ss.ended) return ss;
             // remove from any previous court
             let courts = ss.courts.map((c) => ({
               ...c,
@@ -172,6 +200,7 @@ const useStore = create<StoreState>()(
         set((s) => ({
           sessions: s.sessions.map((ss) => {
             if (ss.id !== sessionId) return ss;
+            if (ss.ended) return ss;
             const courts = ss.courts.map((c, i) => {
               if (i !== courtIndex) return c;
               if (!c.playerIds.includes(playerId)) return c; // must be on this court
@@ -189,6 +218,7 @@ const useStore = create<StoreState>()(
         set((s) => ({
           sessions: s.sessions.map((ss) => {
             if (ss.id !== sessionId) return ss;
+            if (ss.ended) return ss;
             const target = ss.courts[courtIndex];
             if (!target) return ss;
             const sideA = [...(target.pairA || [])];
@@ -222,6 +252,16 @@ const useStore = create<StoreState>()(
           }),
         })),
 
+      endSession: (sessionId) =>
+        set((s) => ({
+          sessions: s.sessions.map((ss) => {
+            if (ss.id !== sessionId) return ss;
+            if (ss.ended) return ss;
+            const stats = computeSessionStats(ss);
+            return { ...ss, ended: true, endedAt: new Date().toISOString(), stats };
+          }),
+        })),
+
     }),
     { name: "badminton-manager" }
   )
@@ -239,6 +279,103 @@ function useSession(sessionId: string | null) {
 function getPlayerCourtIndex(session: Session, playerId: string): number | null {
   const idx = session.courts.findIndex((c) => c.playerIds.includes(playerId));
   return idx === -1 ? null : idx;
+}
+
+function computeSessionStats(ss: Session): SessionStats {
+  const playerById = new Map<string, Player>();
+  ss.players.forEach((p) => playerById.set(p.id, p));
+
+  const aggregates = new Map<string, PlayerAggregate>();
+  const ensure = (pid: string) => {
+    if (!aggregates.has(pid)) {
+      const name = playerById.get(pid)?.name || '(deleted)';
+      aggregates.set(pid, { playerId: pid, name, wins: 0, losses: 0, games: 0, points: 0, winRate: 0 });
+    }
+    return aggregates.get(pid)!;
+  };
+
+  const pairWins = new Map<string, { pair: string[]; wins: number }>();
+  const keyForPair = (pair: string[]) => [...pair].sort().join('|');
+
+  for (const g of ss.games) {
+    const a = g.sideA;
+    const b = g.sideB;
+    const winner = g.winner;
+    // increment games for participants
+    for (const pid of [...a, ...b]) ensure(pid).games += 1;
+    // add scored points to each player on that side
+    for (const pid of a) ensure(pid).points += g.scoreA;
+    for (const pid of b) ensure(pid).points += g.scoreB;
+    if (winner === 'A') {
+      for (const pid of a) ensure(pid).wins += 1;
+      for (const pid of b) ensure(pid).losses += 1;
+      if (a.length === 2) {
+        const k = keyForPair(a);
+        const prev = pairWins.get(k) || { pair: [...a].sort(), wins: 0 };
+        prev.wins += 1;
+        pairWins.set(k, prev);
+      }
+    } else if (winner === 'B') {
+      for (const pid of b) ensure(pid).wins += 1;
+      for (const pid of a) ensure(pid).losses += 1;
+      if (b.length === 2) {
+        const k = keyForPair(b);
+        const prev = pairWins.get(k) || { pair: [...b].sort(), wins: 0 };
+        prev.wins += 1;
+        pairWins.set(k, prev);
+      }
+    }
+  }
+
+  // finalize winRate
+  for (const agg of aggregates.values()) {
+    agg.winRate = agg.games > 0 ? agg.wins / agg.games : 0;
+  }
+
+  const leaderboard = Array.from(aggregates.values()).sort((x, y) => {
+    if (y.wins !== x.wins) return y.wins - x.wins;
+    if (y.winRate !== x.winRate) return y.winRate - x.winRate;
+    if (y.points !== x.points) return y.points - x.points;
+    return (y.games - x.games);
+  });
+
+  const played = leaderboard.filter((p) => p.games > 0);
+  const topWinner = played[0];
+  let topLoser: PlayerAggregate | undefined = undefined;
+  if (played.length) {
+    const minWins = Math.min(...played.map((p) => p.wins));
+    const losers = played.filter((p) => p.wins === minWins);
+    losers.sort((x, y) => {
+      if (y.losses !== x.losses) return y.losses - x.losses; // more losses is "worse"
+      if (x.winRate !== y.winRate) return x.winRate - y.winRate; // lower winRate first
+      return x.points - y.points; // fewer points first
+    });
+    topLoser = losers[0];
+  }
+
+  const topScorer = played.length
+    ? played.reduce((acc, cur) => (cur.points > acc.points ? cur : acc))
+    : undefined;
+  const mostActive = played.length
+    ? played.reduce((acc, cur) => (cur.games > acc.games ? cur : acc))
+    : undefined;
+
+  let bestPair: SessionStats['bestPair'] = undefined;
+  if (pairWins.size) {
+    const best = Array.from(pairWins.values()).sort((a, b) => b.wins - a.wins)[0];
+    const names = best.pair.map((pid) => playerById.get(pid)?.name || '(deleted)');
+    bestPair = { pair: best.pair, names, wins: best.wins };
+  }
+
+  return {
+    totalGames: ss.games.length,
+    leaderboard,
+    topWinner,
+    topLoser,
+    topScorer: topScorer ? { playerId: topScorer.playerId, name: topScorer.name, points: topScorer.points } : undefined,
+    mostActive: mostActive ? { playerId: mostActive.playerId, name: mostActive.name, games: mostActive.games } : undefined,
+    bestPair,
+  };
 }
 
 // -----------------------------
@@ -387,6 +524,7 @@ function SessionForm({ onCreated }: { onCreated: (sessionId: string) => void }) 
 function SessionList({ onOpen }: { onOpen: (id: string) => void }) {
   const sessions = useStore((s) => s.sessions);
   const deleteSession = useStore((s) => s.deleteSession);
+  const endSession = useStore((s) => s.endSession);
 
   if (!sessions.length) {
     return (
@@ -406,6 +544,9 @@ function SessionList({ onOpen }: { onOpen: (id: string) => void }) {
               <div className="text-xs text-gray-500">
                 {ss.numCourts} court{ss.numCourts > 1 ? "s" : ""} · {ss.playersPerCourt} per court · {ss.players.length} player{ss.players.length !== 1 ? "s" : ""}
               </div>
+              {ss.ended && (
+                <div className="mt-1 text-[11px] text-emerald-700">Ended{ss.endedAt ? ` · ${new Date(ss.endedAt).toLocaleString()}` : ''}</div>
+              )}
             </div>
             <div className="flex items-center gap-2">
               <button
@@ -414,6 +555,16 @@ function SessionList({ onOpen }: { onOpen: (id: string) => void }) {
               >
                 Open
               </button>
+              {!ss.ended && (
+                <button
+                  onClick={() => {
+                    if (confirm("End this session? This will lock further changes and compute stats.")) endSession(ss.id);
+                  }}
+                  className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-1.5 text-amber-700"
+                >
+                  End
+                </button>
+              )}
               <button
                 onClick={() => {
                   if (confirm("Delete this session?")) deleteSession(ss.id);
@@ -443,6 +594,7 @@ function SessionManager({ session, onBack }: { session: Session; onBack: () => v
   const addPlayer = useStore((s) => s.addPlayer);
   const removePlayer = useStore((s) => s.removePlayer);
   const assign = useStore((s) => s.assignPlayerToCourt);
+  const endSession = useStore((s) => s.endSession);
 
   const [name, setName] = useState("");
 
@@ -467,6 +619,7 @@ function SessionManager({ session, onBack }: { session: Session; onBack: () => v
     const pid = String(event.active.id);
     const overId = event.over?.id ? String(event.over.id) : null;
     if (!overId) return;
+    if (session.ended) return;
 
     const m = overId.match(/(pairA|pairB|avail)-(\d+)/);
     if (!m) return;
@@ -510,9 +663,82 @@ function SessionManager({ session, onBack }: { session: Session; onBack: () => v
             <p className="text-xs text-gray-500">
               {session.numCourts} court{session.numCourts > 1 ? "s" : ""} · {session.playersPerCourt} per court
             </p>
+            {session.ended && (
+              <div className="mt-1 text-[11px] text-emerald-700">Ended{session.endedAt ? ` · ${new Date(session.endedAt).toLocaleString()}` : ''}</div>
+            )}
           </div>
+          {!session.ended && (
+            <button
+              onClick={() => {
+                if (confirm('End this session? This will finalize games and compute stats.')) endSession(session.id);
+              }}
+              className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-1.5 text-amber-700"
+            >
+              End session
+            </button>
+          )}
         </div>
       </Card>
+
+      {session.ended && session.stats && (
+        <Card>
+          <h3 className="mb-2 text-base font-semibold">Session statistics</h3>
+          <div className="grid grid-cols-2 gap-2 text-sm">
+            <div className="rounded-lg bg-gray-50 p-2">
+              <div className="text-xs text-gray-500">Total games</div>
+              <div className="font-medium">{session.stats.totalGames}</div>
+            </div>
+            {session.stats.topWinner && (
+              <div className="rounded-lg bg-green-50 p-2">
+                <div className="text-xs text-green-700">Top winner</div>
+                <div className="font-medium">{session.stats.topWinner.name}</div>
+                <div className="text-xs text-green-700">{session.stats.topWinner.wins} wins · {Math.round(session.stats.topWinner.winRate*100)}%</div>
+              </div>
+            )}
+            {session.stats.topLoser && (
+              <div className="rounded-lg bg-red-50 p-2">
+                <div className="text-xs text-red-700">Top loser</div>
+                <div className="font-medium">{session.stats.topLoser.name}</div>
+                <div className="text-xs text-red-700">{session.stats.topLoser.wins} wins · {session.stats.topLoser.losses} losses</div>
+              </div>
+            )}
+            {session.stats.topScorer && (
+              <div className="rounded-lg bg-indigo-50 p-2">
+                <div className="text-xs text-indigo-700">Top scorer</div>
+                <div className="font-medium">{session.stats.topScorer.name}</div>
+                <div className="text-xs text-indigo-700">{session.stats.topScorer.points} pts</div>
+              </div>
+            )}
+            {session.stats.mostActive && (
+              <div className="rounded-lg bg-amber-50 p-2">
+                <div className="text-xs text-amber-700">Most active</div>
+                <div className="font-medium">{session.stats.mostActive.name}</div>
+                <div className="text-xs text-amber-700">{session.stats.mostActive.games} games</div>
+              </div>
+            )}
+            {session.stats.bestPair && (
+              <div className="col-span-2 rounded-lg bg-teal-50 p-2">
+                <div className="text-xs text-teal-700">Best pair</div>
+                <div className="font-medium">{session.stats.bestPair.names.join(' & ')}</div>
+                <div className="text-xs text-teal-700">{session.stats.bestPair.wins} wins together</div>
+              </div>
+            )}
+          </div>
+          {!!(session.stats.leaderboard && session.stats.leaderboard.length) && (
+            <div className="mt-3">
+              <div className="mb-1 text-xs font-medium text-gray-600">Leaderboard</div>
+              <ul className="divide-y rounded-lg border">
+                {session.stats.leaderboard.map((p) => (
+                  <li key={p.playerId} className="flex items-center justify-between px-2 py-1 text-sm">
+                    <div className="truncate">{p.name}</div>
+                    <div className="ml-2 shrink-0 text-xs text-gray-600">{p.wins}W {p.losses}L · {Math.round(p.winRate*100)}% · {p.points}pts</div>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </Card>
+      )}
 
       <Card>
         <h3 className="mb-3 text-base font-semibold">Add players</h3>
@@ -522,8 +748,9 @@ function SessionManager({ session, onBack }: { session: Session; onBack: () => v
             value={name}
             onChange={(e) => setName(e.target.value)}
             className="flex-1"
+            disabled={!!session.ended}
           />
-          <button type="submit" className="rounded-xl bg-black px-4 py-2 text-white">Add</button>
+          <button type="submit" disabled={!!session.ended} className="rounded-xl bg-black px-4 py-2 text-white disabled:opacity-50">Add</button>
         </form>
       </Card>
 
@@ -554,6 +781,7 @@ function SessionManager({ session, onBack }: { session: Session; onBack: () => v
                     <div className="flex items-center gap-2">
                       <Select
                         value={currentIdx ?? ""}
+                        disabled={!!session.ended}
                         onChange={(v) => {
                           if (v === "") assign(session.id, p.id, null);
                           else assign(session.id, p.id, Number(v));
@@ -572,7 +800,8 @@ function SessionManager({ session, onBack }: { session: Session; onBack: () => v
                       </Select>
                       <button
                         onClick={() => removePlayer(session.id, p.id)}
-                        className="rounded-xl border border-red-200 bg-red-50 px-3 py-1.5 text-xs text-red-600"
+                        disabled={!!session.ended}
+                        className="rounded-xl border border-red-200 bg-red-50 px-3 py-1.5 text-xs text-red-600 disabled:opacity-50"
                       >
                         Remove
                       </button>
@@ -682,7 +911,7 @@ function CourtCard({ session, court, idx }: { session: Session; court: Court; id
         <DroppableZone
           id={`pairA-${idx}`}
           label={`Pair A (${pairA.length}/2)`}
-          disabled={pairA.length >= 2}
+          disabled={session.ended || pairA.length >= 2}
         >
           {pairA.length === 0 && (
             <div className="text-xs text-gray-400">Drag players here</div>
@@ -704,7 +933,7 @@ function CourtCard({ session, court, idx }: { session: Session; court: Court; id
         <DroppableZone
           id={`pairB-${idx}`}
           label={`Pair B (${pairB.length}/2)`}
-          disabled={pairB.length >= 2}
+          disabled={session.ended || pairB.length >= 2}
         >
           {pairB.length === 0 && (
             <div className="text-xs text-gray-400">Drag players here</div>
@@ -724,7 +953,7 @@ function CourtCard({ session, court, idx }: { session: Session; court: Court; id
         </DroppableZone>
       </div>
 
-      <DroppableZone id={`avail-${idx}`} label={`Available on court (${available.length})`}>
+      <DroppableZone id={`avail-${idx}`} label={`Available on court (${available.length})`} disabled={session.ended}>
         {available.length === 0 ? (
           <div className="text-xs text-gray-400">No available players</div>
         ) : (
@@ -739,7 +968,8 @@ function CourtCard({ session, court, idx }: { session: Session; court: Court; id
                   </DraggableChip>
                   <button
                     onClick={() => assign(session.id, pid, null)}
-                    className="rounded border px-2 py-0.5 text-xs"
+                    disabled={!!session.ended}
+                    className="rounded border px-2 py-0.5 text-xs disabled:opacity-50"
                   >
                     Unassign
                   </button>
@@ -774,7 +1004,7 @@ function CourtCard({ session, court, idx }: { session: Session; court: Court; id
             />
           </div>
           <div className="mt-2 flex items-center gap-2">
-            <button onClick={onSave} disabled={!ready || !scoreValid} className="rounded-xl bg-black px-3 py-1.5 text-xs text-white disabled:opacity-50">Save & Clear</button>
+            <button onClick={onSave} disabled={!ready || !scoreValid || !!session.ended} className="rounded-xl bg-black px-3 py-1.5 text-xs text-white disabled:opacity-50">Save & Clear</button>
             <button onClick={() => setOpen(false)} className="rounded-xl border px-3 py-1.5 text-xs">Cancel</button>
           </div>
           {!ready && <div className="mt-2 text-[11px] text-amber-600">Need exactly 2 players in Pair A and Pair B.</div>}
