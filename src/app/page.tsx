@@ -23,7 +23,7 @@ import { nanoid } from "nanoid";
 // Types
 // -----------------------------
 
-type Player = { id: string; name: string; gamesPlayed?: number };
+type Player = { id: string; name: string; gender?: 'M' | 'F'; gamesPlayed?: number };
 
 type Court = { id: string; index: number; playerIds: string[]; pairA: string[]; pairB: string[]; inProgress?: boolean; startedAt?: string; mode?: 'singles' | 'doubles' };
 
@@ -41,6 +41,7 @@ type Game = {
   scoreB: number; // side B points
   winner: 'A' | 'B' | 'draw';
   players: string[]; // snapshot A+B (ids)
+  voided?: boolean;
 };
 
 type PlayerAggregate = {
@@ -89,6 +90,10 @@ type Session = {
   ended?: boolean;
   endedAt?: string;
   stats?: SessionStats;
+  autoAssignBlacklist?: { pairs: { a: string; b: string }[] };
+  autoAssignConfig?: {
+    balanceGender?: boolean;
+  };
 };
 
 // -----------------------------
@@ -119,11 +124,17 @@ interface StoreState {
     pair: 'A' | 'B' | null
   ) => void;
   endGame: (sessionId: string, courtIndex: number, scoreA: number, scoreB: number) => void;
+  voidGame: (sessionId: string, courtIndex: number) => void;
   endSession: (sessionId: string, shuttlesUsed?: number) => void;
   startGame: (sessionId: string, courtIndex: number) => void;
   setCourtMode: (sessionId: string, courtIndex: number, mode: 'singles' | 'doubles') => void;
   addCourt: (sessionId: string) => void;
   removeCourt: (sessionId: string, courtIndex: number) => void;
+  autoAssignAvailable: (sessionId: string) => void;
+  autoAssignCourt: (sessionId: string, courtIndex: number) => void;
+  // updateAutoAssignConfig removed
+  addBlacklistPair: (sessionId: string, a: string, b: string) => void;
+  removeBlacklistPair: (sessionId: string, a: string, b: string) => void;
 }
 
 const useStore = create<StoreState>()(
@@ -172,6 +183,7 @@ const useStore = create<StoreState>()(
           }),
         })),
 
+
       addPlayersBulk: (sessionId, names) =>
         set((s) => ({
           sessions: s.sessions.map((ss) => {
@@ -179,15 +191,26 @@ const useStore = create<StoreState>()(
             if (ss.ended) return ss;
             const existingNames = new Set(ss.players.map((p) => p.name.toLowerCase()));
             const toAdd: Player[] = [];
+            let invalid = false;
             for (const raw of names) {
               const n = (raw || "").trim();
               if (!n) continue;
-              const key = n.toLowerCase();
+              // Support formats: "Name" or "Name, M|F|O"
+              let namePart = n;
+              let gender: Player['gender'] | undefined = undefined;
+              const parts = n.split(',').map((s) => s.trim()).filter(Boolean);
+              if (parts.length >= 2) {
+                namePart = parts[0];
+                const g = parts[1].toUpperCase();
+                if (g === 'M' || g === 'F') gender = g as any;
+                else { invalid = true; break; }
+              }
+              const key = namePart.toLowerCase();
               if (existingNames.has(key)) continue;
               existingNames.add(key);
-              toAdd.push({ id: nanoid(8), name: n });
+              toAdd.push({ id: nanoid(8), name: namePart, gender });
             }
-            if (!toAdd.length) return ss;
+            if (invalid || !toAdd.length) return ss;
             return { ...ss, players: [...ss.players, ...toAdd] };
           }),
         })),
@@ -309,6 +332,44 @@ const useStore = create<StoreState>()(
           }),
         })),
 
+      voidGame: (sessionId, courtIndex) =>
+        set((s) => ({
+          sessions: s.sessions.map((ss) => {
+            if (ss.id !== sessionId) return ss;
+            if (ss.ended) return ss;
+            const target = ss.courts[courtIndex];
+            if (!target) return ss;
+            if (!target.inProgress) return ss;
+            const sideA = [...(target.pairA || [])];
+            const sideB = [...(target.pairB || [])];
+            const snapshot = [...sideA, ...sideB];
+            const endedAt = new Date();
+            const startedAt = target.startedAt ? new Date(target.startedAt) : undefined;
+            const durationMs = startedAt ? Math.max(0, endedAt.getTime() - startedAt.getTime()) : undefined;
+            const game: Game = {
+              id: nanoid(8),
+              courtIndex,
+              endedAt: endedAt.toISOString(),
+              startedAt: target.startedAt,
+              durationMs,
+              sideA,
+              sideB,
+              sideAPlayers: sideA.map((pid) => ({ id: pid, name: (ss.players.find((pp) => pp.id === pid)?.name || '(deleted)') })),
+              sideBPlayers: sideB.map((pid) => ({ id: pid, name: (ss.players.find((pp) => pp.id === pid)?.name || '(deleted)') })),
+              scoreA: 0,
+              scoreB: 0,
+              winner: 'draw',
+              players: snapshot,
+              voided: true,
+            };
+            const courts = ss.courts.map((c, i) => (
+              i === courtIndex ? { ...c, playerIds: [], pairA: [], pairB: [], inProgress: false, startedAt: undefined } : c
+            ));
+            const games = [game, ...((ss as any).games || [])];
+            return { ...ss, courts, games };
+          }),
+        })),
+
       startGame: (sessionId, courtIndex) =>
         set((s) => ({
           sessions: s.sessions.map((ss) => {
@@ -373,6 +434,250 @@ const useStore = create<StoreState>()(
             // Unassign players from this court by simply removing the court
             const newCourts = ss.courts.filter((_, i) => i !== courtIndex).map((c, i) => ({ ...c, index: i }));
             return { ...ss, courts: newCourts, numCourts: newCourts.length };
+          }),
+        })),
+
+      autoAssignAvailable: (sessionId) =>
+        set((s) => ({
+          sessions: s.sessions.map((ss) => {
+            if (ss.id !== sessionId) return ss;
+            if (ss.ended) return ss;
+            // Build a working copy of courts
+            const courts = ss.courts.map((c) => ({ ...c, playerIds: [...c.playerIds] }));
+            const assigned = new Set<string>(courts.flatMap((c) => c.playerIds));
+            const unassignedPlayers = ss.players.filter((p) => !assigned.has(p.id));
+            for (const p of unassignedPlayers) {
+              // find first court with capacity and not in progress
+              let placed = false;
+              for (let i = 0; i < courts.length; i++) {
+                const c = courts[i];
+                if (c.inProgress) continue;
+                const cap = (c.mode || 'doubles') === 'singles' ? 2 : 4;
+                if (c.playerIds.length < cap) {
+                  c.playerIds.push(p.id);
+                  placed = true;
+                  break;
+                }
+              }
+              if (!placed) break; // no more capacity anywhere
+            }
+            return { ...ss, courts };
+          }),
+        })),
+
+      autoAssignCourt: (sessionId, courtIndex) =>
+        set((s) => ({
+          sessions: s.sessions.map((ss) => {
+            if (ss.id !== sessionId) return ss;
+            if (ss.ended) return ss;
+            const courts = ss.courts.map((c) => ({ ...c, playerIds: [...c.playerIds] }));
+            const court = courts[courtIndex];
+            if (!court || court.inProgress) return ss;
+            const isSingles = (court.mode || 'doubles') === 'singles';
+            const cap = isSingles ? 2 : 4;
+            const need = cap - court.playerIds.length;
+            if (need <= 0) return ss;
+
+            // Build unassigned pool
+            const assigned = new Set<string>(courts.flatMap((c) => c.playerIds));
+            const allPlayers = ss.players.map((p) => ({ id: p.id, name: p.name, games: p.gamesPlayed ?? 0 }));
+            const pool = allPlayers.filter((p) => !assigned.has(p.id));
+            if (pool.length === 0) return ss;
+
+            // Pairwise co-appearance counts from session games (voided included)
+            const coCount = new Map<string, Map<string, number>>();
+            const inc = (a: string, b: string) => {
+              if (a === b) return;
+              if (!coCount.has(a)) coCount.set(a, new Map());
+              const m = coCount.get(a)!;
+              m.set(b, (m.get(b) || 0) + 1);
+            };
+            for (const g of (ss.games || [])) {
+              const ps = (g.players && g.players.length ? g.players : [...g.sideA, ...g.sideB]);
+              for (let i = 0; i < ps.length; i++) {
+                for (let j = i + 1; j < ps.length; j++) {
+                  inc(ps[i], ps[j]);
+                  inc(ps[j], ps[i]);
+                }
+              }
+            }
+            const getCo = (a: string, b: string) => coCount.get(a)?.get(b) || 0;
+
+            // Sort pool by games asc, then name
+            {
+              pool.sort((a, b) => (a.games - b.games) || a.name.localeCompare(b.name));
+            }
+
+            const chosen: string[] = [];
+            const candidateIds = pool.map((p) => p.id);
+            const fairnessW = 1;
+            const repeatW = 1000;
+            const genderBalancePenalty = (ids: string[]) => {
+              // Only applies to doubles; penalize if team A and B can't be balanced by gender (M/F)
+              // We don't know team split here; approximate by penalizing odd counts of M or F in the chosen set
+              const genders = new Map<string, Player['gender']>();
+              ss.players.forEach((p) => { if (p.gender) genders.set(p.id, p.gender); });
+              let m = 0, f = 0;
+              for (const id of ids) {
+                const g = genders.get(id);
+                if (g === 'M') m++; else if (g === 'F') f++;
+              }
+              // best-balanced doubles set has even counts of each (e.g., 0/4, 2/2, 4/0), otherwise add penalty
+              const isBalanced = (m % 2 === 0) && (f % 2 === 0);
+              if ((ss.autoAssignConfig?.balanceGender ?? true) === false) return 0;
+              return isBalanced ? 0 : 500; // moderate penalty
+            };
+
+            if (isSingles) {
+              // Choose best pair among top K candidates (limit for perf)
+              const K = Math.min(candidateIds.length, 10);
+              let best: { pair: [string, string]; score: number } | null = null;
+              for (let i = 0; i < K; i++) {
+                for (let j = i + 1; j < K; j++) {
+                  const a = pool[i];
+                  const b = pool[j];
+                  const repeat = getCo(a.id, b.id);
+                  const score = (repeat * repeatW) + fairnessW * (a.games + b.games);
+                  if (!best || score < best.score) best = { pair: [a.id, b.id], score };
+                }
+              }
+              if (best) chosen.push(...best.pair);
+              else chosen.push(...candidateIds.slice(0, Math.min(need, candidateIds.length)));
+            } else {
+              // Doubles: choose 4 players minimizing co-appearance among the 4 and total games
+              const K = Math.min(candidateIds.length, 8);
+              let bestSet: string[] = [];
+              let bestScore = Infinity;
+              let bestHasBlacklist = true; // prefer non-blacklisted sets first
+              const idxs: number[] = Array.from({ length: K }, (_, i) => i);
+              // enumerate combinations of size (need) but at least up to 4; if need<4, still pick need
+              const choose = (arr: number[], k: number, start: number, acc: number[]) => {
+                if (acc.length === k) {
+                  const ids = acc.map((ii) => pool[ii].id);
+                  // blacklist detection for doubles pairs (highest priority to avoid)
+                  let hasBlacklist = false;
+                  if ((ss.autoAssignBlacklist?.pairs || []).length) {
+                    const bl = ss.autoAssignBlacklist!.pairs;
+                    const hasPair = (x: string, y: string) => bl.some((p) => (p.a === x && p.b === y) || (p.a === y && p.b === x));
+                    outer: for (let i = 0; i < ids.length; i++) {
+                      for (let j = i + 1; j < ids.length; j++) {
+                        if (hasPair(ids[i], ids[j])) { hasBlacklist = true; break outer; }
+                      }
+                    }
+                  }
+                  // compute repeat score
+                  let repeat = 0;
+                  for (let i = 0; i < ids.length; i++) {
+                    for (let j = i + 1; j < ids.length; j++) repeat += getCo(ids[i], ids[j]);
+                  }
+                  let gamesSum = 0;
+                  for (const ii of acc) gamesSum += pool[ii].games;
+                  const score = genderBalancePenalty(ids) + (repeat * repeatW) + fairnessW * gamesSum;
+                  if ((!hasBlacklist && bestHasBlacklist) || (hasBlacklist === bestHasBlacklist && score < bestScore)) {
+                    bestHasBlacklist = hasBlacklist;
+                    bestScore = score;
+                    bestSet = ids;
+                  }
+                  return;
+                }
+                for (let i = start; i < arr.length; i++) {
+                  acc.push(arr[i]);
+                  choose(arr, k, i + 1, acc);
+                  acc.pop();
+                }
+              };
+              choose(idxs, Math.min(need, 4), 0, []);
+              if (bestSet.length) bestSet.forEach((id) => chosen.push(id));
+            }
+
+            // Fill the court
+            for (const pid of chosen) {
+              if (court.playerIds.length >= cap) break;
+              if (!court.playerIds.includes(pid)) court.playerIds.push(pid);
+            }
+
+            // Also assign teams (Pair A / Pair B) up to required sizes, avoiding blacklisted pairs in the same team
+            const reqTeam = isSingles ? 1 : 2;
+            const initialA = [...(court.pairA || [])];
+            const initialB = [...(court.pairB || [])];
+            const remaining = court.playerIds.filter((pid) => !initialA.includes(pid) && !initialB.includes(pid));
+            const blPairs = (ss.autoAssignBlacklist?.pairs || []);
+            const isBL = (x: string, y: string) => blPairs.some((p) => (p.a === x && p.b === y) || (p.a === y && p.b === x));
+
+            function canPlace(pid: string, team: string[]): boolean {
+              for (const q of team) { if (isBL(pid, q)) return false; }
+              return true;
+            }
+
+            let bestAssign: { a: string[]; b: string[] } | null = null as any;
+            function dfs(idx: number, a: string[], b: string[]) {
+              if (a.length > reqTeam || b.length > reqTeam) return;
+              if (idx === remaining.length) {
+                if (a.length === reqTeam && b.length === reqTeam) {
+                  bestAssign = { a: [...a], b: [...b] };
+                }
+                return;
+              }
+              const pid = remaining[idx];
+              // try A
+              if (a.length < reqTeam && canPlace(pid, a)) {
+                a.push(pid); dfs(idx + 1, a, b); a.pop();
+                if (bestAssign) return; // found valid
+              }
+              // try B
+              if (b.length < reqTeam && canPlace(pid, b)) {
+                b.push(pid); dfs(idx + 1, a, b); b.pop();
+                if (bestAssign) return;
+              }
+              // try skipping (if not required to fill completely)
+              dfs(idx + 1, a, b);
+            }
+
+            // seed with initial members (ensure they don't violate blacklist among themselves)
+            const initValid = initialA.every((x, i) => initialA.slice(i + 1).every((y) => !isBL(x, y))) &&
+                              initialB.every((x, i) => initialB.slice(i + 1).every((y) => !isBL(x, y)));
+            if (initValid) {
+              dfs(0, [...initialA], [...initialB]);
+            }
+            if (bestAssign) {
+              court.pairA = bestAssign.a;
+              court.pairB = bestAssign.b;
+            } else {
+              // fallback to naive fill if constraints impossible
+              let pairA = [...initialA];
+              let pairB = [...initialB];
+              for (const pid of remaining) {
+                if (pairA.length < reqTeam && canPlace(pid, pairA)) pairA.push(pid);
+                else if (pairB.length < reqTeam && canPlace(pid, pairB)) pairB.push(pid);
+                else if (pairA.length < reqTeam) pairA.push(pid);
+                else if (pairB.length < reqTeam) pairB.push(pid);
+                if (pairA.length >= reqTeam && pairB.length >= reqTeam) break;
+              }
+              court.pairA = pairA;
+              court.pairB = pairB;
+            }
+            return { ...ss, courts };
+          }),
+        })),
+
+      addBlacklistPair: (sessionId, a, b) =>
+        set((s) => ({
+          sessions: s.sessions.map((ss) => {
+            if (ss.id !== sessionId) return ss;
+            const pairs = ss.autoAssignBlacklist?.pairs || [];
+            const exists = pairs.some((p) => (p.a === a && p.b === b) || (p.a === b && p.b === a));
+            if (exists) return ss;
+            return { ...ss, autoAssignBlacklist: { pairs: [...pairs, { a, b }] } };
+          }),
+        })),
+
+      removeBlacklistPair: (sessionId, a, b) =>
+        set((s) => ({
+          sessions: s.sessions.map((ss) => {
+            if (ss.id !== sessionId) return ss;
+            const pairs = ss.autoAssignBlacklist?.pairs || [];
+            const filtered = pairs.filter((p) => !((p.a === a && p.b === b) || (p.a === b && p.b === a)));
+            return { ...ss, autoAssignBlacklist: { pairs: filtered } };
           }),
         })),
 
@@ -786,6 +1091,8 @@ function SessionManager({ session, onBack }: { session: Session; onBack: () => v
 
   const [name, setName] = useState("");
   const [bulkOpen, setBulkOpen] = useState(false);
+  const [gender, setGender] = useState<'M' | 'F' | ''>('');
+  const [bulkError, setBulkError] = useState<string>("");
   const [bulkText, setBulkText] = useState("");
 
   const occupancy = useMemo(
@@ -830,20 +1137,38 @@ function SessionManager({ session, onBack }: { session: Session; onBack: () => v
   function add(e: React.FormEvent) {
     e.preventDefault();
     if (!name.trim()) return;
-    addPlayer(session.id, name.trim());
+    // Temporary: use bulk API to inject gender until single add supports signature change
+    if (gender) {
+      addPlayersBulk(session.id, [`${name.trim()}, ${gender}`]);
+    } else {
+      addPlayer(session.id, name.trim());
+    }
     setName("");
+    setGender('');
   }
 
   function addBulk(e: React.FormEvent) {
     e.preventDefault();
     const raw = bulkText || "";
     const parts = raw
-      .split(/\n|,/g)
+      .split(/\n/g)
       .map((s) => s.trim())
       .filter(Boolean);
     if (!parts.length) return;
+    // Validate genders first
+    for (const line of parts) {
+      const tokens = line.split(',').map((t) => t.trim()).filter(Boolean);
+      if (tokens.length >= 2) {
+        const g = tokens[1].toUpperCase();
+        if (!(g === 'M' || g === 'F')) {
+          setBulkError(`Invalid gender "${tokens[1]}" on line: "${line}". Use M or F.`);
+          return;
+        }
+      }
+    }
     addPlayersBulk(session.id, parts);
     setBulkText("");
+    setBulkError("");
     setBulkOpen(false);
   }
 
@@ -863,16 +1188,19 @@ function SessionManager({ session, onBack }: { session: Session; onBack: () => v
             )}
           </div>
           {!session.ended && (
-            <button
-              onClick={() => {
-                setEndOpen(true);
-                setEndShuttles('0');
-              }}
-              disabled={anyInProgress}
-              className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-1.5 text-amber-700 disabled:opacity-50"
-            >
-              End session
-            </button>
+            <div className="flex items-center gap-2">
+              <AutoAssignSettingsButton session={session} />
+              <button
+                onClick={() => {
+                  setEndOpen(true);
+                  setEndShuttles('0');
+                }}
+                disabled={anyInProgress}
+                className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-1.5 text-amber-700 disabled:opacity-50"
+              >
+                End session
+              </button>
+            </div>
           )}
         </div>
       </Card>
@@ -982,6 +1310,11 @@ function SessionManager({ session, onBack }: { session: Session; onBack: () => v
               className="flex-1"
               disabled={!!session.ended}
             />
+            <Select value={gender} onChange={(v) => setGender(v as any)}>
+              <option value="">Gender</option>
+              <option value="M">M</option>
+              <option value="F">F</option>
+            </Select>
             <button type="submit" disabled={!!session.ended} className="rounded-xl bg-black px-4 py-2 text-white disabled:opacity-50">Add</button>
           </form>
           <button onClick={() => setBulkOpen((v) => !v)} disabled={!!session.ended} className="text-xs text-gray-600 underline disabled:opacity-50">
@@ -996,7 +1329,7 @@ function SessionManager({ session, onBack }: { session: Session; onBack: () => v
                   onChange={(e) => setBulkText(e.target.value)}
                   rows={4}
                   className="w-full rounded-xl border border-gray-300 px-3 py-2 text-sm outline-none"
-                  placeholder="Alice\nBob\nCharlie"
+                  placeholder="Alice, F\nBob, M\nCharlie, F"
                   disabled={!!session.ended}
                 />
               </div>
@@ -1004,10 +1337,13 @@ function SessionManager({ session, onBack }: { session: Session; onBack: () => v
                 <button type="submit" disabled={!!session.ended} className="rounded-xl bg-black px-3 py-1.5 text-xs text-white disabled:opacity-50">Add players</button>
                 <button type="button" onClick={() => setBulkOpen(false)} className="rounded-xl border px-3 py-1.5 text-xs">Cancel</button>
               </div>
+              {bulkError && <div className="text-[11px] text-red-600">{bulkError}</div>}
             </form>
           )}
         </div>
       </Card>
+
+      {/* Auto-assign settings now in a modal, opened from header button */}
 
       {/* Players and Courts */}
         <Card>
@@ -1021,7 +1357,7 @@ function SessionManager({ session, onBack }: { session: Session; onBack: () => v
                 const inGame = inGameIdSet.has(p.id);
                 return (
                   <div key={p.id} className="flex items-center justify-between gap-2">
-                    <div className="truncate font-medium">{p.name}<span className="ml-2 rounded-full bg-gray-100 px-2 py-0.5 text-[10px] text-gray-600">{p.gamesPlayed ?? 0} games</span>{inGame && <span className="ml-2 rounded-full bg-rose-100 px-2 py-0.5 text-[10px] text-rose-700">in game</span>}</div>
+                    <div className="truncate font-medium">{p.name}{p.gender ? <span className="ml-1 rounded-full bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-600">{p.gender}</span> : null}<span className="ml-2 rounded-full bg-gray-100 px-2 py-0.5 text-[10px] text-gray-600">{p.gamesPlayed ?? 0} games</span>{inGame && <span className="ml-2 rounded-full bg-rose-100 px-2 py-0.5 text-[10px] text-rose-700">in game</span>}</div>
                     <div className="flex items-center gap-2">
                       <Select
                         value={currentIdx ?? ""}
@@ -1099,7 +1435,11 @@ function SessionManager({ session, onBack }: { session: Session; onBack: () => v
                   </div>
                 </div>
                 <div className="mt-1 text-sm">
-                  Score: {g.scoreA}–{g.scoreB} · Winner: {g.winner}
+                  {g.voided ? (
+                    <span className="rounded bg-red-50 px-2 py-0.5 text-red-700">Voided</span>
+                  ) : (
+                    <>Score: {g.scoreA}–{g.scoreB} · Winner: {g.winner}</>
+                  )}
                 </div>
                 <div className="mt-1 text-xs text-gray-500 truncate">
                   A: {(g.sideAPlayers && g.sideAPlayers.length ? g.sideAPlayers.map((p) => p.name) : g.sideA.map((pid) => session.players.find((pp) => pp.id === pid)?.name || '(deleted)')).join(' & ')}<br/>
@@ -1119,6 +1459,7 @@ function SessionManager({ session, onBack }: { session: Session; onBack: () => v
 // ---------------------------------
 function CourtCard({ session, court, idx }: { session: Session; court: Court; idx: number }) {
   const endGame = useStore((s) => s.endGame);
+  const voidGame = useStore((s) => s.voidGame);
   const setPair = useStore((s) => s.setPlayerPair);
   const assign = useStore((s) => s.assignPlayerToCourt);
   const startGame = useStore((s) => s.startGame);
@@ -1157,20 +1498,37 @@ function CourtCard({ session, court, idx }: { session: Session; court: Court; id
 
   return (
     <div className="rounded-xl border border-gray-200 p-3">
-      <div className="mb-2 flex items-center justify-between gap-2">
+      <div className="mb-2 flex items-center justify-between">
         <div className="font-semibold">Court {idx + 1}</div>
+        {!session.ended && !court.inProgress && (
+          <button
+            onClick={() => setRemoveOpen(true)}
+            aria-label="Remove court"
+            className="rounded-md p-1 text-gray-500 hover:bg-red-50 hover:text-red-600"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4">
+              <path d="M9 3a1 1 0 0 0-1 1v1H5.5a.75.75 0 0 0 0 1.5h.59l.84 12.06A2.25 2.25 0 0 0 9.18 21h5.64a2.25 2.25 0 0 0 2.25-2.44L17.91 6.5h.59a.75.75 0 0 0 0-1.5H16V4a1 1 0 0 0-1-1H9Zm1 2h4V4H10v1Zm-.82 14a.75.75 0 0 1-.75-.68L7.62 6.5h8.76l-.81 11.82a.75.75 0 0 1-.75.68H9.18ZM10 9.25a.75.75 0 0 1 .75.75v7a.75.75 0 0 1-1.5 0v-7c0-.41.34-.75.75-.75Zm4 0c.41 0 .75.34.75.75v7a.75.75 0 0 1-1.5 0v-7c0-.41.34-.75.75-.75Z"/>
+            </svg>
+          </button>
+        )}
+      </div>
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <div className="text-xs text-gray-500">
+          {court.playerIds.length}/{(court.mode || 'doubles') === 'singles' ? 2 : 4}
+        </div>
         <div className="flex items-center gap-2">
           <div className="text-xs text-gray-500">
             {court.playerIds.length}/{(court.mode || 'doubles') === 'singles' ? 2 : 4}
           </div>
           {!session.ended && !court.inProgress && (
             <button
-              onClick={() => setRemoveOpen(true)}
-              className="rounded-lg border border-red-200 bg-red-50 px-2 py-1 text-xs text-red-600"
+              onClick={() => useStore.getState().autoAssignCourt(session.id, idx)}
+              className="rounded-lg border border-gray-300 px-2 py-1 text-xs"
             >
-              Remove
+              Auto-assign
             </button>
           )}
+          {/* Remove button moved to top-right icon */}
           {!court.inProgress && (
             <Select
               value={court.mode || 'doubles'}
@@ -1299,6 +1657,7 @@ function CourtCard({ session, court, idx }: { session: Session; court: Court; id
         onChangeB={setScoreB}
         onCancel={() => setOpen(false)}
         onSave={onSave}
+        onVoid={() => { voidGame(session.id, idx); setOpen(false); }}
       />
 
       <ConfirmModal
@@ -1371,7 +1730,7 @@ function ConfirmModal({ open, title, body, confirmText = 'Confirm', onCancel, on
   );
 }
 
-function ScoreModal({ open, sideLabel, requiredPerTeam, ready, scoreA, scoreB, onChangeA, onChangeB, onCancel, onSave }: { open: boolean; sideLabel: string; requiredPerTeam: number; ready: boolean; scoreA: string; scoreB: string; onChangeA: (v: string) => void; onChangeB: (v: string) => void; onCancel: () => void; onSave: () => void; }) {
+function ScoreModal({ open, sideLabel, requiredPerTeam, ready, scoreA, scoreB, onChangeA, onChangeB, onCancel, onSave, onVoid }: { open: boolean; sideLabel: string; requiredPerTeam: number; ready: boolean; scoreA: string; scoreB: string; onChangeA: (v: string) => void; onChangeB: (v: string) => void; onCancel: () => void; onSave: () => void; onVoid?: () => void; }) {
   const aRef = React.useRef<HTMLInputElement | null>(null);
   React.useEffect(() => {
     if (open) {
@@ -1412,12 +1771,123 @@ function ScoreModal({ open, sideLabel, requiredPerTeam, ready, scoreA, scoreB, o
             />
           </div>
         </div>
-        <div className="mt-3 flex items-center justify-end gap-2">
-          <button onClick={onCancel} className="rounded-xl border px-3 py-1.5 text-sm">Cancel</button>
-          <button onClick={onSave} disabled={!ready || !scoreValid} className="rounded-xl bg-black px-3 py-1.5 text-sm text-white disabled:opacity-50">Save & Clear</button>
+        <div className="mt-3 flex items-center justify-between gap-2">
+          {onVoid ? (
+            <button onClick={onVoid} className="rounded-xl border border-red-200 bg-red-50 px-3 py-1.5 text-sm text-red-700">Void game</button>
+          ) : <span />}
+          <div className="flex items-center gap-2">
+            <button onClick={onCancel} className="rounded-xl border px-3 py-1.5 text-sm">Cancel</button>
+            <button onClick={onSave} disabled={!ready || !scoreValid} className="rounded-xl bg-black px-3 py-1.5 text-sm text-white disabled:opacity-50">Save & Clear</button>
+          </div>
         </div>
         {!ready && <div className="mt-2 text-[11px] text-amber-600">Need exactly {requiredPerTeam} in {sideLabel} A and {sideLabel} B.</div>}
         {ready && !scoreValid && <div className="mt-2 text-[11px] text-amber-600">Enter both scores.</div>}
+      </div>
+    </div>
+  );
+}
+
+function BlacklistEditor({ session }: { session: Session }) {
+  const addPair = useStore((s) => s.addBlacklistPair);
+  const removePair = useStore((s) => s.removeBlacklistPair);
+  const [a, setA] = React.useState<string>("");
+  const [b, setB] = React.useState<string>("");
+  const pairs = session.autoAssignBlacklist?.pairs || [];
+  const players = session.players;
+  const submit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!a || !b || a === b) return;
+    addPair(session.id, a, b);
+    setA("");
+    setB("");
+  };
+  return (
+    <div className="space-y-2">
+      <form onSubmit={submit} className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+        <Select value={a} onChange={setA}>
+          <option value="">Select player A</option>
+          {players.map((p) => (
+            <option key={p.id} value={p.id}>{p.name}</option>
+          ))}
+        </Select>
+        <Select value={b} onChange={setB}>
+          <option value="">Select player B</option>
+          {players.map((p) => (
+            <option key={p.id} value={p.id}>{p.name}</option>
+          ))}
+        </Select>
+        <button type="submit" className="rounded-xl bg-black px-3 py-2 text-sm text-white disabled:opacity-50" disabled={!a || !b || a === b}>Add blacklist</button>
+      </form>
+      {pairs.length === 0 ? (
+        <div className="text-xs text-gray-500">No blacklisted pairs.
+        </div>
+      ) : (
+        <ul className="divide-y rounded-xl border">
+          {pairs.map((p, i) => {
+            const na = players.find((x) => x.id === p.a)?.name || "(deleted)";
+            const nb = players.find((x) => x.id === p.b)?.name || "(deleted)";
+            return (
+              <li key={`${p.a}-${p.b}-${i}`} className="flex items-center justify-between px-2 py-1.5 text-sm">
+                <div className="truncate">{na} × {nb}</div>
+                <button onClick={() => removePair(session.id, p.a, p.b)} className="rounded border px-2 py-0.5 text-xs">Remove</button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      <div className="text-[11px] text-gray-500">Blacklisted pairs will be strongly avoided in doubles auto-assign.</div>
+    </div>
+  );
+}
+
+function BalanceGenderToggle({ session }: { session: Session }) {
+  const enabled = session.autoAssignConfig?.balanceGender ?? true;
+  const update = (checked: boolean) => {
+    useStore.setState((state) => ({
+      sessions: state.sessions.map((ss) => ss.id === session.id ? { ...ss, autoAssignConfig: { ...(ss.autoAssignConfig || {}), balanceGender: checked } } : ss)
+    }));
+  };
+  return (
+    <label className="flex items-center justify-between rounded-xl border border-gray-200 p-2">
+      <span className="text-sm">Balance gender on doubles</span>
+      <input type="checkbox" className="h-4 w-4" checked={enabled} onChange={(e) => update(e.target.checked)} />
+    </label>
+  );
+}
+
+function AutoAssignSettingsButton({ session }: { session: Session }) {
+  const [open, setOpen] = React.useState(false);
+  return (
+    <>
+      <button onClick={() => setOpen(true)} className="rounded-lg border border-gray-300 px-2 py-1 text-xs">Auto-assign settings</button>
+      <AutoAssignSettingsModal open={open} session={session} onClose={() => setOpen(false)} />
+    </>
+  );
+}
+
+function AutoAssignSettingsModal({ open, session, onClose }: { open: boolean; session: Session; onClose: () => void }) {
+  if (!open) return null;
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      <div className="absolute inset-0 bg-black/40" onClick={onClose}></div>
+      <div className="relative w-full max-w-sm rounded-2xl bg-white p-4 shadow-lg">
+        <div className="mb-2 text-base font-semibold">Auto-assign settings</div>
+        <div className="mb-3 text-xs text-gray-500">Configure the rules used when auto-assigning players to courts.</div>
+        <div className="space-y-3">
+          <div>
+            <div className="mb-1 text-sm font-medium">Basic</div>
+            <div className="mb-2 text-[11px] text-gray-500">Quick toggles to influence auto-assign behavior.</div>
+            <BalanceGenderToggle session={session} />
+          </div>
+          <div>
+            <div className="mb-1 text-sm font-medium">Blacklist pairs (doubles)</div>
+            <div className="mb-2 text-[11px] text-gray-500">Avoid specific pairings when forming doubles teams.</div>
+            <BlacklistEditor session={session} />
+          </div>
+        </div>
+        <div className="mt-3 flex items-center justify-end">
+          <button onClick={onClose} className="rounded-xl border px-3 py-1.5 text-sm">Close</button>
+        </div>
       </div>
     </div>
   );
