@@ -106,6 +106,7 @@ interface StoreState {
   deleteSession: (sessionId: string) => void;
   addPlayer: (sessionId: string, name: string) => void;
   removePlayer: (sessionId: string, playerId: string) => void;
+  addPlayersBulk: (sessionId: string, names: string[]) => void;
   assignPlayerToCourt: (
     sessionId: string,
     playerId: string,
@@ -121,6 +122,8 @@ interface StoreState {
   endSession: (sessionId: string, shuttlesUsed?: number) => void;
   startGame: (sessionId: string, courtIndex: number) => void;
   setCourtMode: (sessionId: string, courtIndex: number, mode: 'singles' | 'doubles') => void;
+  addCourt: (sessionId: string) => void;
+  removeCourt: (sessionId: string, courtIndex: number) => void;
 }
 
 const useStore = create<StoreState>()(
@@ -166,6 +169,26 @@ const useStore = create<StoreState>()(
             if (!trimmed) return ss;
             const newP: Player = { id: nanoid(8), name: trimmed };
             return { ...ss, players: [...ss.players, newP] };
+          }),
+        })),
+
+      addPlayersBulk: (sessionId, names) =>
+        set((s) => ({
+          sessions: s.sessions.map((ss) => {
+            if (ss.id !== sessionId) return ss;
+            if (ss.ended) return ss;
+            const existingNames = new Set(ss.players.map((p) => p.name.toLowerCase()));
+            const toAdd: Player[] = [];
+            for (const raw of names) {
+              const n = (raw || "").trim();
+              if (!n) continue;
+              const key = n.toLowerCase();
+              if (existingNames.has(key)) continue;
+              existingNames.add(key);
+              toAdd.push({ id: nanoid(8), name: n });
+            }
+            if (!toAdd.length) return ss;
+            return { ...ss, players: [...ss.players, ...toAdd] };
           }),
         })),
 
@@ -317,6 +340,39 @@ const useStore = create<StoreState>()(
               return { ...c, mode, playerIds: kept, pairA: [], pairB: [] };
             });
             return { ...ss, courts };
+          }),
+        })),
+
+      addCourt: (sessionId) =>
+        set((s) => ({
+          sessions: s.sessions.map((ss) => {
+            if (ss.id !== sessionId) return ss;
+            if (ss.ended) return ss;
+            const nextIndex = ss.courts.length;
+            const newCourt: Court = {
+              id: nanoid(8),
+              index: nextIndex,
+              playerIds: [],
+              pairA: [],
+              pairB: [],
+              inProgress: false,
+              mode: 'doubles',
+            };
+            return { ...ss, courts: [...ss.courts, newCourt], numCourts: nextIndex + 1 };
+          }),
+        })),
+
+      removeCourt: (sessionId, courtIndex) =>
+        set((s) => ({
+          sessions: s.sessions.map((ss) => {
+            if (ss.id !== sessionId) return ss;
+            if (ss.ended) return ss;
+            const target = ss.courts[courtIndex];
+            if (!target) return ss;
+            if (target.inProgress) return ss; // do not remove active court
+            // Unassign players from this court by simply removing the court
+            const newCourts = ss.courts.filter((_, i) => i !== courtIndex).map((c, i) => ({ ...c, index: i }));
+            return { ...ss, courts: newCourts, numCourts: newCourts.length };
           }),
         })),
 
@@ -723,11 +779,14 @@ function formatSessionTitle(ss: Session) {
 
 function SessionManager({ session, onBack }: { session: Session; onBack: () => void }) {
   const addPlayer = useStore((s) => s.addPlayer);
+  const addPlayersBulk = useStore((s) => s.addPlayersBulk);
   const removePlayer = useStore((s) => s.removePlayer);
   const assign = useStore((s) => s.assignPlayerToCourt);
   const endSession = useStore((s) => s.endSession);
 
   const [name, setName] = useState("");
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [bulkText, setBulkText] = useState("");
 
   const occupancy = useMemo(
     () => session.courts.map((c) => c.playerIds.length),
@@ -775,6 +834,19 @@ function SessionManager({ session, onBack }: { session: Session; onBack: () => v
     setName("");
   }
 
+  function addBulk(e: React.FormEvent) {
+    e.preventDefault();
+    const raw = bulkText || "";
+    const parts = raw
+      .split(/\n|,/g)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (!parts.length) return;
+    addPlayersBulk(session.id, parts);
+    setBulkText("");
+    setBulkOpen(false);
+  }
+
   return (
     <div className="space-y-4">
       <button onClick={onBack} className="text-sm text-gray-600">← Back</button>
@@ -784,7 +856,7 @@ function SessionManager({ session, onBack }: { session: Session; onBack: () => v
           <div>
             <h2 className="text-lg font-semibold">{formatSessionTitle(session)}</h2>
             <p className="text-xs text-gray-500">
-              {session.numCourts} court{session.numCourts > 1 ? "s" : ""} · {(session.courts || []).filter((c) => (c.mode || 'doubles') === 'doubles').length} doubles, {(session.courts || []).filter((c) => (c.mode || 'doubles') === 'singles').length} singles
+              {(session.courts || []).length} court{(session.courts || []).length > 1 ? "s" : ""} · {(session.courts || []).filter((c) => (c.mode || 'doubles') === 'doubles').length} doubles, {(session.courts || []).filter((c) => (c.mode || 'doubles') === 'singles').length} singles
             </p>
             {session.ended && (
               <div className="mt-1 text-[11px] text-emerald-700">Ended{session.endedAt ? ` · ${new Date(session.endedAt).toLocaleString()}` : ''}</div>
@@ -901,16 +973,40 @@ function SessionManager({ session, onBack }: { session: Session; onBack: () => v
 
       <Card>
         <h3 className="mb-3 text-base font-semibold">Add players</h3>
-        <form onSubmit={add} className="flex gap-2">
-          <Input
-            placeholder="Player name"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            className="flex-1"
-            disabled={!!session.ended}
-          />
-          <button type="submit" disabled={!!session.ended} className="rounded-xl bg-black px-4 py-2 text-white disabled:opacity-50">Add</button>
-        </form>
+        <div className="space-y-2">
+          <form onSubmit={add} className="flex gap-2">
+            <Input
+              placeholder="Player name"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              className="flex-1"
+              disabled={!!session.ended}
+            />
+            <button type="submit" disabled={!!session.ended} className="rounded-xl bg-black px-4 py-2 text-white disabled:opacity-50">Add</button>
+          </form>
+          <button onClick={() => setBulkOpen((v) => !v)} disabled={!!session.ended} className="text-xs text-gray-600 underline disabled:opacity-50">
+            {bulkOpen ? 'Hide bulk add' : 'Add multiple players'}
+          </button>
+          {bulkOpen && (
+            <form onSubmit={addBulk} className="space-y-2">
+              <div>
+                <Label>Paste names (one per line, or comma-separated)</Label>
+                <textarea
+                  value={bulkText}
+                  onChange={(e) => setBulkText(e.target.value)}
+                  rows={4}
+                  className="w-full rounded-xl border border-gray-300 px-3 py-2 text-sm outline-none"
+                  placeholder="Alice\nBob\nCharlie"
+                  disabled={!!session.ended}
+                />
+              </div>
+              <div className="flex items-center gap-2">
+                <button type="submit" disabled={!!session.ended} className="rounded-xl bg-black px-3 py-1.5 text-xs text-white disabled:opacity-50">Add players</button>
+                <button type="button" onClick={() => setBulkOpen(false)} className="rounded-xl border px-3 py-1.5 text-xs">Cancel</button>
+              </div>
+            </form>
+          )}
+        </div>
       </Card>
 
       {/* Players and Courts */}
@@ -970,7 +1066,12 @@ function SessionManager({ session, onBack }: { session: Session; onBack: () => v
         <Card>
           <div className="mb-3 flex items-center justify-between">
             <h3 className="text-base font-semibold">Courts</h3>
-            <span className="text-xs text-gray-500">Unassigned: {unassigned.length}</span>
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-gray-500">Unassigned: {unassigned.length}</span>
+              {!session.ended && (
+                <AddCourtButton sessionId={session.id} />
+              )}
+            </div>
           </div>
           <div className="grid grid-cols-1 gap-3">
             {session.courts.map((court, idx) => (
@@ -1022,6 +1123,7 @@ function CourtCard({ session, court, idx }: { session: Session; court: Court; id
   const assign = useStore((s) => s.assignPlayerToCourt);
   const startGame = useStore((s) => s.startGame);
   const setCourtMode = useStore((s) => s.setCourtMode);
+  const removeCourt = useStore((s) => s.removeCourt);
 
   const canEndAny = court.playerIds.length > 0;
   const pairA = court.pairA || [];
@@ -1031,11 +1133,13 @@ function CourtCard({ session, court, idx }: { session: Session; court: Court; id
   const ready = pairA.length === requiredPerTeam && pairB.length === requiredPerTeam;
   const available = court.playerIds.filter((pid) => !pairA.includes(pid) && !pairB.includes(pid));
   const isFull = court.playerIds.length === (requiredPerTeam * 2);
+  const sideLabel = isSingles ? 'Player' : 'Pair';
 
   const [open, setOpen] = useState(false);
   const [scoreA, setScoreA] = useState<string>("");
   const [scoreB, setScoreB] = useState<string>("");
   const scoreValid = scoreA.trim() !== "" && scoreB.trim() !== "" && !Number.isNaN(Number(scoreA)) && !Number.isNaN(Number(scoreB));
+  const [removeOpen, setRemoveOpen] = useState(false);
 
   const onSave = () => {
     const aStr = scoreA.trim();
@@ -1059,6 +1163,14 @@ function CourtCard({ session, court, idx }: { session: Session; court: Court; id
           <div className="text-xs text-gray-500">
             {court.playerIds.length}/{(court.mode || 'doubles') === 'singles' ? 2 : 4}
           </div>
+          {!session.ended && !court.inProgress && (
+            <button
+              onClick={() => setRemoveOpen(true)}
+              className="rounded-lg border border-red-200 bg-red-50 px-2 py-1 text-xs text-red-600"
+            >
+              Remove
+            </button>
+          )}
           {!court.inProgress && (
             <Select
               value={court.mode || 'doubles'}
@@ -1082,7 +1194,7 @@ function CourtCard({ session, court, idx }: { session: Session; court: Court; id
             </button>
           ) : (
             <button
-              onClick={() => setOpen((v) => !v)}
+              onClick={() => setOpen(true)}
               disabled={!!session.ended}
               className="rounded-lg border border-gray-300 px-2 py-1 text-xs disabled:opacity-50"
             >
@@ -1094,7 +1206,7 @@ function CourtCard({ session, court, idx }: { session: Session; court: Court; id
 
       <div className="mb-2 grid grid-cols-2 gap-2">
         <div>
-          <div className="mb-1 text-xs font-medium">Pair A ({pairA.length}/{requiredPerTeam})</div>
+          <div className="mb-1 text-xs font-medium">{sideLabel} A ({pairA.length}/{requiredPerTeam})</div>
           <div className="space-y-1">
             {pairA.length === 0 && (
               <div className="text-xs text-gray-400">No players in A</div>
@@ -1113,7 +1225,7 @@ function CourtCard({ session, court, idx }: { session: Session; court: Court; id
         </div>
 
         <div>
-          <div className="mb-1 text-xs font-medium">Pair B ({pairB.length}/{requiredPerTeam})</div>
+          <div className="mb-1 text-xs font-medium">{sideLabel} B ({pairB.length}/{requiredPerTeam})</div>
           <div className="space-y-1">
             {pairB.length === 0 && (
               <div className="text-xs text-gray-400">No players in B</div>
@@ -1176,42 +1288,44 @@ function CourtCard({ session, court, idx }: { session: Session; court: Court; id
         )}
       </div>
 
-      {open && (
-        <div className="mt-3 border-t pt-3">
-          <div className="mb-2 text-xs text-gray-500">Record score (Pair A vs Pair B)</div>
-          <div className="grid grid-cols-2 gap-2">
-            <Input
-              type="number"
-              label="Pair A"
-              placeholder="21"
-              inputMode="numeric"
-              min={0}
-              value={scoreA}
-              onChange={(e) => setScoreA(e.target.value)}
-            />
-            <Input
-              type="number"
-              label="Pair B"
-              placeholder="18"
-              inputMode="numeric"
-              min={0}
-              value={scoreB}
-              onChange={(e) => setScoreB(e.target.value)}
-            />
-          </div>
-          <div className="mt-2 flex items-center gap-2">
-            <button onClick={onSave} disabled={!ready || !scoreValid || !!session.ended} className="rounded-xl bg-black px-3 py-1.5 text-xs text-white disabled:opacity-50">Save & Clear</button>
-            <button onClick={() => setOpen(false)} className="rounded-xl border px-3 py-1.5 text-xs">Cancel</button>
-          </div>
-          {!ready && <div className="mt-2 text-[11px] text-amber-600">Need exactly 2 players in Pair A and Pair B.</div>}
-          {ready && !scoreValid && <div className="mt-2 text-[11px] text-amber-600">Enter both scores.</div>}
-        </div>
-      )}
+      <ScoreModal
+        open={open}
+        sideLabel={sideLabel}
+        requiredPerTeam={requiredPerTeam}
+        ready={ready}
+        scoreA={scoreA}
+        scoreB={scoreB}
+        onChangeA={setScoreA}
+        onChangeB={setScoreB}
+        onCancel={() => setOpen(false)}
+        onSave={onSave}
+      />
+
+      <ConfirmModal
+        open={removeOpen}
+        title={`Remove Court ${idx + 1}?`}
+        body="Players on this court will be unassigned. This cannot be undone."
+        confirmText="Remove court"
+        onCancel={() => setRemoveOpen(false)}
+        onConfirm={() => { removeCourt(session.id, idx); setRemoveOpen(false); }}
+      />
     </div>
   );
 }
 
 // Drag & Drop removed
+
+function AddCourtButton({ sessionId }: { sessionId: string }) {
+  const addCourt = useStore((s) => s.addCourt);
+  return (
+    <button
+      onClick={() => addCourt(sessionId)}
+      className="rounded-lg border border-gray-300 px-2 py-1 text-xs"
+    >
+      + Add court
+    </button>
+  );
+}
 
 function EndSessionModal({ open, title, shuttles, onShuttlesChange, onCancel, onConfirm }: { open: boolean; title: string; shuttles: string; onShuttlesChange: (v: string) => void; onCancel: () => void; onConfirm: () => void; }) {
   if (!open) return null;
@@ -1235,6 +1349,75 @@ function EndSessionModal({ open, title, shuttles, onShuttlesChange, onCancel, on
           <button onClick={onCancel} className="rounded-xl border px-3 py-1.5 text-sm">Cancel</button>
           <button onClick={onConfirm} className="rounded-xl bg-black px-3 py-1.5 text-sm text-white">Confirm</button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function ConfirmModal({ open, title, body, confirmText = 'Confirm', onCancel, onConfirm }: { open: boolean; title: string; body?: string; confirmText?: string; onCancel: () => void; onConfirm: () => void; }) {
+  if (!open) return null;
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      <div className="absolute inset-0 bg-black/40" onClick={onCancel}></div>
+      <div className="relative w-full max-w-sm rounded-2xl bg-white p-4 shadow-lg">
+        <div className="mb-2 text-base font-semibold">{title}</div>
+        {body && <div className="text-xs text-gray-600">{body}</div>}
+        <div className="mt-3 flex items-center justify-end gap-2">
+          <button onClick={onCancel} className="rounded-xl border px-3 py-1.5 text-sm">Cancel</button>
+          <button onClick={onConfirm} className="rounded-xl bg-red-600 px-3 py-1.5 text-sm text-white">{confirmText}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ScoreModal({ open, sideLabel, requiredPerTeam, ready, scoreA, scoreB, onChangeA, onChangeB, onCancel, onSave }: { open: boolean; sideLabel: string; requiredPerTeam: number; ready: boolean; scoreA: string; scoreB: string; onChangeA: (v: string) => void; onChangeB: (v: string) => void; onCancel: () => void; onSave: () => void; }) {
+  const aRef = React.useRef<HTMLInputElement | null>(null);
+  React.useEffect(() => {
+    if (open) {
+      setTimeout(() => aRef.current?.focus(), 0);
+    }
+  }, [open]);
+  if (!open) return null;
+  const scoreValid = scoreA.trim() !== '' && scoreB.trim() !== '' && !Number.isNaN(Number(scoreA)) && !Number.isNaN(Number(scoreB));
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      <div className="absolute inset-0 bg-black/40" onClick={onCancel}></div>
+      <div className="relative w-full max-w-sm rounded-2xl bg-white p-4 shadow-lg">
+        <div className="mb-2 text-base font-semibold">Record score ({sideLabel} A vs {sideLabel} B)</div>
+        <div className="grid grid-cols-2 gap-2">
+          <div>
+            <Label>{`${sideLabel} A`}</Label>
+            <input
+              ref={aRef}
+              type="number"
+              placeholder="21"
+              inputMode="numeric"
+              min={0}
+              value={scoreA}
+              onChange={(e) => onChangeA(e.target.value)}
+              className="w-full rounded-xl border border-gray-300 px-3 py-2 text-sm outline-none"
+            />
+          </div>
+          <div>
+            <Label>{`${sideLabel} B`}</Label>
+            <input
+              type="number"
+              placeholder="18"
+              inputMode="numeric"
+              min={0}
+              value={scoreB}
+              onChange={(e) => onChangeB(e.target.value)}
+              className="w-full rounded-xl border border-gray-300 px-3 py-2 text-sm outline-none"
+            />
+          </div>
+        </div>
+        <div className="mt-3 flex items-center justify-end gap-2">
+          <button onClick={onCancel} className="rounded-xl border px-3 py-1.5 text-sm">Cancel</button>
+          <button onClick={onSave} disabled={!ready || !scoreValid} className="rounded-xl bg-black px-3 py-1.5 text-sm text-white disabled:opacity-50">Save & Clear</button>
+        </div>
+        {!ready && <div className="mt-2 text-[11px] text-amber-600">Need exactly {requiredPerTeam} in {sideLabel} A and {sideLabel} B.</div>}
+        {ready && !scoreValid && <div className="mt-2 text-[11px] text-amber-600">Enter both scores.</div>}
       </div>
     </div>
   );
