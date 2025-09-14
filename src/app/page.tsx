@@ -25,7 +25,7 @@ import { nanoid } from "nanoid";
 
 type Player = { id: string; name: string; gender?: 'M' | 'F'; gamesPlayed?: number };
 
-type Court = { id: string; index: number; playerIds: string[]; pairA: string[]; pairB: string[]; inProgress?: boolean; startedAt?: string; mode?: 'singles' | 'doubles' };
+type Court = { id: string; index: number; playerIds: string[]; pairA: string[]; pairB: string[]; inProgress?: boolean; startedAt?: string; mode?: 'singles' | 'doubles'; queue?: string[]; nextA?: string[]; nextB?: string[] };
 
 type Game = {
   id: string;
@@ -138,6 +138,11 @@ interface StoreState {
   removeCourt: (sessionId: string, courtIndex: number) => void;
   autoAssignAvailable: (sessionId: string) => void;
   autoAssignCourt: (sessionId: string, courtIndex: number) => void;
+  autoAssignNext: (sessionId: string, courtIndex: number) => void;
+  enqueueToCourt: (sessionId: string, courtIndex: number, playerId: string) => void;
+  removeFromCourtQueue: (sessionId: string, courtIndex: number, playerId: string) => void;
+  clearCourtQueue: (sessionId: string, courtIndex: number) => void;
+  setNextPair: (sessionId: string, courtIndex: number, playerId: string, pair: 'A' | 'B' | null) => void;
   // updateAutoAssignConfig removed
   addBlacklistPair: (sessionId: string, a: string, b: string) => void;
   removeBlacklistPair: (sessionId: string, a: string, b: string) => void;
@@ -158,6 +163,9 @@ const useStore = create<StoreState>()(
           pairB: [],
           inProgress: false,
           mode: 'doubles',
+          queue: [],
+          nextA: [],
+          nextB: [],
         }));
         const session: Session = {
           id,
@@ -234,6 +242,7 @@ const useStore = create<StoreState>()(
               playerIds: c.playerIds.filter((pid) => pid !== playerId),
               pairA: (c.pairA || []).filter((pid) => pid !== playerId),
               pairB: (c.pairB || []).filter((pid) => pid !== playerId),
+              queue: (c.queue || []).filter((pid) => pid !== playerId),
               };
             });
             const players = ss.players.filter((p) => p.id !== playerId);
@@ -271,6 +280,25 @@ const useStore = create<StoreState>()(
               playerIds: [...target.playerIds, playerId],
             };
             courts = courts.map((c, i) => (i === courtIndex ? updated : c));
+            return { ...ss, courts };
+          }),
+        })),
+
+      setNextPair: (sessionId, courtIndex, playerId, pair) =>
+        set((s) => ({
+          sessions: s.sessions.map((ss) => {
+            if (ss.id !== sessionId) return ss;
+            if (ss.ended) return ss;
+            const courts = ss.courts.map((c, i) => {
+              if (i !== courtIndex) return c;
+              const isSingles = (c.mode || 'doubles') === 'singles';
+              const req = isSingles ? 1 : 2;
+              let nextA = (c.nextA || []).filter((id) => id !== playerId);
+              let nextB = (c.nextB || []).filter((id) => id !== playerId);
+              if (pair === 'A' && nextA.length < req) nextA = [...nextA, playerId];
+              if (pair === 'B' && nextB.length < req) nextB = [...nextB, playerId];
+              return { ...c, nextA, nextB };
+            });
             return { ...ss, courts };
           }),
         })),
@@ -327,9 +355,72 @@ const useStore = create<StoreState>()(
               winner,
               players: snapshot,
             };
-            const courts = ss.courts.map((c, i) => (
-              i === courtIndex ? { ...c, playerIds: [], pairA: [], pairB: [], inProgress: false, startedAt: undefined } : c
-            ));
+            let courts = ss.courts.map((c) => ({ ...c }));
+            const c = courts[courtIndex];
+            // clear current court state
+            c.playerIds = [];
+            c.pairA = [];
+            c.pairB = [];
+            c.inProgress = false;
+            c.startedAt = undefined;
+            // Auto-populate next game from queue, preferring nextA/nextB if valid
+            const isSingles = (c.mode || 'doubles') === 'singles';
+            const cap = isSingles ? 2 : 4;
+            if ((c.queue || []).length) {
+              const pull: string[] = [];
+              const queued = c.queue || [];
+              for (const pid of queued) {
+                if (pull.length >= cap) break;
+                pull.push(pid);
+              }
+              if (pull.length > 0) {
+                c.playerIds = pull.slice(0, cap);
+                // remove pulled players from queue
+                c.queue = queued.filter((pid) => !c.playerIds.includes(pid));
+                // try assign pairs using same logic as auto-assign team formation
+                const reqTeam = isSingles ? 1 : 2;
+                const initialA: string[] = (c.nextA || []).filter((id) => c.playerIds.includes(id)).slice(0, reqTeam);
+                const initialB: string[] = (c.nextB || []).filter((id) => c.playerIds.includes(id)).slice(0, reqTeam);
+                const remaining = c.playerIds.filter((pid) => !initialA.includes(pid) && !initialB.includes(pid));
+                const blPairs = (ss.autoAssignBlacklist?.pairs || []);
+                const isBL = (x: string, y: string) => blPairs.some((p) => (p.a === x && p.b === y) || (p.a === y && p.b === x));
+                function canPlace(pid: string, team: string[]): boolean {
+                  for (const q of team) { if (isBL(pid, q)) return false; }
+                  return true;
+                }
+                let bestAssign: { a: string[]; b: string[] } | null = null as any;
+                function dfs(idx: number, a: string[], b: string[]) {
+                  if (a.length > reqTeam || b.length > reqTeam) return;
+                  if (idx === remaining.length) {
+                    if (a.length === reqTeam && b.length === reqTeam) {
+                      bestAssign = { a: [...a], b: [...b] };
+                    }
+                    return;
+                  }
+                  const pid = remaining[idx];
+                  if (a.length < reqTeam && canPlace(pid, a)) { a.push(pid); dfs(idx + 1, a, b); a.pop(); if (bestAssign) return; }
+                  if (b.length < reqTeam && canPlace(pid, b)) { b.push(pid); dfs(idx + 1, a, b); b.pop(); if (bestAssign) return; }
+                  dfs(idx + 1, a, b);
+                }
+                dfs(0, initialA, initialB);
+                if (bestAssign) { c.pairA = bestAssign.a; c.pairB = bestAssign.b; }
+                else {
+                  let pairA: string[] = [];
+                  let pairB: string[] = [];
+                  for (const pid of remaining) {
+                    if (pairA.length < reqTeam && canPlace(pid, pairA)) pairA.push(pid);
+                    else if (pairB.length < reqTeam && canPlace(pid, pairB)) pairB.push(pid);
+                    else if (pairA.length < reqTeam) pairA.push(pid);
+                    else if (pairB.length < reqTeam) pairB.push(pid);
+                    if (pairA.length >= reqTeam && pairB.length >= reqTeam) break;
+                  }
+                  c.pairA = pairA; c.pairB = pairB;
+                }
+                // clear nextA/nextB after consuming
+                c.nextA = [];
+                c.nextB = [];
+              }
+            }
             const games = [game, ...((ss as any).games || [])];
             const players = ss.players.map((p) =>
               snapshot.includes(p.id) ? { ...p, gamesPlayed: (p.gamesPlayed ?? 0) + 1 } : p
@@ -368,9 +459,72 @@ const useStore = create<StoreState>()(
               players: snapshot,
               voided: true,
             };
-            const courts = ss.courts.map((c, i) => (
-              i === courtIndex ? { ...c, playerIds: [], pairA: [], pairB: [], inProgress: false, startedAt: undefined } : c
-            ));
+            let courts = ss.courts.map((c) => ({ ...c }));
+            const c = courts[courtIndex];
+            // clear current court state
+            c.playerIds = [];
+            c.pairA = [];
+            c.pairB = [];
+            c.inProgress = false;
+            c.startedAt = undefined;
+            // Auto-populate next game from queue, preferring nextA/nextB if valid
+            const isSingles = (c.mode || 'doubles') === 'singles';
+            const cap = isSingles ? 2 : 4;
+            if ((c.queue || []).length) {
+              const pull: string[] = [];
+              const queued = c.queue || [];
+              for (const pid of queued) {
+                if (pull.length >= cap) break;
+                pull.push(pid);
+              }
+              if (pull.length > 0) {
+                c.playerIds = pull.slice(0, cap);
+                // remove pulled players from queue
+                c.queue = queued.filter((pid) => !c.playerIds.includes(pid));
+                // try assign pairs using same logic as auto-assign team formation
+                const reqTeam = isSingles ? 1 : 2;
+                const initialA: string[] = (c.nextA || []).filter((id) => c.playerIds.includes(id)).slice(0, reqTeam);
+                const initialB: string[] = (c.nextB || []).filter((id) => c.playerIds.includes(id)).slice(0, reqTeam);
+                const remaining = c.playerIds.filter((pid) => !initialA.includes(pid) && !initialB.includes(pid));
+                const blPairs = (ss.autoAssignBlacklist?.pairs || []);
+                const isBL = (x: string, y: string) => blPairs.some((p) => (p.a === x && p.b === y) || (p.a === y && p.b === x));
+                function canPlace(pid: string, team: string[]): boolean {
+                  for (const q of team) { if (isBL(pid, q)) return false; }
+                  return true;
+                }
+                let bestAssign: { a: string[]; b: string[] } | null = null as any;
+                function dfs(idx: number, a: string[], b: string[]) {
+                  if (a.length > reqTeam || b.length > reqTeam) return;
+                  if (idx === remaining.length) {
+                    if (a.length === reqTeam && b.length === reqTeam) {
+                      bestAssign = { a: [...a], b: [...b] };
+                    }
+                    return;
+                  }
+                  const pid = remaining[idx];
+                  if (a.length < reqTeam && canPlace(pid, a)) { a.push(pid); dfs(idx + 1, a, b); a.pop(); if (bestAssign) return; }
+                  if (b.length < reqTeam && canPlace(pid, b)) { b.push(pid); dfs(idx + 1, a, b); b.pop(); if (bestAssign) return; }
+                  dfs(idx + 1, a, b);
+                }
+                dfs(0, initialA, initialB);
+                if (bestAssign) { c.pairA = bestAssign.a; c.pairB = bestAssign.b; }
+                else {
+                  let pairA: string[] = [];
+                  let pairB: string[] = [];
+                  for (const pid of remaining) {
+                    if (pairA.length < reqTeam && canPlace(pid, pairA)) pairA.push(pid);
+                    else if (pairB.length < reqTeam && canPlace(pid, pairB)) pairB.push(pid);
+                    else if (pairA.length < reqTeam) pairA.push(pid);
+                    else if (pairB.length < reqTeam) pairB.push(pid);
+                    if (pairA.length >= reqTeam && pairB.length >= reqTeam) break;
+                  }
+                  c.pairA = pairA; c.pairB = pairB;
+                }
+                // clear nextA/nextB after consuming
+                c.nextA = [];
+                c.nextB = [];
+              }
+            }
             const games = [game, ...((ss as any).games || [])];
             return { ...ss, courts, games };
           }),
@@ -420,6 +574,11 @@ const useStore = create<StoreState>()(
             const ready = (c.pairA?.length || 0) === requiredPerTeam && (c.pairB?.length || 0) === requiredPerTeam;
             const filled = c.playerIds.length === (requiredPerTeam * 2);
             if (!ready || !filled) return ss;
+            // block start if any player is currently in another ongoing match
+            const busyElsewhere = new Set<string>();
+            ss.courts.forEach((cc, i) => { if (i !== courtIndex && cc.inProgress) cc.playerIds.forEach((pid) => busyElsewhere.add(pid)); });
+            const hasBusy = c.playerIds.some((pid) => busyElsewhere.has(pid));
+            if (hasBusy) return ss;
             const courts = ss.courts.map((cc, i) => (i === courtIndex ? { ...cc, inProgress: true, startedAt: new Date().toISOString() } : cc));
             return { ...ss, courts };
           }),
@@ -435,7 +594,8 @@ const useStore = create<StoreState>()(
               // when switching modes, trim playerIds to capacity and clear pairs to avoid invalid sizes
               const cap = mode === 'singles' ? 2 : 4;
               const kept = c.playerIds.slice(0, cap);
-              return { ...c, mode, playerIds: kept, pairA: [], pairB: [] };
+              // also clear nextA/nextB as capacities change
+              return { ...c, mode, playerIds: kept, pairA: [], pairB: [], nextA: [], nextB: [] };
             });
             return { ...ss, courts };
           }),
@@ -473,6 +633,73 @@ const useStore = create<StoreState>()(
             return { ...ss, courts: newCourts, numCourts: newCourts.length };
           }),
         })),
+
+      enqueueToCourt: (sessionId, courtIndex, playerId) =>
+        set((s) => ({
+          sessions: s.sessions.map((ss) => {
+            if (ss.id !== sessionId) return ss;
+            if (ss.ended) return ss;
+            const courts = ss.courts.map((c, i) => {
+              if (i !== courtIndex) return c;
+              if (c.inProgress) {
+                const inQueue = (c.queue || []).includes(playerId);
+                if (inQueue) return c;
+                // do not allow if queued in other courts
+                const inOtherQueue = ss.courts.some((cc, j) => j !== courtIndex && (cc.queue || []).includes(playerId));
+                if (inOtherQueue) return c;
+                // do not allow if player is assigned to any court that is not yet started
+                const onPendingCourt = ss.courts.some((cc) => !cc.inProgress && cc.playerIds.includes(playerId));
+                if (onPendingCourt) return c;
+                // limit queue to next-game only: max cap players
+                const cap = (c.mode || 'doubles') === 'singles' ? 2 : 4;
+                const q = [...(c.queue || [])];
+                if (q.length >= cap) return c;
+                const updated = { ...c, queue: [...q, playerId] };
+                return updated;
+              }
+              // If not in-progress, prefer assigning directly if capacity allows
+              const cap = (c.mode || 'doubles') === 'singles' ? 2 : 4;
+              if (c.playerIds.length < cap && !c.playerIds.includes(playerId)) {
+                return { ...c, playerIds: [...c.playerIds, playerId] };
+              }
+              const inQueue = (c.queue || []).includes(playerId);
+              if (inQueue) return c;
+              const inOtherQueue = ss.courts.some((cc, j) => j !== courtIndex && (cc.queue || []).includes(playerId));
+              if (inOtherQueue) return c;
+              const onPendingCourt = ss.courts.some((cc) => !cc.inProgress && cc.playerIds.includes(playerId));
+              if (onPendingCourt) return c;
+              const q = [...(c.queue || [])];
+              if (q.length >= cap) return c;
+              return { ...c, queue: [...q, playerId] };
+            });
+            return { ...ss, courts };
+          })
+        })),
+
+      removeFromCourtQueue: (sessionId, courtIndex, playerId) =>
+        set((s) => ({
+          sessions: s.sessions.map((ss) => {
+            if (ss.id !== sessionId) return ss;
+            const courts = ss.courts.map((c, i) => i === courtIndex ? {
+              ...c,
+              queue: (c.queue || []).filter((pid) => pid !== playerId),
+              nextA: (c.nextA || []).filter((pid) => pid !== playerId),
+              nextB: (c.nextB || []).filter((pid) => pid !== playerId),
+            } : c);
+            return { ...ss, courts };
+          })
+        })),
+
+      clearCourtQueue: (sessionId, courtIndex) =>
+        set((s) => ({
+          sessions: s.sessions.map((ss) => {
+            if (ss.id !== sessionId) return ss;
+            const courts = ss.courts.map((c, i) => i === courtIndex ? { ...c, queue: [], nextA: [], nextB: [] } : c);
+            return { ...ss, courts };
+          })
+        })),
+
+      // toggleCourtQueueAutofill removed: auto-fill is always enabled
 
       autoAssignAvailable: (sessionId) =>
         set((s) => ({
@@ -694,6 +921,127 @@ const useStore = create<StoreState>()(
               court.pairA = pairA;
               court.pairB = pairB;
             }
+            return { ...ss, courts };
+          }),
+        })),
+
+      autoAssignNext: (sessionId, courtIndex) =>
+        set((s) => ({
+          sessions: s.sessions.map((ss) => {
+            if (ss.id !== sessionId) return ss;
+            if (ss.ended) return ss;
+            const courts = ss.courts.map((c) => ({ ...c, queue: [...(c.queue || [])] }));
+            const court = courts[courtIndex];
+            if (!court) return ss;
+            const isSingles = (court.mode || 'doubles') === 'singles';
+            const cap = isSingles ? 2 : 4;
+
+            // Build eligible pool: not on any court, not busy (in-progress), not excluded, not in any other queue
+            const busy = new Set<string>();
+            const queuedElsewhere = new Set<string>();
+            courts.forEach((c, i) => {
+              if (c.inProgress) c.playerIds.forEach((pid) => busy.add(pid));
+              if (i !== courtIndex) (c.queue || []).forEach((pid) => queuedElsewhere.add(pid));
+            });
+            const excluded = new Set(ss.autoAssignExclude || []);
+            const assigned = new Set<string>(courts.flatMap((c) => c.playerIds));
+            const allPlayers = ss.players.map((p) => ({ id: p.id, name: p.name, games: p.gamesPlayed ?? 0 }));
+            // allow queuing busy players; only filter when starting the game, not for next selection
+            const pool = allPlayers.filter((p) => !assigned.has(p.id) && !excluded.has(p.id) && !queuedElsewhere.has(p.id));
+            if (pool.length < cap) return ss;
+
+            // Build co-appearance counts
+            const coCount = new Map<string, Map<string, number>>();
+            const inc = (a: string, b: string) => {
+              if (a === b) return;
+              if (!coCount.has(a)) coCount.set(a, new Map());
+              const m = coCount.get(a)!;
+              m.set(b, (m.get(b) || 0) + 1);
+            };
+            for (const g of (ss.games || [])) {
+              const ps = (g.players && g.players.length ? g.players : [...g.sideA, ...g.sideB]);
+              for (let i = 0; i < ps.length; i++) {
+                for (let j = i + 1; j < ps.length; j++) { inc(ps[i], ps[j]); inc(ps[j], ps[i]); }
+              }
+            }
+            const getCo = (a: string, b: string) => coCount.get(a)?.get(b) || 0;
+
+            // gender balance penalty (like court auto-assign)
+            const genderBalancePenalty = (ids: string[]) => {
+              const genders = new Map<string, Player['gender']>();
+              ss.players.forEach((p) => { if (p.gender) genders.set(p.id, p.gender); });
+              let m = 0, f = 0;
+              for (const id of ids) { const g = genders.get(id); if (g === 'M') m++; else if (g === 'F') f++; }
+              const isBalanced = (m % 2 === 0) && (f % 2 === 0);
+              if ((ss.autoAssignConfig?.balanceGender ?? true) === false) return 0;
+              return isBalanced ? 0 : 500;
+            };
+
+            const fairnessW = 1;
+            const repeatW = 1000;
+
+            let chosen: string[] = [];
+            if (isSingles) {
+              const K = Math.min(pool.length, 10);
+              let best: { pair: [string, string]; score: number } | null = null;
+              for (let i = 0; i < K; i++) {
+                for (let j = i + 1; j < K; j++) {
+                  const a = pool[i];
+                  const b = pool[j];
+                  const repeat = getCo(a.id, b.id);
+                  const score = (repeat * repeatW) + fairnessW * (a.games + b.games);
+                  if (!best || score < best.score) best = { pair: [a.id, b.id], score };
+                }
+              }
+              if (best) chosen.push(...best.pair);
+            } else {
+              const K = Math.min(pool.length, 8);
+              let bestSet: string[] = [];
+              let bestScore = Infinity;
+              let bestHasBlacklist = true;
+              const idxs: number[] = Array.from({ length: K }, (_, i) => i);
+              const choose = (arr: number[], k: number, start: number, acc: number[]) => {
+                if (acc.length === k) {
+                  const ids = acc.map((ii) => pool[ii].id);
+                  let hasBlacklist = false;
+                  const bl = ss.autoAssignBlacklist?.pairs || [];
+                  const hasPair = (x: string, y: string) => bl.some((p) => (p.a === x && p.b === y) || (p.a === y && p.b === x));
+                  outer: for (let i = 0; i < ids.length; i++) {
+                    for (let j = i + 1; j < ids.length; j++) { if (hasPair(ids[i], ids[j])) { hasBlacklist = true; break outer; } }
+                  }
+                  let repeat = 0; for (let i = 0; i < ids.length; i++) { for (let j = i + 1; j < ids.length; j++) repeat += getCo(ids[i], ids[j]); }
+                  let gamesSum = 0; for (const ii of acc) gamesSum += pool[ii].games;
+                  const score = genderBalancePenalty(ids) + (repeat * repeatW) + fairnessW * gamesSum;
+                  if ((!hasBlacklist && bestHasBlacklist) || (hasBlacklist === bestHasBlacklist && score < bestScore)) { bestHasBlacklist = hasBlacklist; bestScore = score; bestSet = ids; }
+                  return;
+                }
+                for (let i = start; i < arr.length; i++) { acc.push(arr[i]); choose(arr, k, i + 1, acc); acc.pop(); }
+              };
+              choose(idxs, 4, 0, []);
+              if (bestSet.length) chosen.push(...bestSet);
+            }
+            if (chosen.length < cap) return ss;
+
+            // Set queue to chosen and compute nextA/nextB avoiding blacklists
+            court.queue = chosen.slice(0, cap);
+            court.nextA = [];
+            court.nextB = [];
+            const blPairs = (ss.autoAssignBlacklist?.pairs || []);
+            const isBL = (x: string, y: string) => blPairs.some((p) => (p.a === x && p.b === y) || (p.a === y && p.b === x));
+            function canPlace(pid: string, team: string[]): boolean { for (const q of team) { if (isBL(pid, q)) return false; } return true; }
+            const reqTeam = isSingles ? 1 : 2;
+            let bestAssign: { a: string[]; b: string[] } | null = null as any;
+            function dfs(idx: number, a: string[], b: string[]) {
+              if (a.length > reqTeam || b.length > reqTeam) return;
+              if (idx === court.queue.length) { if (a.length === reqTeam && b.length === reqTeam) bestAssign = { a: [...a], b: [...b] }; return; }
+              const pid = court.queue[idx];
+              if (a.length < reqTeam && canPlace(pid, a)) { a.push(pid); dfs(idx + 1, a, b); a.pop(); if (bestAssign) return; }
+              if (b.length < reqTeam && canPlace(pid, b)) { b.push(pid); dfs(idx + 1, a, b); b.pop(); if (bestAssign) return; }
+              dfs(idx + 1, a, b);
+            }
+            dfs(0, [], []);
+            if (bestAssign) { court.nextA = bestAssign.a; court.nextB = bestAssign.b; }
+
             return { ...ss, courts };
           }),
         })),
@@ -1572,6 +1920,10 @@ function CourtCard({ session, court, idx }: { session: Session; court: Court; id
   const startGame = useStore((s) => s.startGame);
   const setCourtMode = useStore((s) => s.setCourtMode);
   const removeCourt = useStore((s) => s.removeCourt);
+  const enqueue = useStore((s) => s.enqueueToCourt);
+  const dequeue = useStore((s) => s.removeFromCourtQueue);
+  const clearQueue = useStore((s) => s.clearCourtQueue);
+  // Auto-fill is now always enabled by default; toggle removed
 
   const canEndAny = court.playerIds.length > 0;
   const pairA = court.pairA || [];
@@ -1588,6 +1940,21 @@ function CourtCard({ session, court, idx }: { session: Session; court: Court; id
   const [scoreB, setScoreB] = useState<string>("");
   const scoreValid = scoreA.trim() !== "" && scoreB.trim() !== "" && !Number.isNaN(Number(scoreA)) && !Number.isNaN(Number(scoreB));
   const [removeOpen, setRemoveOpen] = useState(false);
+  const [queueAdds, setQueueAdds] = useState<string[]>([]);
+  const [queueOpen, setQueueOpen] = useState(false);
+
+  // Detect if any player on this court is currently in another ongoing match (other courts)
+  const busyElsewhere = useMemo(() => {
+    const set = new Set<string>();
+    session.courts.forEach((cc, i) => {
+      if (i === idx) return;
+      if (!cc.inProgress) return;
+      cc.playerIds.forEach((pid) => set.add(pid));
+    });
+    return set;
+  }, [session.courts, idx]);
+  const blockingBusyIds = court.playerIds.filter((pid) => busyElsewhere.has(pid));
+  const hasBusyElsewhere = blockingBusyIds.length > 0;
 
   // Compute how many times two players have previously been on the same side (pair) in past games
   const pairKey = (a: string, b: string) => (a < b ? `${a}|${b}` : `${b}|${a}`);
@@ -1607,6 +1974,15 @@ function CourtCard({ session, court, idx }: { session: Session; court: Court; id
     return m;
   }, [session.games]);
   const getPairedCount = (a: string, b: string): number => (sameSideMap.get(pairKey(a, b)) || 0);
+
+  const inProgressIds = useMemo(() => {
+    const set = new Set<string>();
+    for (const cc of session.courts) {
+      if (!cc.inProgress) continue;
+      for (const pid of cc.playerIds) set.add(pid);
+    }
+    return set;
+  }, [session.courts]);
 
   const onSave = () => {
     const aStr = scoreA.trim();
@@ -1646,6 +2022,9 @@ function CourtCard({ session, court, idx }: { session: Session; court: Court; id
           <div className="text-xs text-gray-500">
             {court.playerIds.length}/{(court.mode || 'doubles') === 'singles' ? 2 : 4}
           </div>
+          {court.inProgress && (
+            <div className="text-[11px] text-gray-500">Queued: {(court.queue || []).length}</div>
+          )}
           {!session.ended && !court.inProgress && (
           <button
               onClick={() => useStore.getState().autoAssignCourt(session.id, idx)}
@@ -1671,8 +2050,9 @@ function CourtCard({ session, court, idx }: { session: Session; court: Court; id
                 startGame(session.id, idx);
                 setOpen(false);
               }}
-              disabled={!ready || !isFull || !!session.ended}
+              disabled={!ready || !isFull || !!session.ended || hasBusyElsewhere}
               className="rounded-lg border border-emerald-300 bg-emerald-50 px-2 py-1 text-xs text-emerald-700 disabled:opacity-50"
+              title={hasBusyElsewhere ? 'Players are still in another game' : undefined}
             >
               Start game
             </button>
@@ -1703,6 +2083,9 @@ function CourtCard({ session, court, idx }: { session: Session; court: Court; id
             return (
                 <div key={pid} className="flex items-center justify-between rounded-lg bg-gray-50 px-2 py-1 text-sm">
                   <span className="truncate">{player.name}</span>
+                  {busyElsewhere.has(pid) && (
+                    <span className="ml-2 rounded-full bg-rose-100 px-2 py-0.5 text-[10px] text-rose-700">in other game</span>
+                  )}
                   <button onClick={() => setPair(session.id, idx, pid, null)} className="text-[10px] text-gray-600">×</button>
                 </div>
             );
@@ -1724,6 +2107,9 @@ function CourtCard({ session, court, idx }: { session: Session; court: Court; id
             return (
                 <div key={pid} className="flex items-center justify-between rounded-lg bg-gray-50 px-2 py-1 text-sm">
                   <span className="truncate">{player.name}</span>
+                  {busyElsewhere.has(pid) && (
+                    <span className="ml-2 rounded-full bg-rose-100 px-2 py-0.5 text-[10px] text-rose-700">in other game</span>
+                  )}
                   <button onClick={() => setPair(session.id, idx, pid, null)} className="text-[10px] text-gray-600">×</button>
                 </div>
             );
@@ -1731,6 +2117,12 @@ function CourtCard({ session, court, idx }: { session: Session; court: Court; id
           </div>
         </div>
       </div>
+
+      {(!court.inProgress) && hasBusyElsewhere && (
+        <div className="-mt-1 mb-2 text-[11px] text-rose-700">
+          Waiting for: {blockingBusyIds.map((pid) => session.players.find((pp) => pp.id === pid)?.name || '(deleted)').join(', ')}
+        </div>
+      )}
 
       <div>
         <div className="mb-1 text-xs font-medium">Available on court ({available.length})</div>
@@ -1781,6 +2173,163 @@ function CourtCard({ session, court, idx }: { session: Session; court: Court; id
           </ul>
         )}
       </div>
+
+      {/* Queue management (only while a game is ongoing) */}
+      {court.inProgress && (
+      <div className="mt-3 rounded-lg border">
+        <button type="button" onClick={() => setQueueOpen(!queueOpen)} className="flex w-full items-center justify-between px-2 py-2">
+          <div className="flex items-center gap-2">
+            <div className="text-xs font-medium">Next up queue</div>
+            <span className="text-[11px] text-gray-500">({(court.queue || []).length})</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-gray-500">{queueOpen ? '▾' : '▸'}</span>
+          </div>
+        </button>
+        {queueOpen && (
+          <div className="border-t p-2">
+            {(court.queue || []).length === 0 ? (
+              <div className="text-[11px] text-gray-500">No one queued.</div>
+            ) : (
+              <ul className="space-y-1">
+                {(court.queue || []).map((pid) => {
+                  const p = session.players.find((pp) => pp.id === pid);
+                  const name = p?.name || '(deleted)';
+                  // show pair count hint vs any already selected in nextA/nextB
+                  const nextAFirst = !isSingles && (court.nextA || []).length === 1 ? (court.nextA as string[])[0] : null;
+                  const nextBFirst = !isSingles && (court.nextB || []).length === 1 ? (court.nextB as string[])[0] : null;
+                  return (
+                    <li key={`q-${pid}`} className="flex items-center justify-between gap-2">
+                      <div className="truncate text-xs">{name}</div>
+                      <div className="flex items-center gap-1">
+                        <button onClick={() => useStore.getState().setNextPair(session.id, idx, pid, 'A')} className={`rounded border px-2 py-0.5 text-[10px] ${((court.nextA||[]).includes(pid)) ? 'bg-gray-200' : ''}`}>A</button>
+                        {nextAFirst && <span className="rounded bg-gray-50 px-1.5 py-0.5 text-[10px] text-gray-600">paired {getPairedCount(nextAFirst, pid)}×</span>}
+                        <button onClick={() => useStore.getState().setNextPair(session.id, idx, pid, 'B')} className={`rounded border px-2 py-0.5 text-[10px] ${((court.nextB||[]).includes(pid)) ? 'bg-gray-200' : ''}`}>B</button>
+                        {nextBFirst && <span className="rounded bg-gray-50 px-1.5 py-0.5 text-[10px] text-gray-600">paired {getPairedCount(nextBFirst, pid)}×</span>}
+                      </div>
+                      <button onClick={() => dequeue(session.id, idx, pid)} className="rounded border px-2 py-0.5 text-[10px]">Remove</button>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+            <div className="mt-2 flex items-center gap-2">
+              <div className="flex-1">
+                {(() => {
+                  const alreadyQueuedSet = new Set(court.queue || []);
+                  const queuedElsewhere = new Set<string>();
+                  session.courts.forEach((cc, j) => { if (j !== idx) (cc.queue || []).forEach((pid) => queuedElsewhere.add(pid)); });
+                  const selectable = session.players.filter((p) => {
+                    if (alreadyQueuedSet.has(p.id)) return false;
+                    if (queuedElsewhere.has(p.id)) return false;
+                    // block if player is assigned to any court not yet started
+                    if (session.courts.some((cc) => !cc.inProgress && cc.playerIds.includes(p.id))) return false;
+                    return true;
+                  });
+                  const avail = selectable.filter((p) => !inProgressIds.has(p.id));
+                  const inGameAvail = selectable.filter((p) => inProgressIds.has(p.id));
+                  if (selectable.length === 0) {
+                    return <div className="text-[11px] text-gray-500">No available players to queue.</div>;
+                  }
+                  return (
+                    <div className="max-h-48 overflow-auto space-y-2">
+                      {avail.length > 0 && (
+                        <div>
+                          <div className="mb-1 text-[11px] font-medium text-gray-700">Available ({avail.length})</div>
+                          <div className="grid grid-cols-1 gap-1 sm:grid-cols-2">
+                            {avail.map((p) => {
+                              const checked = queueAdds.includes(p.id);
+                              return (
+                                <label key={`qa-${p.id}`} className="flex items-center justify-between gap-2 rounded-lg border px-2 py-1 text-xs">
+                                  <input
+                                    type="checkbox"
+                                    checked={checked}
+                                    onChange={(e) => {
+                                      if (e.target.checked) setQueueAdds((prev) => prev.includes(p.id) ? prev : [...prev, p.id]);
+                                      else setQueueAdds((prev) => prev.filter((id) => id !== p.id));
+                                    }}
+                                  />
+                                  <span className="truncate">{p.name}</span>
+                                </label>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+                      {inGameAvail.length > 0 && (
+                        <div>
+                          <div className="mb-1 text-[11px] font-medium text-gray-700">In game ({inGameAvail.length})</div>
+                          <div className="grid grid-cols-1 gap-1 sm:grid-cols-2">
+                            {inGameAvail.map((p) => {
+                              const checked = queueAdds.includes(p.id);
+                              return (
+                                <label key={`qi-${p.id}`} className="flex items-center justify-between gap-2 rounded-lg border px-2 py-1 text-xs">
+                                  <input
+                                    type="checkbox"
+                                    checked={checked}
+                                    onChange={(e) => {
+                                      if (e.target.checked) setQueueAdds((prev) => prev.includes(p.id) ? prev : [...prev, p.id]);
+                                      else setQueueAdds((prev) => prev.filter((id) => id !== p.id));
+                                    }}
+                                  />
+                                  <span className="truncate">{p.name}</span>
+                                  <span className="rounded-full bg-rose-100 px-2 py-0.5 text-[10px] text-rose-700">in game</span>
+                                </label>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
+              </div>
+              <button
+                onClick={() => {
+                  if (!queueAdds.length) return;
+                  for (const pid of queueAdds) enqueue(session.id, idx, pid);
+                  setQueueAdds([]);
+                }}
+                className="rounded border px-2 py-1 text-xs"
+              >
+                Queue selected
+              </button>
+              {(court.queue || []).length > 0 && (
+                <button onClick={() => clearQueue(session.id, idx)} className="rounded border px-2 py-1 text-xs">Clear</button>
+              )}
+            </div>
+            {!isSingles && (
+              <div className="mt-2 grid grid-cols-2 gap-2">
+                <div>
+                  <div className="mb-1 text-[11px] font-medium text-gray-700">Next A ({(court.nextA||[]).length}/2){(court.nextA||[]).length === 2 ? (
+                    <span className="ml-1 rounded bg-gray-100 px-1.5 py-0.5">paired {getPairedCount((court.nextA as string[])[0], (court.nextA as string[])[1])}×</span>
+                  ) : null}</div>
+                  <div className="flex flex-wrap gap-1 text-[11px] text-gray-700">
+                    {(court.nextA||[]).map((pid) => <span key={`na-${pid}`} className="rounded bg-gray-100 px-1.5 py-0.5">{session.players.find((pp)=>pp.id===pid)?.name || '(deleted)'}</span>)}
+                  </div>
+                </div>
+                <div>
+                  <div className="mb-1 text-[11px] font-medium text-gray-700">Next B ({(court.nextB||[]).length}/2){(court.nextB||[]).length === 2 ? (
+                    <span className="ml-1 rounded bg-gray-100 px-1.5 py-0.5">paired {getPairedCount((court.nextB as string[])[0], (court.nextB as string[])[1])}×</span>
+                  ) : null}</div>
+                  <div className="flex flex-wrap gap-1 text-[11px] text-gray-700">
+                    {(court.nextB||[]).map((pid) => <span key={`nb-${pid}`} className="rounded bg-gray-100 px-1.5 py-0.5">{session.players.find((pp)=>pp.id===pid)?.name || '(deleted)'}</span>)}
+                  </div>
+                </div>
+              </div>
+            )}
+            <div className="mt-2">
+              <button
+                onClick={() => useStore.getState().autoAssignNext(session.id, idx)}
+                className="rounded border px-2 py-1 text-xs"
+              >
+                Auto-assign next teams
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+      )}
 
       <ScoreModal
         open={open}
