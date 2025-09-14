@@ -749,6 +749,18 @@ const useStore = create<StoreState>()(
             const pool = allPlayers.filter((p) => !assigned.has(p.id) && !excluded.has(p.id));
             if (pool.length === 0) return ss;
 
+            // Compute consecutive-game streaks (higher means more back-to-back games)
+            const streak = new Map<string, number>();
+            const gamesSorted = [...(ss.games || [])].sort((a, b) => (new Date(b.endedAt).getTime()) - (new Date(a.endedAt).getTime()));
+            for (const p of ss.players) {
+              let cst = 0;
+              for (const g of gamesSorted) {
+                const inG = (g.players && g.players.length ? g.players : [...g.sideA, ...g.sideB]).includes(p.id);
+                if (inG) cst += 1; else break;
+              }
+              streak.set(p.id, cst);
+            }
+
             // Pairwise co-appearance counts from session games (voided included)
             const coCount = new Map<string, Map<string, number>>();
             const inc = (a: string, b: string) => {
@@ -777,6 +789,7 @@ const useStore = create<StoreState>()(
             const candidateIds = pool.map((p) => p.id);
             const fairnessW = 1;
             const repeatW = 1000;
+            const restW = 2000; // strong penalty to avoid back-to-back
             const genderBalancePenalty = (ids: string[]) => {
               // Only applies to doubles; penalize if team A and B can't be balanced by gender (M/F)
               // We don't know team split here; approximate by penalizing odd counts of M or F in the chosen set
@@ -802,7 +815,7 @@ const useStore = create<StoreState>()(
                   const a = pool[i];
                   const b = pool[j];
                   const repeat = getCo(a.id, b.id);
-                  const score = (repeat * repeatW) + fairnessW * (a.games + b.games);
+                  const score = (repeat * repeatW) + fairnessW * (a.games + b.games) + restW * ((streak.get(a.id) || 0) + (streak.get(b.id) || 0));
                   if (!best || score < best.score) best = { pair: [a.id, b.id], score };
                 }
               }
@@ -837,7 +850,8 @@ const useStore = create<StoreState>()(
                   }
                   let gamesSum = 0;
                   for (const ii of acc) gamesSum += pool[ii].games;
-                  const score = genderBalancePenalty(ids) + (repeat * repeatW) + fairnessW * gamesSum;
+                  let restSum = 0; for (const id of ids) restSum += (streak.get(id) || 0);
+                  const score = genderBalancePenalty(ids) + (repeat * repeatW) + fairnessW * gamesSum + restW * restSum;
                   if ((!hasBlacklist && bestHasBlacklist) || (hasBlacklist === bestHasBlacklist && score < bestScore)) {
                     bestHasBlacklist = hasBlacklist;
                     bestScore = score;
@@ -966,7 +980,7 @@ const useStore = create<StoreState>()(
             }
             const getCo = (a: string, b: string) => coCount.get(a)?.get(b) || 0;
 
-            // gender balance penalty (like court auto-assign)
+            // gender balance penalty (like court auto-assign) + rest streak
             const genderBalancePenalty = (ids: string[]) => {
               const genders = new Map<string, Player['gender']>();
               ss.players.forEach((p) => { if (p.gender) genders.set(p.id, p.gender); });
@@ -976,6 +990,16 @@ const useStore = create<StoreState>()(
               if ((ss.autoAssignConfig?.balanceGender ?? true) === false) return 0;
               return isBalanced ? 0 : 500;
             };
+            const streak = new Map<string, number>();
+            const gamesSorted = [...(ss.games || [])].sort((a, b) => (new Date(b.endedAt).getTime()) - (new Date(a.endedAt).getTime()));
+            for (const p of ss.players) {
+              let cst = 0;
+              for (const g of gamesSorted) {
+                const inG = (g.players && g.players.length ? g.players : [...g.sideA, ...g.sideB]).includes(p.id);
+                if (inG) cst += 1; else break;
+              }
+              streak.set(p.id, cst);
+            }
 
             const fairnessW = 1;
             const repeatW = 1000;
@@ -989,7 +1013,7 @@ const useStore = create<StoreState>()(
                   const a = pool[i];
                   const b = pool[j];
                   const repeat = getCo(a.id, b.id);
-                  const score = (repeat * repeatW) + fairnessW * (a.games + b.games);
+                  const score = (repeat * repeatW) + fairnessW * (a.games + b.games) + 2000 * ((streak.get(a.id) || 0) + (streak.get(b.id) || 0));
                   if (!best || score < best.score) best = { pair: [a.id, b.id], score };
                 }
               }
@@ -1011,7 +1035,8 @@ const useStore = create<StoreState>()(
                   }
                   let repeat = 0; for (let i = 0; i < ids.length; i++) { for (let j = i + 1; j < ids.length; j++) repeat += getCo(ids[i], ids[j]); }
                   let gamesSum = 0; for (const ii of acc) gamesSum += pool[ii].games;
-                  const score = genderBalancePenalty(ids) + (repeat * repeatW) + fairnessW * gamesSum;
+                  let restSum = 0; for (const id of ids) restSum += (streak.get(id) || 0);
+                  const score = genderBalancePenalty(ids) + (repeat * repeatW) + fairnessW * gamesSum + 2000 * restSum;
                   if ((!hasBlacklist && bestHasBlacklist) || (hasBlacklist === bestHasBlacklist && score < bestScore)) { bestHasBlacklist = hasBlacklist; bestScore = score; bestSet = ids; }
                   return;
                 }
