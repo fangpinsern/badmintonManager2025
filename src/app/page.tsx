@@ -88,6 +88,7 @@ type Session = {
   numCourts: number;
   playersPerCourt: number; // default 4
   players: Player[];
+  attendees?: string[];
   courts: Court[];
   games: Game[];
   ended?: boolean;
@@ -179,6 +180,7 @@ const useStore = create<StoreState>()(
           numCourts: Math.max(1, numCourts),
           playersPerCourt: 4,
           players: [],
+          attendees: [],
           courts,
           games: [],
           ended: false,
@@ -198,7 +200,16 @@ const useStore = create<StoreState>()(
             const trimmed = name.trim();
             if (!trimmed) return ss;
             const newP: Player = { id: nanoid(8), name: trimmed };
-            return { ...ss, players: [...ss.players, newP] };
+            // Dual-write to platform players + attendees
+            const norm = trimmed.toLowerCase();
+            const allPlat = _get().platformPlayers || [];
+            let plat = allPlat.find((pp) => (pp.name || "").trim().toLowerCase() === norm);
+            if (!plat) {
+              plat = { id: newP.id, name: trimmed, createdAt: new Date().toISOString() } as PlatformPlayer;
+              set({ platformPlayers: [...allPlat, plat] });
+            }
+            const attendees = Array.from(new Set([...(ss.attendees || []), plat.id]));
+            return { ...ss, players: [...ss.players, newP], attendees };
           }),
         })),
 
@@ -211,6 +222,8 @@ const useStore = create<StoreState>()(
             const existingNames = new Set(ss.players.map((p) => p.name.toLowerCase()));
             const toAdd: Player[] = [];
             let invalid = false;
+            const newAttendees: string[] = [];
+            let platformPlayers = _get().platformPlayers || [];
             for (const raw of names) {
               const n = (raw || "").trim();
               if (!n) continue;
@@ -227,10 +240,17 @@ const useStore = create<StoreState>()(
               const key = namePart.toLowerCase();
               if (existingNames.has(key)) continue;
               existingNames.add(key);
-              toAdd.push({ id: nanoid(8), name: namePart, gender });
+              const id = nanoid(8);
+              toAdd.push({ id, name: namePart, gender });
+              const existingPlat = platformPlayers.find((pp) => (pp.name || "").trim().toLowerCase() === key);
+              const platId = existingPlat ? existingPlat.id : id;
+              if (!existingPlat) platformPlayers.push({ id: platId, name: namePart, gender, createdAt: new Date().toISOString() });
+              newAttendees.push(platId);
             }
             if (invalid || !toAdd.length) return ss;
-            return { ...ss, players: [...ss.players, ...toAdd] };
+            set({ platformPlayers });
+            const attendees = Array.from(new Set([...(ss.attendees || []), ...newAttendees]));
+            return { ...ss, players: [...ss.players, ...toAdd], attendees };
           }),
         })),
 
@@ -251,7 +271,15 @@ const useStore = create<StoreState>()(
               };
             });
             const players = ss.players.filter((p) => p.id !== playerId);
-            return { ...ss, courts, players };
+            // best-effort: also remove matching platform id from attendees by name
+            let attendees = ss.attendees || [];
+            const removed = ss.players.find((p) => p.id === playerId);
+            if (removed) {
+              const norm = removed.name.trim().toLowerCase();
+              const plat = (_get().platformPlayers || []).find((pp) => (pp.name || "").trim().toLowerCase() === norm);
+              if (plat) attendees = attendees.filter((id) => id !== plat.id);
+            }
+            return { ...ss, courts, players, attendees };
           }),
         })),
 
