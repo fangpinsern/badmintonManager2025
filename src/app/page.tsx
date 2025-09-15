@@ -25,6 +25,9 @@ import { nanoid } from "nanoid";
 
 type Player = { id: string; name: string; gender?: 'M' | 'F'; gamesPlayed?: number };
 
+// Platform-level player profile (Phase A - added; not yet used by UI)
+type PlatformPlayer = { id: string; name: string; gender?: 'M' | 'F'; createdAt: string };
+
 type Court = { id: string; index: number; playerIds: string[]; pairA: string[]; pairB: string[]; inProgress?: boolean; startedAt?: string; mode?: 'singles' | 'doubles'; queue?: string[]; nextA?: string[]; nextB?: string[] };
 
 type Game = {
@@ -103,6 +106,7 @@ type Session = {
 
 interface StoreState {
   sessions: Session[];
+  platformPlayers: PlatformPlayer[];
   createSession: (args: {
     date: string;
     time: string;
@@ -152,6 +156,7 @@ const useStore = create<StoreState>()(
   persist(
     (set, _get) => ({
       sessions: [],
+      platformPlayers: [],
 
       createSession: ({ date, time, numCourts, playersPerCourt = 4 }) => {
         const id = nanoid(10);
@@ -1104,7 +1109,40 @@ const useStore = create<StoreState>()(
         })),
 
     }),
-    { name: "badminton-manager" }
+    {
+      name: "badminton-manager",
+      version: 2,
+      migrate: (state: any, version: number) => {
+        if (!state) return state;
+        if (version >= 2) return state; // already migrated
+        try {
+          const sessions = Array.isArray(state.sessions) ? state.sessions : [];
+          const platformPlayers: any[] = Array.isArray(state.platformPlayers) ? state.platformPlayers : [];
+          const nameToId = new Map<string, string>(platformPlayers.map((p: any) => [String(p.name || "").trim().toLowerCase(), String(p.id || "")]));
+          for (const ss of sessions) {
+            const attendees: string[] = Array.isArray(ss.attendees) ? ss.attendees : [];
+            const players: any[] = Array.isArray(ss.players) ? ss.players : [];
+            for (const p of players) {
+              const norm = String(p.name || "").trim().toLowerCase();
+              if (!norm) continue;
+              let pid: string | undefined = nameToId.get(norm);
+              if (!pid) {
+                pid = String(p.id || Math.random().toString(36).slice(2, 10));
+                nameToId.set(norm, String(pid));
+                platformPlayers.push({ id: String(pid), name: String(p.name || ""), gender: p.gender, createdAt: new Date().toISOString() });
+              }
+              if (!attendees.includes(String(pid))) attendees.push(String(pid));
+            }
+            ss.attendees = attendees;
+          }
+          state.platformPlayers = platformPlayers;
+          state.sessions = sessions;
+        } catch {
+          // best-effort migrate; ignore errors to avoid blocking load
+        }
+        return state;
+      }
+    }
   )
 );
 
