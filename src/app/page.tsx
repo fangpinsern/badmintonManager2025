@@ -1582,6 +1582,7 @@ function SessionManager({ session, onBack }: { session: Session; onBack: () => v
   const addPlayer = useStore((s) => s.addPlayer);
   const addPlayersBulk = useStore((s) => s.addPlayersBulk);
   const removePlayer = useStore((s) => s.removePlayer);
+  const platformPlayers = useStore((s) => s.platformPlayers);
   const assign = useStore((s) => s.assignPlayerToCourt);
   const endSession = useStore((s) => s.endSession);
 
@@ -1619,7 +1620,22 @@ function SessionManager({ session, onBack }: { session: Session; onBack: () => v
   }, [session.courts]);
 
   const sortedPlayers = useMemo(() => {
-    const clone = [...session.players];
+    // Feature flag: set localStorage.ff_read_globals = '1' to enable attendees-based list
+    const useAttendees = typeof window !== 'undefined' && localStorage.getItem('ff_read_globals') === '1';
+    let base: Player[] = session.players;
+    if (useAttendees && Array.isArray(session.attendees) && session.attendees.length) {
+      const idToPlat = new Map(platformPlayers.map((p) => [p.id, p] as const));
+      const nameToSess = new Map(session.players.map((p) => [p.name.trim().toLowerCase(), p] as const));
+      const mapped: Player[] = [];
+      for (const pid of session.attendees!) {
+        const plat = idToPlat.get(pid);
+        if (!plat) continue;
+        const ses = nameToSess.get((plat.name || '').trim().toLowerCase());
+        if (ses) mapped.push(ses);
+      }
+      if (mapped.length) base = mapped;
+    }
+    const clone = [...base];
     clone.sort((a, b) => {
       const aIn = inGameIdSet.has(a.id);
       const bIn = inGameIdSet.has(b.id);
@@ -1630,7 +1646,7 @@ function SessionManager({ session, onBack }: { session: Session; onBack: () => v
       return a.name.localeCompare(b.name);
     });
     return clone;
-  }, [session.players, inGameIdSet]);
+  }, [session.players, session.attendees, platformPlayers, inGameIdSet]);
 
   const filteredGames = useMemo(() => {
     const all = session.games || [];
