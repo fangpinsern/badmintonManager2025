@@ -1620,8 +1620,8 @@ function SessionManager({ session, onBack }: { session: Session; onBack: () => v
   }, [session.courts]);
 
   const sortedPlayers = useMemo(() => {
-    // Feature flag: set localStorage.ff_read_globals = '1' to enable attendees-based list
-    const useAttendees = typeof window !== 'undefined' && localStorage.getItem('ff_read_globals') === '1';
+    // Default: use attendees when present; fallback to legacy session.players
+    const useAttendees = Array.isArray(session.attendees) && session.attendees.length > 0;
     let base: Player[] = session.players;
     if (useAttendees && Array.isArray(session.attendees) && session.attendees.length) {
       const idToPlat = new Map(platformPlayers.map((p) => [p.id, p] as const));
