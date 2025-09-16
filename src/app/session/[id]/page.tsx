@@ -20,7 +20,7 @@ import { Input } from "@/components/layout";
 import { Label } from "@/components/layout";
 import { downloadSessionJson, getPlayerCourtIndex } from "@/lib/helper";
 import { saveSession, subscribeSessionById } from "@/lib/firestoreSessions";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import {
   GoogleAuthProvider,
   onAuthStateChanged,
@@ -1027,10 +1027,9 @@ function SessionManager({ onBack }: { onBack: () => void }) {
 }
 
 export default function SessionPage() {
+  const router = useRouter();
   const onBack = () => {
-    try {
-      if (typeof window !== "undefined") window.history.back();
-    } catch {}
+    router.push("/");
   };
 
   return (
