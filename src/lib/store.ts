@@ -209,7 +209,7 @@ const useStore = create<StoreState>()((set, _get) => ({
         const toAdd: Player[] = [];
         let invalid = false;
         const newAttendees: string[] = [];
-        let platformPlayers = _get().platformPlayers || [];
+        const platformPlayers = _get().platformPlayers || [];
         for (const raw of names) {
           const n = (raw || "").trim();
           if (!n) continue;
@@ -408,7 +408,7 @@ const useStore = create<StoreState>()((set, _get) => ({
           winner,
           players: snapshot,
         };
-        let courts = ss.courts.map((c) => ({ ...c }));
+        const courts = ss.courts.map((c) => ({ ...c }));
         const c = courts[courtIndex];
         // clear current court state
         c.playerIds = [];
@@ -481,8 +481,8 @@ const useStore = create<StoreState>()((set, _get) => ({
               c.pairA = bestAssign.a;
               c.pairB = bestAssign.b;
             } else {
-              let pairA: string[] = [];
-              let pairB: string[] = [];
+              const pairA: string[] = [];
+              const pairB: string[] = [];
               for (const pid of remaining) {
                 if (pairA.length < reqTeam && canPlace(pid, pairA))
                   pairA.push(pid);
@@ -550,7 +550,7 @@ const useStore = create<StoreState>()((set, _get) => ({
           players: snapshot,
           voided: true,
         };
-        let courts = ss.courts.map((c) => ({ ...c }));
+        const courts = ss.courts.map((c) => ({ ...c }));
         const c = courts[courtIndex];
         // clear current court state
         c.playerIds = [];
@@ -623,8 +623,8 @@ const useStore = create<StoreState>()((set, _get) => ({
               c.pairA = bestAssign.a;
               c.pairB = bestAssign.b;
             } else {
-              let pairA: string[] = [];
-              let pairB: string[] = [];
+              const pairA: string[] = [];
+              const pairB: string[] = [];
               for (const pid of remaining) {
                 if (pairA.length < reqTeam && canPlace(pid, pairA))
                   pairA.push(pid);
@@ -1159,8 +1159,8 @@ const useStore = create<StoreState>()((set, _get) => ({
           court.pairB = bestAssign.b;
         } else {
           // fallback to naive fill if constraints impossible
-          let pairA = [...initialA];
-          let pairB = [...initialB];
+          const pairA = [...initialA];
+          const pairB = [...initialB];
           for (const pid of remaining) {
             if (pairA.length < reqTeam && canPlace(pid, pairA)) pairA.push(pid);
             else if (pairB.length < reqTeam && canPlace(pid, pairB))
@@ -1275,7 +1275,7 @@ const useStore = create<StoreState>()((set, _get) => ({
         const fairnessW = 1;
         const repeatW = 1000;
 
-        let chosen: string[] = [];
+        const chosen: string[] = [];
         if (isSingles) {
           const K = Math.min(pool.length, 10);
           let best: { pair: [string, string]; score: number } | null = null;

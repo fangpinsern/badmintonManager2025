@@ -212,9 +212,15 @@ function computeSessionStats(ss: Session): SessionStats {
   };
 }
 
+function formatSessionTitle(ss: Session) {
+  // Avoid date-fns to keep deps light; show raw YYYY-MM-DD HH:mm
+  return `${ss.date} · ${ss.time}`;
+}
+
 export {
   downloadSessionJson,
   formatDuration,
   getPlayerCourtIndex,
   computeSessionStats,
+  formatSessionTitle,
 };
