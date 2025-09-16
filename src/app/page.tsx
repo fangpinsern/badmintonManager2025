@@ -4,10 +4,13 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { create } from "zustand";
 import { nanoid } from "nanoid";
-import { createSessionDoc, saveSession, deleteSessionDoc, subscribeUserSessions } from "@/lib/firestoreSessions";
+import { createSessionDoc, saveSession, deleteSessionDoc, subscribeUserSessions, linkAccountInOrganizerSession, unlinkAccountInOrganizerSession, organizerUnlinkPlayer } from "@/lib/firestoreSessions";
+import { subscribeLinkedSessions } from "@/lib/firestoreSessions";
 import { auth } from "@/lib/firebase";
 import { GoogleAuthProvider, onAuthStateChanged, signInWithPopup, signOut } from "firebase/auth";
- 
+import Link from "next/link";
+import { QRCodeSVG } from "qrcode.react";
+import { useSearchParams } from "next/navigation";
 
 /**
  * Single-file Next.js page (drop into app/page.tsx)
@@ -25,10 +28,10 @@ import { GoogleAuthProvider, onAuthStateChanged, signInWithPopup, signOut } from
 // Types
 // -----------------------------
 
-type Player = { id: string; name: string; gender?: 'M' | 'F'; gamesPlayed?: number };
+type Player = { id: string; name: string; gender?: 'M' | 'F'; gamesPlayed?: number; accountUid?: string };
 
 // Platform-level player profile (Phase A - added; not yet used by UI)
-type PlatformPlayer = { id: string; name: string; gender?: 'M' | 'F'; createdAt: string };
+type PlatformPlayer = { id: string; name: string; gender?: 'M' | 'F'; createdAt: string; accountUid?: string };
 
 type Court = { id: string; index: number; playerIds: string[]; pairA: string[]; pairB: string[]; inProgress?: boolean; startedAt?: string; mode?: 'singles' | 'doubles'; queue?: string[]; nextA?: string[]; nextB?: string[] };
 
@@ -111,6 +114,8 @@ type Session = {
 interface StoreState {
   sessions: Session[];
   platformPlayers: PlatformPlayer[];
+  linkPlayerToAccount: (sessionId: string, playerId: string, accountUid: string) => void;
+  unlinkPlayerFromAccount: (sessionId: string, playerId: string) => void;
   createSession: (args: {
     date: string;
     time: string;
@@ -160,6 +165,33 @@ const useStore = create<StoreState>()(
   (set, _get) => ({
     sessions: [],
     platformPlayers: [],
+    linkPlayerToAccount: (sessionId, playerId, accountUid) =>
+      set((s) => ({
+        sessions: s.sessions.map((ss) => {
+          if (ss.id !== sessionId) return ss;
+          const players = ss.players.map((p) => p.id === playerId ? { ...p, accountUid } : p);
+          // attempt to also link platform attendee if names match
+          const platIdx = (_get().platformPlayers || []).findIndex((pp) => (pp.name || '').trim().toLowerCase() === (players.find((p) => p.id === playerId)?.name || '').trim().toLowerCase());
+          if (platIdx !== -1) {
+            const plats = [...(_get().platformPlayers || [])];
+            plats[platIdx] = { ...plats[platIdx], accountUid };
+            set({ platformPlayers: plats });
+          }
+          return { ...ss, players };
+        })
+      })),
+    unlinkPlayerFromAccount: (sessionId, playerId) =>
+      set((s) => ({
+        sessions: s.sessions.map((ss) => {
+          if (ss.id !== sessionId) return ss;
+          const players = ss.players.map((p) => {
+            if (p.id !== playerId) return p;
+            const { accountUid, ...rest } = p as any;
+            return { ...rest } as Player;
+          });
+          return { ...ss, players };
+        })
+      })),
 
     createSession: ({ date, time, numCourts, playersPerCourt = 4 }) => {
       const id = nanoid(10);
@@ -1334,6 +1366,11 @@ export default function Page() {
   const sessions = useStore((s) => s.sessions);
   const [user, setUser] = useState<{ uid: string; displayName?: string | null } | null>(null);
   const lastSaved = useRef<Map<string, string>>(new Map());
+  const ownSessionIdsRef = useRef<Set<string>>(new Set());
+  const sessionOwnerUidRef = useRef<Map<string, string>>(new Map());
+  const linkPlayerToAccount = useStore((s) => s.linkPlayerToAccount);
+  const searchParams = useSearchParams();
+  const pendingClaimRef = useRef<{ ouid: string; sid: string; pid: string } | null>(null);
 
   useEffect(() => {
     return onAuthStateChanged(auth, (u) => {
@@ -1341,10 +1378,22 @@ export default function Page() {
     });
   }, []);
 
-  // Replicate any remote session changes to Firestore
+  // Capture claim params from URL, preselect session
+  useEffect(() => {
+    const claim = searchParams.get('claim');
+    const ouid = searchParams.get('ouid');
+    const sid = searchParams.get('sid');
+    const pid = searchParams.get('pid');
+    if (claim && ouid && sid && pid) {
+      pendingClaimRef.current = { ouid, sid, pid };
+      setSelectedSessionId(sid);
+    }
+  }, [searchParams]);
+
+  // Replicate any remote session changes to Firestore (only for organizer-owned sessions)
   useEffect(() => {
     if (!user) return;
-    const remote = sessions.filter((s) => s.storage === 'remote');
+    const remote = sessions.filter((s) => s.storage === 'remote' && ownSessionIdsRef.current.has(s.id));
     remote.forEach((ss) => {
       const key = ss.id;
       const serialized = JSON.stringify(ss);
@@ -1356,6 +1405,58 @@ export default function Page() {
     });
   }, [sessions, user]);
 
+  // If a claim is present and user is available, link and clean URL.
+  useEffect(() => {
+    if (!user) return;
+    const claim = pendingClaimRef.current;
+    if (!claim) return;
+    // Direct linking: claimer writes into organizer's session document.
+    // Requires Firestore rules to permit: request.auth.uid == claimerUid, match player, and only set accountUid.
+    void linkAccountInOrganizerSession(claim.ouid, claim.sid, claim.pid, user.uid);
+    // clear claim and strip query params from URL
+    pendingClaimRef.current = null;
+    try {
+      if (typeof window !== 'undefined') {
+        const url = new URL(window.location.href);
+        url.searchParams.delete('claim');
+        url.searchParams.delete('ouid');
+        url.searchParams.delete('sid');
+        url.searchParams.delete('pid');
+        window.history.replaceState({}, '', url.toString());
+      }
+    } catch {}
+  }, [user]);
+
+  // Subscribe to sessions where current user is linked as a player and merge into store
+  useEffect(() => {
+    if (!user) return;
+    const unsub = subscribeLinkedSessions(user.uid, (docs) => {
+      const linked: Session[] = docs.map((d: any) => {
+        const payload = d.doc.payload as Session;
+        const sess = { ...payload, storage: 'remote' } as Session;
+        sessionOwnerUidRef.current.set(sess.id, d.organizerUid);
+        try {
+          const w: any = window as any;
+          w.__sessionOwners = w.__sessionOwners || new Map<string, string>();
+          w.__sessionOwners.set(sess.id, d.organizerUid);
+        } catch {}
+        return sess;
+      });
+      // Keep only organizer-owned sessions from current, then add linked
+      const current = useStore.getState().sessions;
+      const owned = current.filter((s) => ownSessionIdsRef.current.has(s.id));
+      const map = new Map<string, Session>();
+      for (const s of owned) map.set(s.id, s);
+      for (const s of linked) map.set(s.id, s);
+      const merged = Array.from(map.values());
+      useStore.setState({ sessions: merged });
+      for (const ss of linked) {
+        lastSaved.current.set(ss.id, JSON.stringify(ss));
+      }
+    });
+    return () => unsub();
+  }, [user]);
+
   // Subscribe to current user's sessions in Firestore and hydrate the store
   useEffect(() => {
     if (!user) return;
@@ -1365,6 +1466,13 @@ export default function Page() {
         return { ...payload, storage: 'remote' };
       });
       useStore.setState({ sessions: remoteSessions });
+      ownSessionIdsRef.current = new Set(remoteSessions.map((s) => s.id));
+      for (const ss of remoteSessions) sessionOwnerUidRef.current.set(ss.id, user.uid);
+      try {
+        const w: any = window as any;
+        w.__sessionOwners = w.__sessionOwners || new Map<string, string>();
+        for (const ss of remoteSessions) w.__sessionOwners.set(ss.id, user.uid);
+      } catch {}
       for (const ss of remoteSessions) {
         lastSaved.current.set(ss.id, JSON.stringify(ss));
       }
@@ -1407,7 +1515,12 @@ export default function Page() {
       )}
 
       {user && selected && (
-        <SessionManager session={selected} onBack={() => setSelectedSessionId(null)} />
+        <SessionManager
+          session={selected}
+          organizerUid={(sessionOwnerUidRef.current && sessionOwnerUidRef.current.get(selected.id)) || user.uid}
+          isOrganizer={ownSessionIdsRef.current.has(selected.id)}
+          onBack={() => setSelectedSessionId(null)}
+        />
       )}
 
       <footer className="mt-12 text-center text-xs text-gray-400">
@@ -1534,6 +1647,7 @@ function SessionList({ onOpen }: { onOpen: (id: string) => void }) {
   const endSession = useStore((s) => s.endSession);
   const [endFor, setEndFor] = useState<string | null>(null);
   const [shuttles, setShuttles] = useState<string>("0");
+  const me = auth.currentUser?.uid || null;
 
   if (!sessions.length) {
     return (
@@ -1549,7 +1663,22 @@ function SessionList({ onOpen }: { onOpen: (id: string) => void }) {
         <Card key={ss.id}>
           <div className="flex items-center justify-between gap-3">
             <div>
-              <div className="font-medium">{formatSessionTitle(ss)}</div>
+              <div className="font-medium flex items-center gap-2">
+                <span>{formatSessionTitle(ss)}</span>
+                {(() => {
+                  try {
+                    const owner = (window as any).__sessionOwners?.get?.(ss.id) || null;
+                    const isOrganizer = owner && me ? owner === me : false;
+                    return (
+                      <span className={`rounded-full px-2 py-0.5 text-[10px] ${isOrganizer ? 'bg-blue-50 text-blue-700' : 'bg-gray-100 text-gray-600'}`}>
+                        {isOrganizer ? 'Organizer' : 'Participant'}
+                      </span>
+                    );
+                  } catch {
+                    return null;
+                  }
+                })()}
+              </div>
               <div className="text-xs text-gray-500">
                 {ss.numCourts} court{ss.numCourts > 1 ? "s" : ""}
                 {(() => {
@@ -1623,7 +1752,7 @@ function formatSessionTitle(ss: Session) {
 // Session Manager (players + courts)
 // -----------------------------
 
-function SessionManager({ session, onBack }: { session: Session; onBack: () => void }) {
+function SessionManager({ session, onBack, isOrganizer, organizerUid }: { session: Session; onBack: () => void; isOrganizer?: boolean; organizerUid?: string }) {
   const addPlayer = useStore((s) => s.addPlayer);
   const addPlayersBulk = useStore((s) => s.addPlayersBulk);
   const removePlayer = useStore((s) => s.removePlayer);
@@ -1699,6 +1828,13 @@ function SessionManager({ session, onBack }: { session: Session; onBack: () => v
     return all.filter((g) => g.sideA.includes(gamesFilter) || g.sideB.includes(gamesFilter));
   }, [session.games, gamesFilter]);
 
+  // When the signed-in user is already linked to a player in this session,
+  // hide "Link to me" on other players.
+  const myUid = auth.currentUser?.uid || null;
+  const alreadyLinkedToMe = useMemo(() => {
+    return !!myUid && session.players.some((p) => p.accountUid === myUid);
+  }, [session.players, myUid]);
+
   function add(e: React.FormEvent) {
     e.preventDefault();
     if (!name.trim()) return;
@@ -1739,7 +1875,7 @@ function SessionManager({ session, onBack }: { session: Session; onBack: () => v
 
   return (
     <div className="space-y-4">
-      <button onClick={onBack} className="text-sm text-gray-600">← Back</button>
+      <button onClick={onBack} aria-label="back-to-list" className="text-sm text-gray-600">← Back</button>
 
       <Card>
         <div className="flex items-center justify-between">
@@ -1787,12 +1923,17 @@ function SessionManager({ session, onBack }: { session: Session; onBack: () => v
         <Card>
           <div className="mb-2 flex items-center justify-between">
             <h3 className="text-base font-semibold">Session statistics</h3>
-            <button
-              onClick={() => downloadSessionJson(session)}
-              className="rounded-lg border border-gray-300 px-2 py-1 text-xs"
-            >
-              Export JSON
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => downloadSessionJson(session)}
+                className="rounded-lg border border-gray-300 px-2 py-1 text-xs"
+              >
+                Export JSON
+              </button>
+              {!session.ended && (
+                <ShareClaimsButton sessionId={session.id} />
+              )}
+            </div>
           </div>
           <div className="grid grid-cols-2 gap-2 text-sm">
             <div className="rounded-lg bg-gray-50 p-2">
@@ -1930,9 +2071,41 @@ function SessionManager({ session, onBack }: { session: Session; onBack: () => v
                 const currentIdx = getPlayerCourtIndex(session, p.id);
                 const inGame = inGameIdSet.has(p.id);
                 return (
-                  <div key={p.id} className="flex items-center justify-between gap-2">
-                    <div className="truncate font-medium">{p.name}{p.gender ? <span className="ml-1 rounded-full bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-600">{p.gender}</span> : null}<span className="ml-2 rounded-full bg-gray-100 px-2 py-0.5 text-[10px] text-gray-600">{p.gamesPlayed ?? 0} games</span>{inGame && <span className="ml-2 rounded-full bg-rose-100 px-2 py-0.5 text-[10px] text-rose-700">in game</span>}</div>
+                  <div key={p.id} id={`player-${p.id}`} className="flex items-center justify-between gap-2">
+                    <div className="truncate font-medium">{p.name}{p.gender ? <span className="ml-1 rounded-full bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-600">{p.gender}</span> : null}
+                      {p.accountUid ? (
+                        <>
+                          <span className="ml-2 rounded-full bg-blue-50 px-2 py-0.5 text-[10px] text-blue-700">Account</span>
+                          {auth.currentUser?.uid === p.accountUid && (
+                            <span className="ml-2 rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] text-emerald-700">Me</span>
+                          )}
+                        </>
+                      ) : (
+                        <span className="ml-2 rounded-full bg-gray-100 px-2 py-0.5 text-[10px] text-gray-600">Guest</span>
+                      )}
+                      <span className="ml-2 rounded-full bg-gray-100 px-2 py-0.5 text-[10px] text-gray-600">{p.gamesPlayed ?? 0} games</span>{inGame && <span className="ml-2 rounded-full bg-rose-100 px-2 py-0.5 text-[10px] text-rose-700">in game</span>}</div>
                     <div className="flex items-center gap-2">
+                      {!session.ended && (
+                        p.accountUid ? (
+                          auth.currentUser?.uid === p.accountUid ? (
+                            <UnlinkMeButton sessionId={session.id} playerId={p.id} onUnlinked={() => {
+                              const btn = document.querySelector('button[aria-label="back-to-list"]');
+                              if (btn instanceof HTMLButtonElement) btn.click();
+                            }} />
+                          ) : (
+                            isOrganizer && auth.currentUser ? (
+                              <OrganizerUnlinkButton organizerUid={auth.currentUser.uid} sessionId={session.id} playerId={p.id} />
+                            ) : null
+                          )
+                        ) : (
+                          <>
+                            {!alreadyLinkedToMe && (
+                              <LinkToMeButton sessionId={session.id} playerId={p.id} />
+                            )}
+                            <ClaimQrButton sessionId={session.id} playerId={p.id} playerName={p.name} />
+                          </>
+                        )
+                      )}
                       <Select
                         value={currentIdx ?? ""}
                         disabled={!!session.ended || inGame}
@@ -2886,5 +3059,128 @@ function AutoAssignSettingsModal({ open, session, onClose }: { open: boolean; se
         </div>
       </div>
     </div>
+  );
+}
+
+function LinkToMeButton({ sessionId, playerId }: { sessionId: string; playerId: string }) {
+  const [linking, setLinking] = useState(false);
+  const linkPlayerToAccount = useStore((s) => s.linkPlayerToAccount);
+  const sessions = useStore((s) => s.sessions);
+  return (
+    <button
+      onClick={async () => {
+        if (!auth.currentUser) return;
+        // enforce one player per account per session
+        const ss = sessions.find((s) => s.id === sessionId);
+        if (ss && ss.players.some((pp) => pp.accountUid === auth.currentUser!.uid)) return;
+        setLinking(true);
+        try {
+          linkPlayerToAccount(sessionId, playerId, auth.currentUser.uid);
+        } finally {
+          setLinking(false);
+        }
+      }}
+      disabled={linking || !auth.currentUser}
+      className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs text-blue-700 disabled:opacity-50"
+    >
+      {linking ? 'Linking…' : 'Link to me'}
+    </button>
+  );
+}
+
+function UnlinkMeButton({ sessionId, playerId, onUnlinked }: { sessionId: string; playerId: string; onUnlinked?: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const unlinkPlayerFromAccount = useStore((s) => s.unlinkPlayerFromAccount);
+  const sessions = useStore((s) => s.sessions);
+  return (
+    <button
+      onClick={async () => {
+        if (!auth.currentUser) return;
+        setBusy(true);
+        try {
+          // If current user owns this session, perform organizer unlink remotely; else perform claimer unlink remotely
+          // Determine organizer uid via injected map in window (set elsewhere) or stored infer map
+          const ownerUid = (window as any).__sessionOwners?.get?.(sessionId) || null;
+          const inferredOwnerUid = ownerUid as (string | null);
+          const isOwner = inferredOwnerUid ? inferredOwnerUid === auth.currentUser.uid : false;
+          if (isOwner) {
+            await organizerUnlinkPlayer(auth.currentUser.uid, sessionId, playerId);
+          } else {
+            const organizerUid = inferredOwnerUid || undefined;
+            if (organizerUid) {
+              await unlinkAccountInOrganizerSession(organizerUid, sessionId, playerId, auth.currentUser.uid);
+            }
+          }
+          unlinkPlayerFromAccount(sessionId, playerId);
+          if (!isOwner && typeof onUnlinked === 'function') onUnlinked();
+        } finally {
+          setBusy(false);
+        }
+      }}
+      disabled={busy || !auth.currentUser}
+      className="rounded-xl border border-gray-300 px-3 py-1.5 text-xs disabled:opacity-50"
+    >
+      {busy ? 'Unlinking…' : 'Unlink'}
+    </button>
+  );
+}
+
+function OrganizerUnlinkButton({ organizerUid, sessionId, playerId }: { organizerUid: string; sessionId: string; playerId: string }) {
+  const [busy, setBusy] = useState(false);
+  const unlinkPlayerFromAccount = useStore((s) => s.unlinkPlayerFromAccount);
+  return (
+    <button
+      onClick={async () => {
+        setBusy(true);
+        try {
+          await organizerUnlinkPlayer(organizerUid, sessionId, playerId);
+          unlinkPlayerFromAccount(sessionId, playerId);
+        } finally {
+          setBusy(false);
+        }
+      }}
+      disabled={busy}
+      className="rounded-xl border px-2 py-1 text-xs"
+    >
+      {busy ? 'Unlink…' : 'Unlink'}
+    </button>
+  );
+}
+
+function ShareClaimsButton({ sessionId }: { sessionId: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <button onClick={() => setOpen(true)} className="ml-2 rounded-lg border border-gray-300 px-2 py-1 text-xs">Share claim QR</button>
+  );
+}
+
+function ClaimQrButton({ sessionId, playerId, playerName }: { sessionId: string; playerId: string; playerName: string }) {
+  const [open, setOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [qrSize, setQrSize] = useState(240);
+  const organizerUid = auth.currentUser?.uid || '';
+  const url = `${typeof location !== 'undefined' ? location.origin : ''}?claim=1&ouid=${encodeURIComponent(organizerUid)}&sid=${encodeURIComponent(sessionId)}&pid=${encodeURIComponent(playerId)}`;
+  return (
+    <>
+      <button onClick={() => setOpen(true)} className="rounded-xl border px-2 py-1 text-xs">QR</button>
+      {open && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="w-[90vw] max-w-md md:max-w-lg lg:max-w-xl max-h-[85vh] overflow-auto rounded-2xl bg-white p-4 shadow">
+            <div className="mb-1 text-sm font-semibold">Link your account to:</div>
+            <div className="mb-2 text-base font-bold">{playerName}</div>
+            <div className="mb-3 text-xs text-gray-600">By linking, your account will be attached to this player for this session.</div>
+            <div className="mx-auto mb-2 flex items-center justify-center">
+              <QRCodeSVG value={url} size={qrSize} includeMargin={true} />
+            </div>
+            <div className="rounded border bg-gray-50 p-2 text-xs break-all">{url}</div>
+            <div className="mt-3 flex items-center justify-end gap-2">
+              {copied && <span className="mr-auto rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] text-emerald-700">Copied!</span>}
+              <button onClick={async () => { try { await navigator.clipboard?.writeText(url); setCopied(true); setTimeout(() => setCopied(false), 1200); } catch {} }} className="rounded bg-black px-2 py-1 text-xs text-white" >Copy</button>
+              <button onClick={() => setOpen(false)} className="rounded border px-2 py-1 text-xs">Close</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 }

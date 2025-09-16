@@ -1,6 +1,7 @@
 import { auth, db } from "./firebase";
 import {
   collection,
+  collectionGroup,
   doc,
   setDoc,
   deleteDoc,
@@ -19,6 +20,14 @@ export type FirestoreSession = {
   updatedAt?: unknown;
 };
 
+export type LinkClaim = {
+  id: string;
+  playerId: string;
+  claimerUid: string;
+  claimerName?: string | null;
+  createdAt?: unknown;
+};
+
 function sessionsCollectionForUid(uid: string) {
   return collection(db, "users", uid, "sessions");
 }
@@ -27,11 +36,13 @@ export async function saveSession(sessionId: string, payload: unknown) {
   const uid = auth.currentUser?.uid;
   if (!uid) return; // not signed in; skip
   const ref = doc(sessionsCollectionForUid(uid), sessionId);
+  const linkedUids = collectLinkedUids(payload);
   await setDoc(
     ref,
     {
       id: sessionId,
-      payload,
+      payload: stripUndefinedDeep(payload),
+      linkedUids,
       updatedAt: serverTimestamp(),
     },
     { merge: true }
@@ -42,11 +53,13 @@ export async function createSessionDoc(sessionId: string, payload: unknown) {
   const uid = auth.currentUser?.uid;
   if (!uid) return; // not signed in; skip
   const ref = doc(sessionsCollectionForUid(uid), sessionId);
+  const linkedUids = collectLinkedUids(payload);
   await setDoc(
     ref,
     {
       id: sessionId,
-      payload,
+      payload: stripUndefinedDeep(payload),
+      linkedUids,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     },
@@ -83,6 +96,167 @@ export function subscribeUserSessions(
     onChange(result);
   });
   return unsub;
+}
+
+// Directly link a claimer's account to a player in an organizer's session.
+// Requires Firestore rules to allow this specific write by the claimer.
+export async function linkAccountInOrganizerSession(
+  organizerUid: string,
+  sessionId: string,
+  playerId: string,
+  claimerUid: string
+) {
+  const ref = doc(sessionsCollectionForUid(organizerUid), sessionId);
+  const snap = await getDoc(ref);
+  if (!snap.exists()) throw new Error("Session not found");
+  const data = snap.data() as FirestoreSession;
+  const payload: any = data.payload || {};
+  const players: any[] = Array.isArray(payload.players) ? payload.players : [];
+  const idx = players.findIndex((p) => p && p.id === playerId);
+  if (idx === -1) throw new Error("Player not found");
+  players[idx] = { ...players[idx], accountUid: claimerUid };
+  const nextPayload = stripUndefinedDeep({ ...payload, players });
+  const linkedUids = collectLinkedUids(nextPayload);
+  await setDoc(
+    ref,
+    {
+      id: sessionId,
+      payload: nextPayload,
+      linkedUids,
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
+  // Also index under the claimer for easy discovery
+  try {
+    const idxRef = doc(linkedSessionsIndexCol(claimerUid), `${organizerUid}_${sessionId}`);
+    await setDoc(idxRef, { organizerUid, sessionId, updatedAt: serverTimestamp() }, { merge: true });
+  } catch {}
+}
+
+export async function unlinkAccountInOrganizerSession(
+  organizerUid: string,
+  sessionId: string,
+  playerId: string,
+  claimerUid: string
+) {
+  const ref = doc(sessionsCollectionForUid(organizerUid), sessionId);
+  const snap = await getDoc(ref);
+  if (!snap.exists()) throw new Error("Session not found");
+  const data = snap.data() as FirestoreSession;
+  const payload: any = data.payload || {};
+  const players: any[] = Array.isArray(payload.players) ? payload.players : [];
+  const idx = players.findIndex((p) => p && p.id === playerId);
+  if (idx === -1) throw new Error("Player not found");
+  const before = players[idx] || {};
+  if (before.accountUid !== claimerUid) return; // nothing to do or not allowed
+  const { accountUid, ...rest } = before;
+  players[idx] = { ...rest };
+  const nextPayload = stripUndefinedDeep({ ...payload, players });
+  const linkedUids = collectLinkedUids(nextPayload);
+  await setDoc(ref, { id: sessionId, payload: nextPayload, linkedUids, updatedAt: serverTimestamp() }, { merge: true });
+  // remove index entry
+  try {
+    const idxRef = doc(linkedSessionsIndexCol(claimerUid), `${organizerUid}_${sessionId}`);
+    await deleteDoc(idxRef);
+  } catch {}
+}
+
+export async function organizerUnlinkPlayer(
+  organizerUid: string,
+  sessionId: string,
+  playerId: string
+) {
+  const ref = doc(sessionsCollectionForUid(organizerUid), sessionId);
+  const snap = await getDoc(ref);
+  if (!snap.exists()) throw new Error("Session not found");
+  const data = snap.data() as FirestoreSession;
+  const payload: any = data.payload || {};
+  const players: any[] = Array.isArray(payload.players) ? payload.players : [];
+  const idx = players.findIndex((p) => p && p.id === playerId);
+  if (idx === -1) throw new Error("Player not found");
+  const before = players[idx] || {};
+  const linkedUid: string | undefined = typeof before.accountUid === 'string' ? before.accountUid : undefined;
+  const { accountUid, ...rest } = before;
+  players[idx] = { ...rest };
+  const nextPayload = stripUndefinedDeep({ ...payload, players });
+  const linkedUids = collectLinkedUids(nextPayload);
+  await setDoc(ref, { id: sessionId, payload: nextPayload, linkedUids, updatedAt: serverTimestamp() }, { merge: true });
+  if (linkedUid) {
+    try {
+      const idxRef = doc(linkedSessionsIndexCol(linkedUid), `${organizerUid}_${sessionId}`);
+      await deleteDoc(idxRef);
+    } catch {}
+  }
+}
+
+// Fallback: subscribe to per-user linked sessions index under users/{uid}/linkedSessions
+function linkedSessionsIndexCol(uid: string) {
+  return collection(db, "users", uid, "linkedSessions");
+}
+
+export function subscribeLinkedSessions(
+  uid: string,
+  onChange: (sessions: { doc: FirestoreSession; organizerUid: string }[]) => void
+) {
+  const unsub = onSnapshot(linkedSessionsIndexCol(uid), async (snap) => {
+    const entries: { organizerUid: string; sessionId: string }[] = [];
+    snap.forEach((d) => {
+      const data = d.data() as any;
+      if (data && typeof data.organizerUid === 'string' && typeof data.sessionId === 'string') {
+        entries.push({ organizerUid: data.organizerUid, sessionId: data.sessionId });
+      }
+    });
+    if (!entries.length) {
+      onChange([]);
+      return;
+    }
+    try {
+      const docs = await Promise.all(entries.map(async (e) => {
+        const ref = doc(sessionsCollectionForUid(e.organizerUid), e.sessionId);
+        const s = await getDoc(ref);
+        console.log("iamhere", s.data());
+        return s.exists() ? { doc: s.data() as FirestoreSession, organizerUid: e.organizerUid } : null;
+      }));
+      onChange(docs.filter(Boolean) as { doc: FirestoreSession; organizerUid: string }[]);
+    } catch {
+      onChange([]);
+    }
+  });
+  return unsub;
+}
+
+// ----------
+// Utilities
+// ----------
+
+function stripUndefinedDeep<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return value.map((v) => stripUndefinedDeep(v)) as unknown as T;
+  }
+  if (value && typeof value === 'object') {
+    const out: Record<string, any> = {};
+    for (const [k, v] of Object.entries(value as Record<string, any>)) {
+      if (typeof v === 'undefined') continue;
+      out[k] = stripUndefinedDeep(v);
+    }
+    return out as unknown as T;
+  }
+  return value;
+}
+
+function collectLinkedUids(payload: unknown): string[] {
+  try {
+    const p: any = payload as any;
+    const arr: any[] = Array.isArray(p?.players) ? p.players : [];
+    const set = new Set<string>();
+    for (const pl of arr) {
+      if (pl && typeof pl.accountUid === 'string' && pl.accountUid) set.add(pl.accountUid);
+    }
+    return Array.from(set);
+  } catch {
+    return [];
+  }
 }
 
 
