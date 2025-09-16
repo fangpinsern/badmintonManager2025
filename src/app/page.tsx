@@ -2070,7 +2070,31 @@ function SessionManager({ session, onBack, isOrganizer, organizerUid }: { sessio
       {/* Players and Courts */}
       <div className="space-y-3 layout-grid">
         <Card>
-          <h3 className="mb-3 text-base font-semibold">Players</h3>
+          <h3 className="mb-2 text-base font-semibold">Players</h3>
+          <div className="mb-3 flex flex-wrap items-center gap-3 text-[11px] text-gray-600">
+            <span className="inline-flex items-center gap-1" aria-label="Account">
+              <svg className="h-3.5 w-3.5 text-blue-600" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 14.5c-3.59 0-6.5 2.02-6.5 4.5 0 .28.22.5.5.5h12c.28 0 .5-.22.5-.5 0-2.48-2.91-4.5-6.5-4.5z"/>
+                <path d="M15.5 8a3.5 3.5 0 11-7 0 3.5 3.5 0 017 0z"/>
+              </svg>
+              <span>Account</span>
+            </span>
+            <span className="inline-flex items-center gap-1" aria-label="Me">
+              <span className="inline-block h-2 w-2 rounded-full bg-emerald-500" aria-hidden="true"></span>
+              <span>Me</span>
+            </span>
+            <span className="inline-flex items-center gap-1" aria-label="Guest">
+              <svg className="h-3.5 w-3.5 text-gray-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 14.5c-3.59 0-6.5 2.02-6.5 4.5 0 .28.22.5.5.5h12c.28 0 .5-.22.5-.5 0-2.48-2.91-4.5-6.5-4.5z"/>
+                <path d="M15.5 8a3.5 3.5 0 11-7 0 3.5 3.5 0 017 0z"/>
+              </svg>
+              <span>Guest</span>
+            </span>
+            <span className="inline-flex items-center gap-1" aria-label="In game">
+              <span className="inline-block h-2.5 w-2.5 rounded-full bg-rose-500" aria-hidden="true"></span>
+              <span>In game</span>
+            </span>
+          </div>
           {session.players.length === 0 ? (
             <p className="text-gray-500">No players yet. Add some above.</p>
           ) : (
@@ -2080,18 +2104,26 @@ function SessionManager({ session, onBack, isOrganizer, organizerUid }: { sessio
                 const inGame = inGameIdSet.has(p.id);
                 return (
                   <div key={p.id} id={`player-${p.id}`} className="flex items-center justify-between gap-2">
-                    <div className="truncate font-medium">{p.name}{p.gender ? <span className="ml-1 rounded-full bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-600">{p.gender}</span> : null}
+                    <div className="font-medium flex items-center gap-2">
+                      <span>{p.name}</span>
                       {p.accountUid ? (
-                        <>
-                          <span className="ml-2 rounded-full bg-blue-50 px-2 py-0.5 text-[10px] text-blue-700">Account</span>
-                          {auth.currentUser?.uid === p.accountUid && (
-                            <span className="ml-2 rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] text-emerald-700">Me</span>
-                          )}
-                        </>
+                        <span className="inline-flex items-center" title={auth.currentUser?.uid === p.accountUid ? 'Account (Me)' : 'Account'} aria-label={auth.currentUser?.uid === p.accountUid ? 'Account (Me)' : 'Account'}>
+                          <svg className="h-4 w-4 text-blue-600" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M12 14.5c-3.59 0-6.5 2.02-6.5 4.5 0 .28.22.5.5.5h12c.28 0 .5-.22.5-.5 0-2.48-2.91-4.5-6.5-4.5z"/>
+                            <path d="M15.5 8a3.5 3.5 0 11-7 0 3.5 3.5 0 017 0z"/>
+                          </svg>
+                          {auth.currentUser?.uid === p.accountUid && <span className="ml-1 inline-block h-2 w-2 rounded-full bg-emerald-500" aria-hidden="true"></span>}
+                        </span>
                       ) : (
-                        <span className="ml-2 rounded-full bg-gray-100 px-2 py-0.5 text-[10px] text-gray-600">Guest</span>
+                        <span className="inline-flex items-center" title="Guest" aria-label="Guest">
+                          <svg className="h-4 w-4 text-gray-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M12 14.5c-3.59 0-6.5 2.02-6.5 4.5 0 .28.22.5.5.5h12c.28 0 .5-.22.5-.5 0-2.48-2.91-4.5-6.5-4.5z"/>
+                            <path d="M15.5 8a3.5 3.5 0 11-7 0 3.5 3.5 0 017 0z"/>
+                          </svg>
+                        </span>
                       )}
-                      <span className="ml-2 rounded-full bg-gray-100 px-2 py-0.5 text-[10px] text-gray-600">{p.gamesPlayed ?? 0} games</span>{inGame && <span className="ml-2 rounded-full bg-rose-100 px-2 py-0.5 text-[10px] text-rose-700">in game</span>}</div>
+                      {inGame && <span className="ml-2 inline-block h-2.5 w-2.5 rounded-full bg-rose-500" title="In game" aria-label="In game"></span>}
+                    </div>
                     <div className="flex items-center gap-2">
                       {!session.ended && (
                         p.accountUid ? (
