@@ -125,8 +125,15 @@ export async function linkAccountInOrganizerSession(
   );
   // Also index under the claimer for easy discovery
   try {
-    const idxRef = doc(linkedSessionsIndexCol(claimerUid), `${organizerUid}_${sessionId}`);
-    await setDoc(idxRef, { organizerUid, sessionId, updatedAt: serverTimestamp() }, { merge: true });
+    const idxRef = doc(
+      linkedSessionsIndexCol(claimerUid),
+      `${organizerUid}_${sessionId}`
+    );
+    await setDoc(
+      idxRef,
+      { organizerUid, sessionId, updatedAt: serverTimestamp() },
+      { merge: true }
+    );
   } catch {}
 }
 
@@ -150,10 +157,22 @@ export async function unlinkAccountInOrganizerSession(
   players[idx] = { ...rest };
   const nextPayload = stripUndefinedDeep({ ...payload, players });
   const linkedUids = collectLinkedUids(nextPayload);
-  await setDoc(ref, { id: sessionId, payload: nextPayload, linkedUids, updatedAt: serverTimestamp() }, { merge: true });
+  await setDoc(
+    ref,
+    {
+      id: sessionId,
+      payload: nextPayload,
+      linkedUids,
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
   // remove index entry
   try {
-    const idxRef = doc(linkedSessionsIndexCol(claimerUid), `${organizerUid}_${sessionId}`);
+    const idxRef = doc(
+      linkedSessionsIndexCol(claimerUid),
+      `${organizerUid}_${sessionId}`
+    );
     await deleteDoc(idxRef);
   } catch {}
 }
@@ -172,15 +191,28 @@ export async function organizerUnlinkPlayer(
   const idx = players.findIndex((p) => p && p.id === playerId);
   if (idx === -1) throw new Error("Player not found");
   const before = players[idx] || {};
-  const linkedUid: string | undefined = typeof before.accountUid === 'string' ? before.accountUid : undefined;
+  const linkedUid: string | undefined =
+    typeof before.accountUid === "string" ? before.accountUid : undefined;
   const { accountUid, ...rest } = before;
   players[idx] = { ...rest };
   const nextPayload = stripUndefinedDeep({ ...payload, players });
   const linkedUids = collectLinkedUids(nextPayload);
-  await setDoc(ref, { id: sessionId, payload: nextPayload, linkedUids, updatedAt: serverTimestamp() }, { merge: true });
+  await setDoc(
+    ref,
+    {
+      id: sessionId,
+      payload: nextPayload,
+      linkedUids,
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
   if (linkedUid) {
     try {
-      const idxRef = doc(linkedSessionsIndexCol(linkedUid), `${organizerUid}_${sessionId}`);
+      const idxRef = doc(
+        linkedSessionsIndexCol(linkedUid),
+        `${organizerUid}_${sessionId}`
+      );
       await deleteDoc(idxRef);
     } catch {}
   }
@@ -193,14 +225,23 @@ function linkedSessionsIndexCol(uid: string) {
 
 export function subscribeLinkedSessions(
   uid: string,
-  onChange: (sessions: { doc: FirestoreSession; organizerUid: string }[]) => void
+  onChange: (
+    sessions: { doc: FirestoreSession; organizerUid: string }[]
+  ) => void
 ) {
   const unsub = onSnapshot(linkedSessionsIndexCol(uid), async (snap) => {
     const entries: { organizerUid: string; sessionId: string }[] = [];
     snap.forEach((d) => {
       const data = d.data() as any;
-      if (data && typeof data.organizerUid === 'string' && typeof data.sessionId === 'string') {
-        entries.push({ organizerUid: data.organizerUid, sessionId: data.sessionId });
+      if (
+        data &&
+        typeof data.organizerUid === "string" &&
+        typeof data.sessionId === "string"
+      ) {
+        entries.push({
+          organizerUid: data.organizerUid,
+          sessionId: data.sessionId,
+        });
       }
     });
     if (!entries.length) {
@@ -208,18 +249,105 @@ export function subscribeLinkedSessions(
       return;
     }
     try {
-      const docs = await Promise.all(entries.map(async (e) => {
-        const ref = doc(sessionsCollectionForUid(e.organizerUid), e.sessionId);
-        const s = await getDoc(ref);
-        console.log("iamhere", s.data());
-        return s.exists() ? { doc: s.data() as FirestoreSession, organizerUid: e.organizerUid } : null;
-      }));
-      onChange(docs.filter(Boolean) as { doc: FirestoreSession; organizerUid: string }[]);
+      const docs = await Promise.all(
+        entries.map(async (e) => {
+          const ref = doc(
+            sessionsCollectionForUid(e.organizerUid),
+            e.sessionId
+          );
+          const s = await getDoc(ref);
+          console.log("iamhere", s.data());
+          return s.exists()
+            ? {
+                doc: s.data() as FirestoreSession,
+                organizerUid: e.organizerUid,
+              }
+            : null;
+        })
+      );
+      onChange(
+        docs.filter(Boolean) as {
+          doc: FirestoreSession;
+          organizerUid: string;
+        }[]
+      );
     } catch {
       onChange([]);
     }
   });
   return unsub;
+}
+
+// Subscribe to a single session by id for the current user. Resolves organizer first.
+export function subscribeSessionById(
+  currentUid: string,
+  sessionId: string,
+  onChange: (
+    info: { doc: FirestoreSession; organizerUid: string } | null
+  ) => void
+) {
+  const ownRef = doc(sessionsCollectionForUid(currentUid), sessionId);
+  let unsubOwn: (() => void) | null = null;
+  let unsubIndex: (() => void) | null = null;
+  let unsubOrg: (() => void) | null = null;
+  let linkedChecked = false;
+  let organizerActive = false;
+
+  function cleanup() {
+    if (unsubOwn) unsubOwn();
+    if (unsubIndex) unsubIndex();
+    if (unsubOrg) unsubOrg();
+  }
+
+  unsubOwn = onSnapshot(ownRef, (snap) => {
+    if (snap.exists()) {
+      const data = snap.data() as FirestoreSession;
+      onChange({ doc: data, organizerUid: currentUid });
+    } else if (linkedChecked && !organizerActive) {
+      onChange(null);
+    }
+  });
+
+  const idxCol = collection(db, "users", currentUid, "linkedSessions");
+  unsubIndex = onSnapshot(idxCol, async (snap) => {
+    linkedChecked = true;
+    let foundOrganizer: string | null = null;
+    snap.forEach((d) => {
+      const data = d.data() as any;
+      if (
+        data &&
+        typeof data.organizerUid === "string" &&
+        typeof data.sessionId === "string" &&
+        data.sessionId === sessionId
+      ) {
+        foundOrganizer = data.organizerUid;
+      }
+    });
+    if (!foundOrganizer) {
+      const ownSnap = await getDoc(ownRef);
+      if (!ownSnap.exists()) onChange(null);
+      if (unsubOrg) {
+        unsubOrg();
+        unsubOrg = null;
+      }
+      return;
+    }
+    const orgRef = doc(sessionsCollectionForUid(foundOrganizer), sessionId);
+    if (unsubOrg) unsubOrg();
+    organizerActive = true;
+    unsubOrg = onSnapshot(orgRef, (s) => {
+      if (!s.exists()) {
+        onChange(null);
+        return;
+      }
+      onChange({
+        doc: s.data() as FirestoreSession,
+        organizerUid: foundOrganizer!,
+      });
+    });
+  });
+
+  return cleanup;
 }
 
 // ----------
@@ -230,10 +358,10 @@ function stripUndefinedDeep<T>(value: T): T {
   if (Array.isArray(value)) {
     return value.map((v) => stripUndefinedDeep(v)) as unknown as T;
   }
-  if (value && typeof value === 'object') {
+  if (value && typeof value === "object") {
     const out: Record<string, any> = {};
     for (const [k, v] of Object.entries(value as Record<string, any>)) {
-      if (typeof v === 'undefined') continue;
+      if (typeof v === "undefined") continue;
       out[k] = stripUndefinedDeep(v);
     }
     return out as unknown as T;
@@ -247,12 +375,11 @@ function collectLinkedUids(payload: unknown): string[] {
     const arr: any[] = Array.isArray(p?.players) ? p.players : [];
     const set = new Set<string>();
     for (const pl of arr) {
-      if (pl && typeof pl.accountUid === 'string' && pl.accountUid) set.add(pl.accountUid);
+      if (pl && typeof pl.accountUid === "string" && pl.accountUid)
+        set.add(pl.accountUid);
     }
     return Array.from(set);
   } catch {
     return [];
   }
 }
-
-

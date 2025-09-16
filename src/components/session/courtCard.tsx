@@ -4,16 +4,19 @@ import { ConfirmModal } from "@/components/session/confirmModal";
 import { Session, Court } from "@/types/player";
 import { useStore } from "@/lib/store";
 import { useState, useMemo } from "react";
+import { auth } from "@/lib/firebase";
 import { Select } from "@/components/layout";
 
 function CourtCard({
   session,
   court,
   idx,
+  isOrganizer,
 }: {
   session: Session;
   court: Court;
   idx: number;
+  isOrganizer?: boolean;
 }) {
   const endGame = useStore((s) => s.endGame);
   const voidGame = useStore((s) => s.voidGame);
@@ -114,7 +117,7 @@ function CourtCard({
     <div className="rounded-xl border border-gray-200 p-3">
       <div className="mb-2 flex items-center justify-between">
         <div className="font-semibold">Court {idx + 1}</div>
-        {!session.ended && !court.inProgress && (
+        {!session.ended && !court.inProgress && isOrganizer && (
           <button
             onClick={() => setRemoveOpen(true)}
             aria-label="Remove court"
@@ -137,16 +140,12 @@ function CourtCard({
           {(court.mode || "doubles") === "singles" ? 2 : 4}
         </div>
         <div className="flex items-center gap-2">
-          <div className="text-xs text-gray-500">
-            {court.playerIds.length}/
-            {(court.mode || "doubles") === "singles" ? 2 : 4}
-          </div>
           {court.inProgress && (
             <div className="text-[11px] text-gray-500">
               Queued: {(court.queue || []).length}
             </div>
           )}
-          {!session.ended && !court.inProgress && (
+          {!session.ended && !court.inProgress && isOrganizer && (
             <button
               onClick={() =>
                 useStore.getState().autoAssignCourt(session.id, idx)
@@ -157,13 +156,14 @@ function CourtCard({
             </button>
           )}
           {/* Remove button moved to top-right icon */}
-          {!court.inProgress && (
+          {!court.inProgress && isOrganizer && (
             <Select
               value={court.mode || "doubles"}
               onChange={(v) =>
                 setCourtMode(session.id, idx, v as "singles" | "doubles")
               }
               disabled={!!session.ended}
+              className="rounded-lg border border-gray-300 px-2 py-1 text-xs"
             >
               <option value="singles">Singles</option>
               <option value="doubles">Doubles</option>
@@ -176,7 +176,11 @@ function CourtCard({
                 setOpen(false);
               }}
               disabled={
-                !ready || !isFull || !!session.ended || hasBusyElsewhere
+                !isOrganizer ||
+                !ready ||
+                !isFull ||
+                !!session.ended ||
+                hasBusyElsewhere
               }
               className="rounded-lg border border-emerald-300 bg-emerald-50 px-2 py-1 text-xs text-emerald-700 disabled:opacity-50"
               title={
@@ -190,7 +194,7 @@ function CourtCard({
           ) : (
             <button
               onClick={() => setOpen(true)}
-              disabled={!!session.ended}
+              disabled={!!session.ended || !isOrganizer}
               className="rounded-lg border border-gray-300 px-2 py-1 text-xs disabled:opacity-50"
             >
               End game
@@ -227,12 +231,14 @@ function CourtCard({
                       in other game
                     </span>
                   )}
-                  <button
-                    onClick={() => setPair(session.id, idx, pid, null)}
-                    className="text-[10px] text-gray-600"
-                  >
-                    ×
-                  </button>
+                  {isOrganizer && (
+                    <button
+                      onClick={() => setPair(session.id, idx, pid, null)}
+                      className="text-[10px] text-gray-600"
+                    >
+                      ×
+                    </button>
+                  )}
                 </div>
               );
             })}
@@ -319,39 +325,45 @@ function CourtCard({
                     {player.name}
                   </div>
                   <div className="flex items-center gap-1">
-                    <button
-                      onClick={() => setPair(session.id, idx, pid, "A")}
-                      disabled={!canAddA}
-                      className="rounded border px-2 py-0.5 text-xs disabled:opacity-50"
-                    >
-                      A
-                    </button>
+                    {isOrganizer && (
+                      <button
+                        onClick={() => setPair(session.id, idx, pid, "A")}
+                        disabled={!canAddA}
+                        className="rounded border px-2 py-0.5 text-xs disabled:opacity-50"
+                      >
+                        A
+                      </button>
+                    )}
                     {pairA.length === 1 && (
                       <span className="rounded bg-gray-50 px-1.5 py-0.5 text-[10px] text-gray-600">{`paired ${getPairedCount(
                         pairA[0],
                         pid
                       )}×`}</span>
                     )}
-                    <button
-                      onClick={() => setPair(session.id, idx, pid, "B")}
-                      disabled={!canAddB}
-                      className="rounded border px-2 py-0.5 text-xs disabled:opacity-50"
-                    >
-                      B
-                    </button>
+                    {isOrganizer && (
+                      <button
+                        onClick={() => setPair(session.id, idx, pid, "B")}
+                        disabled={!canAddB}
+                        className="rounded border px-2 py-0.5 text-xs disabled:opacity-50"
+                      >
+                        B
+                      </button>
+                    )}
                     {pairB.length === 1 && (
                       <span className="rounded bg-gray-50 px-1.5 py-0.5 text-[10px] text-gray-600">{`paired ${getPairedCount(
                         pairB[0],
                         pid
                       )}×`}</span>
                     )}
-                    <button
-                      onClick={() => assign(session.id, pid, null)}
-                      disabled={!!session.ended || !!court.inProgress}
-                      className="rounded border px-2 py-0.5 text-xs disabled:opacity-50"
-                    >
-                      Unassign
-                    </button>
+                    {isOrganizer && (
+                      <button
+                        onClick={() => assign(session.id, pid, null)}
+                        disabled={!!session.ended || !!court.inProgress}
+                        className="rounded border px-2 py-0.5 text-xs disabled:opacity-50"
+                      >
+                        Unassign
+                      </button>
+                    )}
                   </div>
                 </li>
               );
@@ -361,7 +373,7 @@ function CourtCard({
       </div>
 
       {/* Queue management (only while a game is ongoing) */}
-      {court.inProgress && (
+      {court.inProgress && isOrganizer && (
         <div className="mt-3 rounded-lg border">
           <button
             type="button"
@@ -401,55 +413,79 @@ function CourtCard({
                     return (
                       <li
                         key={`q-${pid}`}
-                        className="flex items-center justify-between gap-2"
+                        className="grid grid-cols-12 items-center gap-2"
                       >
-                        <div className="truncate text-xs">{name}</div>
-                        <div className="flex items-center gap-1">
-                          <button
-                            onClick={() =>
-                              useStore
-                                .getState()
-                                .setNextPair(session.id, idx, pid, "A")
-                            }
-                            className={`rounded border px-2 py-0.5 text-[10px] ${
-                              (court.nextA || []).includes(pid)
-                                ? "bg-gray-200"
-                                : ""
-                            }`}
-                          >
-                            A
-                          </button>
-                          {nextAFirst && (
-                            <span className="rounded bg-gray-50 px-1.5 py-0.5 text-[10px] text-gray-600">
-                              paired {getPairedCount(nextAFirst, pid)}×
-                            </span>
-                          )}
-                          <button
-                            onClick={() =>
-                              useStore
-                                .getState()
-                                .setNextPair(session.id, idx, pid, "B")
-                            }
-                            className={`rounded border px-2 py-0.5 text-[10px] ${
-                              (court.nextB || []).includes(pid)
-                                ? "bg-gray-200"
-                                : ""
-                            }`}
-                          >
-                            B
-                          </button>
-                          {nextBFirst && (
-                            <span className="rounded bg-gray-50 px-1.5 py-0.5 text-[10px] text-gray-600">
-                              paired {getPairedCount(nextBFirst, pid)}×
-                            </span>
-                          )}
+                        <div className="col-span-3 truncate text-sm">
+                          {name}
                         </div>
-                        <button
-                          onClick={() => dequeue(session.id, idx, pid)}
-                          className="rounded border px-2 py-0.5 text-[10px]"
-                        >
-                          Remove
-                        </button>
+                        <div className="col-span-6 flex items-center justify-between w-full">
+                          <div className="text-right text-[10px] text-gray-600 w-1/4">
+                            {nextAFirst
+                              ? `paired ${getPairedCount(nextAFirst, pid)}×`
+                              : ""}
+                          </div>
+                          <div className="flex items-center justify-center gap-1 w-1/2">
+                            <button
+                              onClick={() => {
+                                const selected = (court.nextA || []).includes(
+                                  pid
+                                );
+                                useStore
+                                  .getState()
+                                  .setNextPair(
+                                    session.id,
+                                    idx,
+                                    pid,
+                                    selected ? null : "A"
+                                  );
+                              }}
+                              className={`rounded border px-2 py-0.5 text-sm ${
+                                (court.nextA || []).includes(pid)
+                                  ? "bg-gray-200"
+                                  : ""
+                              }`}
+                            >
+                              A
+                            </button>
+                            <button
+                              onClick={() => {
+                                const selected = (court.nextB || []).includes(
+                                  pid
+                                );
+                                useStore
+                                  .getState()
+                                  .setNextPair(
+                                    session.id,
+                                    idx,
+                                    pid,
+                                    selected ? null : "B"
+                                  );
+                              }}
+                              className={`rounded border px-2 py-0.5 text-sm ${
+                                (court.nextB || []).includes(pid)
+                                  ? "bg-gray-200"
+                                  : ""
+                              }`}
+                            >
+                              B
+                            </button>
+                          </div>
+                          <div className="text-[10px] text-gray-600 w-1/4">
+                            {nextBFirst
+                              ? `paired ${getPairedCount(nextBFirst, pid)}×`
+                              : ""}
+                          </div>
+                        </div>
+                        <div className="col-span-3 flex justify-end">
+                          <button
+                            onClick={() => {
+                              dequeue(session.id, idx, pid);
+                            }}
+                            className="rounded border px-2 py-0.5 text-sm"
+                          >
+                            Remove
+                          </button>
+                        </div>
                       </li>
                     );
                   })}
@@ -558,10 +594,10 @@ function CourtCard({
                                           );
                                       }}
                                     />
-                                    <span className="truncate">{p.name}</span>
                                     <span className="rounded-full bg-rose-100 px-2 py-0.5 text-[10px] text-rose-700">
                                       in game
                                     </span>
+                                    <span className="truncate">{p.name}</span>
                                   </label>
                                 );
                               })}
@@ -591,12 +627,12 @@ function CourtCard({
                   </button>
                 )}
               </div>
-              {!isSingles && (
+              {
                 <div className="mt-2 grid grid-cols-2 gap-2">
                   <div>
                     <div className="mb-1 text-[11px] font-medium text-gray-700">
-                      Next A ({(court.nextA || []).length}/2)
-                      {(court.nextA || []).length === 2 ? (
+                      Next A ({(court.nextA || []).length}/{requiredPerTeam})
+                      {!isSingles && (court.nextA || []).length === 2 ? (
                         <span className="ml-1 rounded bg-gray-100 px-1.5 py-0.5">
                           paired{" "}
                           {getPairedCount(
@@ -621,8 +657,8 @@ function CourtCard({
                   </div>
                   <div>
                     <div className="mb-1 text-[11px] font-medium text-gray-700">
-                      Next B ({(court.nextB || []).length}/2)
-                      {(court.nextB || []).length === 2 ? (
+                      Next B ({(court.nextB || []).length}/{requiredPerTeam})
+                      {!isSingles && (court.nextB || []).length === 2 ? (
                         <span className="ml-1 rounded bg-gray-100 px-1.5 py-0.5">
                           paired{" "}
                           {getPairedCount(
@@ -646,7 +682,7 @@ function CourtCard({
                     </div>
                   </div>
                 </div>
-              )}
+              }
               <div className="mt-2">
                 <button
                   onClick={() =>
@@ -661,6 +697,61 @@ function CourtCard({
           )}
         </div>
       )}
+
+      {/* Read-only view of queued next pairs for all users (including non-organizers) */}
+      {!isOrganizer &&
+        ((court.nextA || []).length > 0 || (court.nextB || []).length > 0) && (
+          <div className="mt-3 grid grid-cols-2 gap-2">
+            <div>
+              <div className="mb-1 text-[11px] font-medium text-gray-700">
+                Next A ({(court.nextA || []).length}/{requiredPerTeam})
+              </div>
+              <div className="flex flex-wrap gap-1 text-[11px] text-gray-700">
+                {(court.nextA || []).map((pid) => {
+                  const pl = session.players.find((pp) => pp.id === pid);
+                  const nm = pl?.name || "(deleted)";
+                  const isLinkedToViewer =
+                    !!pl?.accountUid &&
+                    pl?.accountUid === auth.currentUser?.uid;
+                  return (
+                    <span
+                      key={`ro-na-${pid}`}
+                      className="rounded bg-gray-100 px-1.5 py-0.5 text-sm"
+                    >
+                      <span className={isLinkedToViewer ? "font-bold" : ""}>
+                        {nm}
+                      </span>
+                    </span>
+                  );
+                })}
+              </div>
+            </div>
+            <div>
+              <div className="mb-1 text-[11px] font-medium text-gray-700">
+                Next B ({(court.nextB || []).length}/{requiredPerTeam})
+              </div>
+              <div className="flex flex-wrap gap-1 text-[11px] text-gray-700">
+                {(court.nextB || []).map((pid) => {
+                  const pl = session.players.find((pp) => pp.id === pid);
+                  const nm = pl?.name || "(deleted)";
+                  const isLinkedToViewer =
+                    !!pl?.accountUid &&
+                    pl?.accountUid === auth.currentUser?.uid;
+                  return (
+                    <span
+                      key={`ro-nb-${pid}`}
+                      className="rounded bg-gray-100 px-1.5 py-0.5 text-sm"
+                    >
+                      <span className={isLinkedToViewer ? "font-bold" : ""}>
+                        {nm}
+                      </span>
+                    </span>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        )}
 
       <ScoreModal
         open={open}

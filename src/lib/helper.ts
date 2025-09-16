@@ -63,7 +63,10 @@ function computeSessionStats(ss: Session): SessionStats {
   const pairWins = new Map<string, { pair: string[]; wins: number }>();
   const keyForPair = (pair: string[]) => [...pair].sort().join("|");
 
-  for (const g of ss.games) {
+  // Exclude voided games from all statistics
+  const nonVoidedGames = (ss.games || []).filter((g) => !g.voided);
+
+  for (const g of nonVoidedGames) {
     const a = g.sideA;
     const b = g.sideB;
     const winner = g.winner;
@@ -139,7 +142,7 @@ function computeSessionStats(ss: Session): SessionStats {
 
   // Longest duration game (by durationMs)
   let longestDuration: SessionStats["longestDuration"] = undefined;
-  const gamesWithDuration = ss.games.filter(
+  const gamesWithDuration = nonVoidedGames.filter(
     (g) => typeof g.durationMs === "number" && (g.durationMs as number) > 0
   );
   if (gamesWithDuration.length) {
@@ -188,7 +191,7 @@ function computeSessionStats(ss: Session): SessionStats {
   }
 
   return {
-    totalGames: ss.games.length,
+    totalGames: nonVoidedGames.length,
     leaderboard,
     topWinner,
     topLoser,

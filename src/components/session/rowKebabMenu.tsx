@@ -7,6 +7,8 @@ import { unlinkAccountInOrganizerSession } from "@/lib/firestoreSessions";
 import { QRCodeSVG } from "qrcode.react";
 import { useRef, useEffect } from "react";
 import { Player } from "@/types/player";
+import { ConfirmModal } from "@/components/session/confirmModal";
+import { useRouter } from "next/navigation";
 
 function RowKebabMenu({
   session,
@@ -26,6 +28,9 @@ function RowKebabMenu({
   removePlayer: (sid: string, pid: string) => void;
 }) {
   const [showQr, setShowQr] = useState(false);
+  const router = useRouter();
+  const [unlinkOpen, setUnlinkOpen] = useState(false);
+  const unlinkModeRef = useRef<"self" | "organizer" | null>(null);
   const alreadyLinkedToMe =
     !!auth.currentUser?.uid &&
     session.players.some((pp) => pp.accountUid === auth.currentUser!.uid);
@@ -84,23 +89,9 @@ function RowKebabMenu({
             (auth.currentUser?.uid === player.accountUid ? (
               <button
                 className="w-full rounded px-2 py-1 text-left hover:bg-gray-50"
-                onClick={async () => {
-                  const owner =
-                    organizerUid ||
-                    (window as any).__sessionOwners?.get?.(session.id);
-                  if (owner && auth.currentUser?.uid !== owner)
-                    await unlinkAccountInOrganizerSession(
-                      owner,
-                      session.id,
-                      player.id,
-                      auth.currentUser!.uid
-                    );
-                  else if (auth.currentUser)
-                    await organizerUnlinkPlayer(
-                      auth.currentUser.uid,
-                      session.id,
-                      player.id
-                    );
+                onClick={() => {
+                  unlinkModeRef.current = "self";
+                  setUnlinkOpen(true);
                   closeMenu();
                 }}
               >
@@ -109,12 +100,9 @@ function RowKebabMenu({
             ) : isOrganizer && organizerUid ? (
               <button
                 className="w-full rounded px-2 py-1 text-left hover:bg-gray-50"
-                onClick={async () => {
-                  await organizerUnlinkPlayer(
-                    organizerUid,
-                    session.id,
-                    player.id
-                  );
+                onClick={() => {
+                  unlinkModeRef.current = "organizer";
+                  setUnlinkOpen(true);
                   closeMenu();
                 }}
               >
@@ -142,6 +130,51 @@ function RowKebabMenu({
           onClose={() => setShowQr(false)}
         />
       )}
+      <ConfirmModal
+        open={unlinkOpen}
+        title={
+          unlinkModeRef.current === "self"
+            ? "Unlink from this player?"
+            : "Unlink this player?"
+        }
+        body={
+          unlinkModeRef.current === "self"
+            ? "Your account will no longer be linked to this player for this session."
+            : "This will remove the account link from this player."
+        }
+        confirmText="Unlink"
+        onCancel={() => setUnlinkOpen(false)}
+        onConfirm={async () => {
+          try {
+            const owner =
+              organizerUid ||
+              (window as any).__sessionOwners?.get?.(session.id);
+            if (unlinkModeRef.current === "self") {
+              if (owner && auth.currentUser?.uid !== owner) {
+                await unlinkAccountInOrganizerSession(
+                  owner,
+                  session.id,
+                  player.id,
+                  auth.currentUser!.uid
+                );
+                try {
+                  router.push("/");
+                } catch {}
+              } else if (auth.currentUser) {
+                await organizerUnlinkPlayer(
+                  auth.currentUser.uid,
+                  session.id,
+                  player.id
+                );
+              }
+            } else if (unlinkModeRef.current === "organizer" && organizerUid) {
+              await organizerUnlinkPlayer(organizerUid, session.id, player.id);
+            }
+          } finally {
+            setUnlinkOpen(false);
+          }
+        }}
+      />
     </>
   );
 }

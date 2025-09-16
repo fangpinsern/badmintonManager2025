@@ -45,12 +45,14 @@ function Select({
   onChange,
   children,
   disabled,
+  className,
 }: {
   label?: string;
   value: string | number | undefined;
   onChange: (v: string) => void;
   children: React.ReactNode;
   disabled?: boolean;
+  className?: string;
 }) {
   return (
     <div>
@@ -59,7 +61,10 @@ function Select({
         value={value as any}
         onChange={(e) => onChange(e.target.value)}
         disabled={disabled}
-        className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm disabled:opacity-50"
+        className={
+          className ||
+          "w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm disabled:opacity-50"
+        }
       >
         {children}
       </select>
