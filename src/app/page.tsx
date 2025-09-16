@@ -1764,6 +1764,7 @@ function SessionManager({ session, onBack, isOrganizer, organizerUid }: { sessio
   const addPlayer = useStore((s) => s.addPlayer);
   const addPlayersBulk = useStore((s) => s.addPlayersBulk);
   const removePlayer = useStore((s) => s.removePlayer);
+  const linkPlayerToAccount = useStore((s) => s.linkPlayerToAccount);
   const platformPlayers = useStore((s) => s.platformPlayers);
   const assign = useStore((s) => s.assignPlayerToCourt);
   const endSession = useStore((s) => s.endSession);
@@ -2077,11 +2078,7 @@ function SessionManager({ session, onBack, isOrganizer, organizerUid }: { sessio
                 <path d="M12 14.5c-3.59 0-6.5 2.02-6.5 4.5 0 .28.22.5.5.5h12c.28 0 .5-.22.5-.5 0-2.48-2.91-4.5-6.5-4.5z"/>
                 <path d="M15.5 8a3.5 3.5 0 11-7 0 3.5 3.5 0 017 0z"/>
               </svg>
-              <span>Account</span>
-            </span>
-            <span className="inline-flex items-center gap-1" aria-label="Me">
-              <span className="inline-block h-2 w-2 rounded-full bg-emerald-500" aria-hidden="true"></span>
-              <span>Me</span>
+              <span>Account Linked</span>
             </span>
             <span className="inline-flex items-center gap-1" aria-label="Guest">
               <svg className="h-3.5 w-3.5 text-gray-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
@@ -2089,6 +2086,13 @@ function SessionManager({ session, onBack, isOrganizer, organizerUid }: { sessio
                 <path d="M15.5 8a3.5 3.5 0 11-7 0 3.5 3.5 0 017 0z"/>
               </svg>
               <span>Guest</span>
+            </span>
+            <span className="inline-flex items-center gap-1" aria-label="Me">
+              <svg className="h-3.5 w-3.5 text-emerald-600" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 14.5c-3.59 0-6.5 2.02-6.5 4.5 0 .28.22.5.5.5h12c.28 0 .5-.22.5-.5 0-2.48-2.91-4.5-6.5-4.5z"/>
+                <path d="M15.5 8a3.5 3.5 0 11-7 0 3.5 3.5 0 017 0z"/>
+              </svg>
+              <span>Me</span>
             </span>
             <span className="inline-flex items-center gap-1" aria-label="In game">
               <span className="inline-block h-2.5 w-2.5 rounded-full bg-rose-500" aria-hidden="true"></span>
@@ -2103,49 +2107,43 @@ function SessionManager({ session, onBack, isOrganizer, organizerUid }: { sessio
                 const currentIdx = getPlayerCourtIndex(session, p.id);
                 const inGame = inGameIdSet.has(p.id);
                 return (
-                  <div key={p.id} id={`player-${p.id}`} className="flex items-center justify-between gap-2">
-                    <div className="font-medium flex items-center gap-2">
-                      <span>{p.name}</span>
-                      {p.accountUid ? (
-                        <span className="inline-flex items-center" title={auth.currentUser?.uid === p.accountUid ? 'Account (Me)' : 'Account'} aria-label={auth.currentUser?.uid === p.accountUid ? 'Account (Me)' : 'Account'}>
-                          <svg className="h-4 w-4 text-blue-600" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                            <path d="M12 14.5c-3.59 0-6.5 2.02-6.5 4.5 0 .28.22.5.5.5h12c.28 0 .5-.22.5-.5 0-2.48-2.91-4.5-6.5-4.5z"/>
-                            <path d="M15.5 8a3.5 3.5 0 11-7 0 3.5 3.5 0 017 0z"/>
-                          </svg>
-                          {auth.currentUser?.uid === p.accountUid && <span className="ml-1 inline-block h-2 w-2 rounded-full bg-emerald-500" aria-hidden="true"></span>}
-                        </span>
-                      ) : (
-                        <span className="inline-flex items-center" title="Guest" aria-label="Guest">
-                          <svg className="h-4 w-4 text-gray-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                            <path d="M12 14.5c-3.59 0-6.5 2.02-6.5 4.5 0 .28.22.5.5.5h12c.28 0 .5-.22.5-.5 0-2.48-2.91-4.5-6.5-4.5z"/>
-                            <path d="M15.5 8a3.5 3.5 0 11-7 0 3.5 3.5 0 017 0z"/>
-                          </svg>
-                        </span>
-                      )}
-                      {inGame && <span className="ml-2 inline-block h-2.5 w-2.5 rounded-full bg-rose-500" title="In game" aria-label="In game"></span>}
-                    </div>
-                    <div className="flex items-center gap-2">
-                      {!session.ended && (
-                        p.accountUid ? (
-                          auth.currentUser?.uid === p.accountUid ? (
-                            <UnlinkMeButton sessionId={session.id} playerId={p.id} onUnlinked={() => {
-                              const btn = document.querySelector('button[aria-label="back-to-list"]');
-                              if (btn instanceof HTMLButtonElement) btn.click();
-                            }} />
-                          ) : (
-                            isOrganizer && auth.currentUser ? (
-                              <OrganizerUnlinkButton organizerUid={auth.currentUser.uid} sessionId={session.id} playerId={p.id} />
-                            ) : null
-                          )
+                  <div key={p.id} id={`player-${p.id}`} className="grid grid-cols-12 items-center gap-2">
+                    <div className="col-span-4 grid grid-cols-12 items-center gap-2 min-w-0">
+                      <div className="col-span-3 flex items-center shrink-0">
+                        {p.accountUid ? (
+                          <span className="inline-flex items-center" title={auth.currentUser?.uid === p.accountUid ? 'Account (Me)' : 'Account'} aria-label={auth.currentUser?.uid === p.accountUid ? 'Account (Me)' : 'Account'}>
+                            <svg className={`h-4 w-4 ${auth.currentUser?.uid === p.accountUid ? 'text-emerald-600' : 'text-blue-600'}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                              <path d="M12 14.5c-3.59 0-6.5 2.02-6.5 4.5 0 .28.22.5.5.5h12c.28 0 .5-.22.5-.5 0-2.48-2.91-4.5-6.5-4.5z"/>
+                              <path d="M15.5 8a3.5 3.5 0 11-7 0 3.5 3.5 0 017 0z"/>
+                            </svg>
+                          </span>
                         ) : (
-                          <>
-                            {!alreadyLinkedToMe && (
-                              <LinkToMeButton sessionId={session.id} playerId={p.id} />
-                            )}
-                            <ClaimQrButton sessionId={session.id} playerId={p.id} playerName={p.name} />
-                          </>
-                        )
-                      )}
+                          <span className="inline-flex items-center" title="Guest" aria-label="Guest">
+                            <svg className="h-4 w-4 text-gray-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                              <path d="M12 14.5c-3.59 0-6.5 2.02-6.5 4.5 0 .28.22.5.5.5h12c.28 0 .5-.22.5-.5 0-2.48-2.91-4.5-6.5-4.5z"/>
+                              <path d="M15.5 8a3.5 3.5 0 11-7 0 3.5 3.5 0 017 0z"/>
+                            </svg>
+                          </span>
+                        )}
+                      </div>
+                      <div className="col-span-6 min-w-0 truncate">
+                        <span className="block truncate">{p.name}</span>
+                      </div>
+                      <div className="col-span-3 flex items-center gap-2 justify-start shrink-0">
+                        {/* no separate dot; icon color indicates Me */}
+                        {inGame && <span className="inline-block h-2 w-2 rounded-full bg-rose-500" title="In game" aria-label="In game"></span>}
+                      </div>
+                    </div>
+                    <div className="col-span-2 flex items-center justify-end">
+                      <span className="inline-flex items-center rounded-full bg-gray-100 px-2 py-0.5 text-[10px] text-gray-600">
+                        <svg className="mr-1 h-3 w-3 text-gray-600" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                          <rect x="3" y="5" width="18" height="14" rx="2" ry="2"/>
+                          <path d="M7 10h10M7 14h6"/>
+                        </svg>
+                        {p.gamesPlayed ?? 0}
+                      </span>
+                    </div>
+                    <div className="col-span-6 flex items-center justify-end gap-2">
                       <Select
                         value={currentIdx ?? ""}
                         disabled={!!session.ended || inGame}
@@ -2159,7 +2157,7 @@ function SessionManager({ session, onBack, isOrganizer, organizerUid }: { sessio
                           const court = session.courts[i];
                           const cap = (court?.mode || 'doubles') === 'singles' ? 2 : 4;
                           const occ = occupancy[i];
-                          const label = (court?.mode || 'doubles') === 'singles' ? 'Singles' : 'Doubles';
+                          const label = (court?.mode || 'doubles') === 'singles' ? 'S' : 'D';
                           return (
                           <option
                             key={i}
@@ -2171,13 +2169,17 @@ function SessionManager({ session, onBack, isOrganizer, organizerUid }: { sessio
                           );
                         })}
                       </Select>
-                      <button
-                        onClick={() => removePlayer(session.id, p.id)}
-                        disabled={!!session.ended || inGame}
-                        className="rounded-xl border border-red-200 bg-red-50 px-3 py-1.5 text-xs text-red-600 disabled:opacity-50"
-                      >
-                        Remove
-                      </button>
+                      {!session.ended && (
+                        <RowKebabMenu
+                          session={session}
+                          player={p}
+                          inGame={inGame}
+                          isOrganizer={!!isOrganizer}
+                          organizerUid={organizerUid || (window as any).__sessionOwners?.get?.(session.id)}
+                          linkPlayerToAccount={linkPlayerToAccount}
+                          removePlayer={removePlayer}
+                        />
+                      )}
                     </div>
                   </div>
                 );
@@ -3194,7 +3196,7 @@ function ShareClaimsButton({ sessionId }: { sessionId: string }) {
   );
 }
 
-function ClaimQrButton({ sessionId, playerId, playerName }: { sessionId: string; playerId: string; playerName: string }) {
+function ClaimQrButton({ sessionId, playerId, playerName, forceOpen, onClose }: { sessionId: string; playerId: string; playerName: string; forceOpen?: boolean; onClose?: () => void }) {
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const [qrSize, setQrSize] = useState(240);
@@ -3202,8 +3204,10 @@ function ClaimQrButton({ sessionId, playerId, playerName }: { sessionId: string;
   const url = `${typeof location !== 'undefined' ? location.origin : ''}?claim=1&ouid=${encodeURIComponent(organizerUid)}&sid=${encodeURIComponent(sessionId)}&pid=${encodeURIComponent(playerId)}`;
   return (
     <>
-      <button onClick={() => setOpen(true)} className="rounded-xl border px-2 py-1 text-xs">QR</button>
-      {open && (
+      {!forceOpen && (
+        <button onClick={() => setOpen(true)} className="rounded-xl border px-2 py-1 text-xs">QR</button>
+      )}
+      {(forceOpen || open) && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
           <div className="w-[90vw] max-w-md md:max-w-lg lg:max-w-xl max-h-[85vh] overflow-auto rounded-2xl bg-white p-4 shadow">
             <div className="mb-1 text-sm font-semibold">Link your account to:</div>
@@ -3216,10 +3220,92 @@ function ClaimQrButton({ sessionId, playerId, playerName }: { sessionId: string;
             <div className="mt-3 flex items-center justify-end gap-2">
               {copied && <span className="mr-auto rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] text-emerald-700">Copied!</span>}
               <button onClick={async () => { try { await navigator.clipboard?.writeText(url); setCopied(true); setTimeout(() => setCopied(false), 1200); } catch {} }} className="rounded bg-black px-2 py-1 text-xs text-white" >Copy</button>
-              <button onClick={() => setOpen(false)} className="rounded border px-2 py-1 text-xs">Close</button>
+              <button onClick={() => { if (forceOpen) { onClose && onClose(); } else { setOpen(false); } }} className="rounded border px-2 py-1 text-xs">Close</button>
             </div>
           </div>
         </div>
+      )}
+    </>
+  );
+}
+
+function RowKebabMenu({ session, player, inGame, isOrganizer, organizerUid, linkPlayerToAccount, removePlayer }: { session: Session; player: Player; inGame: boolean; isOrganizer: boolean; organizerUid?: string | null; linkPlayerToAccount: (sid: string, pid: string, uid: string) => void; removePlayer: (sid: string, pid: string) => void }) {
+  const [showQr, setShowQr] = useState(false);
+  const alreadyLinkedToMe = !!auth.currentUser?.uid && session.players.some(pp => pp.accountUid === auth.currentUser!.uid);
+  const menuRef = useRef<HTMLDetailsElement | null>(null);
+  const closeMenu = () => { try { menuRef.current?.removeAttribute('open'); } catch {} };
+  useEffect(() => {
+    function onDocClick(e: MouseEvent) {
+      const el = menuRef.current;
+      if (!el || !el.open) return;
+      if (!el.contains(e.target as Node)) {
+        try { el.removeAttribute('open'); } catch {}
+      }
+    }
+    document.addEventListener('mousedown', onDocClick, true);
+    return () => document.removeEventListener('mousedown', onDocClick, true);
+  }, []);
+  return (
+    <>
+      <details ref={menuRef} className="relative">
+        <summary className="cursor-pointer list-none px-2 py-1 text-md font-bold">⋮</summary>
+        <div className="absolute right-0 z-10 mt-1 w-44 rounded-md border bg-white p-1 text-sm shadow">
+          {!player.accountUid && !alreadyLinkedToMe && (
+            <button
+              className="w-full rounded px-2 py-1 text-left hover:bg-gray-50"
+              onClick={() => {
+                const uid = auth.currentUser?.uid;
+                if (!uid) return;
+                if (!session.players.some(pp => pp.accountUid === uid)) linkPlayerToAccount(session.id, player.id, uid);
+                closeMenu();
+              }}
+            >
+              Link to me
+            </button>
+          )}
+          {(!player.accountUid) && (
+            <button
+              className="w-full rounded px-2 py-1 text-left hover:bg-gray-50"
+              onClick={() => { setShowQr(true); closeMenu(); }}
+            >
+              Show QR
+            </button>
+          )}
+          {player.accountUid && (
+            (auth.currentUser?.uid === player.accountUid) ? (
+              <button
+                className="w-full rounded px-2 py-1 text-left hover:bg-gray-50"
+                onClick={async () => {
+                  const owner = organizerUid || (window as any).__sessionOwners?.get?.(session.id);
+                  if (owner && auth.currentUser?.uid !== owner) await unlinkAccountInOrganizerSession(owner, session.id, player.id, auth.currentUser!.uid);
+                  else if (auth.currentUser) await organizerUnlinkPlayer(auth.currentUser.uid, session.id, player.id);
+                  closeMenu();
+                }}
+              >
+                Unlink
+              </button>
+            ) : (
+              isOrganizer && organizerUid ? (
+                <button
+                  className="w-full rounded px-2 py-1 text-left hover:bg-gray-50"
+                  onClick={async () => { await organizerUnlinkPlayer(organizerUid, session.id, player.id); closeMenu(); }}
+                >
+                  Unlink
+                </button>
+              ) : null
+            )
+          )}
+          <button
+            className="w-full rounded px-2 py-1 text-left hover:bg-gray-50 disabled:opacity-50"
+            disabled={inGame}
+            onClick={() => { removePlayer(session.id, player.id); closeMenu(); }}
+          >
+            Remove
+          </button>
+        </div>
+      </details>
+      {showQr && (
+        <ClaimQrButton forceOpen sessionId={session.id} playerId={player.id} playerName={player.name} onClose={() => setShowQr(false)} />
       )}
     </>
   );
