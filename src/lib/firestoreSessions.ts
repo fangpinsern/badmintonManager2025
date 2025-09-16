@@ -1,14 +1,10 @@
 import { auth, db } from "./firebase";
 import {
   collection,
-  collectionGroup,
   doc,
   setDoc,
   deleteDoc,
   getDoc,
-  getDocs,
-  query,
-  where,
   serverTimestamp,
   onSnapshot,
 } from "firebase/firestore";

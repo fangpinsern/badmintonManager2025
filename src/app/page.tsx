@@ -1,7 +1,7 @@
 /* eslint-disable */
 
 "use client";
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { create } from "zustand";
 import { nanoid } from "nanoid";
 import { createSessionDoc, saveSession, deleteSessionDoc, subscribeUserSessions, linkAccountInOrganizerSession, unlinkAccountInOrganizerSession, organizerUnlinkPlayer } from "@/lib/firestoreSessions";
@@ -1360,7 +1360,7 @@ function computeSessionStats(ss: Session): SessionStats {
 // UI
 // -----------------------------
 
-export default function Page() {
+function Page() {
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const selected = useSession(selectedSessionId);
   const sessions = useStore((s) => s.sessions);
@@ -1537,6 +1537,14 @@ export default function Page() {
         </div>
       </footer>
     </main>
+  );
+}
+
+export default function PageWithSearchParams() {
+  return (
+    <Suspense fallback={null}>
+      <Page />
+    </Suspense>
   );
 }
 
