@@ -81,7 +81,8 @@ export default function GuidePage() {
           </li>
           <li>
             <span className="font-medium">Bulk add</span>: paste names line by
-            line. You can tag gender with ", M" or ", F". Example:
+            line. You can tag gender with &quot;, M&quot; or &quot;, F&quot;.
+            Example:
             <div className="rounded border p-2 mt-1 bg-white text-xs">
               Alice, F<br />
               Bob, M<br />
