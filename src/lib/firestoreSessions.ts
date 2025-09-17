@@ -193,7 +193,7 @@ export async function addAndLinkPlayerByUsername(
 
     // if a player with same username (case-insensitive) exists, link it
     const key = normalized;
-    let idxByName = players.findIndex(
+    const idxByName = players.findIndex(
       (p) => (p?.name || "").trim().toLowerCase() === key
     );
     let playerId: string;
