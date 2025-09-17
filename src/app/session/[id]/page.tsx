@@ -14,12 +14,18 @@ import { AddCourtButton } from "@/components/session/addCourtButton";
 import { CourtCard } from "@/components/session/courtCard";
 import { GameEditModal } from "@/components/session/gameEditModal";
 import LoadingScreen from "@/components/LoadingScreen";
+import UsernameModal from "@/components/UsernameModal";
 import { Select } from "@/components/layout";
 import { RowKebabMenu } from "@/components/session/rowKebabMenu";
 import { Input } from "@/components/layout";
 import { Label } from "@/components/layout";
 import { downloadSessionJson, getPlayerCourtIndex } from "@/lib/helper";
-import { saveSession, subscribeSessionById } from "@/lib/firestoreSessions";
+import {
+  saveSession,
+  subscribeSessionById,
+  subscribeUserProfile,
+  claimUsername,
+} from "@/lib/firestoreSessions";
 import { useParams, useRouter } from "next/navigation";
 import {
   GoogleAuthProvider,
@@ -50,6 +56,7 @@ function SessionManager({ onBack }: { onBack: () => void }) {
       : null
   );
   const [authReady, setAuthReady] = useState<boolean>(!!auth.currentUser);
+  const [needsUsername, setNeedsUsername] = useState(false);
 
   useEffect(() => {
     return onAuthStateChanged(auth, (u) => {
@@ -57,6 +64,19 @@ function SessionManager({ onBack }: { onBack: () => void }) {
       setAuthReady(true);
     });
   }, []);
+
+  // Subscribe to profile to check username
+  useEffect(() => {
+    if (!user) {
+      setNeedsUsername(false);
+      return;
+    }
+    const unsub = subscribeUserProfile(user.uid, (p) => {
+      const has = p && typeof p.username === "string" && p.username.trim();
+      setNeedsUsername(!has);
+    });
+    return () => unsub();
+  }, [user?.uid]);
 
   useEffect(() => {
     const currentUid = user?.uid || null;
@@ -317,6 +337,16 @@ function SessionManager({ onBack }: { onBack: () => void }) {
       </button>
 
       <Card>
+        {needsUsername && (
+          <UsernameModal
+            open={true}
+            onClose={() => {}}
+            onSubmit={async (uname) => {
+              if (user) await claimUsername(user.uid, uname);
+            }}
+            canCancel={false}
+          />
+        )}
         <div className="flex items-center justify-between">
           <div>
             <h2 className="text-lg font-semibold">

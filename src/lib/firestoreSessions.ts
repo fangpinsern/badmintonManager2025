@@ -7,6 +7,7 @@ import {
   getDoc,
   serverTimestamp,
   onSnapshot,
+  runTransaction,
 } from "firebase/firestore";
 
 export type FirestoreSession = {
@@ -23,6 +24,46 @@ export type LinkClaim = {
   claimerName?: string | null;
   createdAt?: unknown;
 };
+
+// --- User profiles / usernames ---
+function usersCollection() {
+  return collection(db, "users");
+}
+function usernamesCollection() {
+  return collection(db, "usernames");
+}
+export async function getUserProfile(uid: string) {
+  const ref = doc(usersCollection(), uid);
+  const snap = await getDoc(ref);
+  return snap.exists() ? (snap.data() as any) : null;
+}
+export function subscribeUserProfile(
+  uid: string,
+  onChange: (profile: any | null) => void
+) {
+  const ref = doc(usersCollection(), uid);
+  return onSnapshot(ref, (snap) =>
+    onChange(snap.exists() ? (snap.data() as any) : null)
+  );
+}
+export async function claimUsername(uid: string, username: string) {
+  const normalized = (username || "").trim().toLowerCase();
+  if (!normalized || normalized.length < 3)
+    throw new Error("Username too short");
+  const usernameRef = doc(usernamesCollection(), normalized);
+  const userRef = doc(usersCollection(), uid);
+  await runTransaction(db, async (tx) => {
+    const taken = await tx.get(usernameRef);
+    if (taken.exists()) throw new Error("Username is already taken");
+    tx.set(usernameRef, { uid, createdAt: serverTimestamp() });
+    tx.set(
+      userRef,
+      { uid, username: normalized, updatedAt: serverTimestamp() },
+      { merge: true }
+    );
+  });
+  return normalized;
+}
 
 function sessionsCollectionForUid(uid: string) {
   return collection(db, "users", uid, "sessions");

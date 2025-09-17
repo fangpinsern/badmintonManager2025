@@ -34,6 +34,8 @@ import { CourtCard } from "@/components/session/courtCard";
 import { GameEditModal } from "@/components/session/gameEditModal";
 import Link from "next/link";
 import LoadingScreen from "@/components/LoadingScreen";
+import UsernameModal from "@/components/UsernameModal";
+import { subscribeUserProfile, claimUsername } from "@/lib/firestoreSessions";
 
 /**
  * Single-file Next.js page (drop into app/page.tsx)
@@ -89,6 +91,7 @@ function Page() {
     sid: string;
     pid: string;
   } | null>(null);
+  const [needsUsername, setNeedsUsername] = useState(false);
 
   useEffect(() => {
     return onAuthStateChanged(auth, (u) => {
@@ -96,6 +99,19 @@ function Page() {
       setAuthReady(true);
     });
   }, []);
+
+  // Subscribe to profile to check username
+  useEffect(() => {
+    if (!user) {
+      setNeedsUsername(false);
+      return;
+    }
+    const unsub = subscribeUserProfile(user.uid, (p) => {
+      const has = p && typeof p.username === "string" && p.username.trim();
+      setNeedsUsername(!has);
+    });
+    return () => unsub();
+  }, [user?.uid]);
 
   // Capture claim params from URL, preselect session
   useEffect(() => {
@@ -235,6 +251,17 @@ function Page() {
             </button>
           </div>
         </Card>
+      )}
+
+      {authReady && user && needsUsername && (
+        <UsernameModal
+          open={true}
+          onClose={() => {}}
+          onSubmit={async (uname) => {
+            await claimUsername(user.uid, uname);
+          }}
+          canCancel={false}
+        />
       )}
 
       {user && !selected && (
