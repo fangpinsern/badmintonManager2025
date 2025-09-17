@@ -86,6 +86,7 @@ function RowKebabMenu({
             </button>
           )}
           {player.accountUid &&
+            !player.linkLocked &&
             (auth.currentUser?.uid === player.accountUid ? (
               <button
                 className="w-full rounded px-2 py-1 text-left hover:bg-gray-50"
@@ -94,6 +95,7 @@ function RowKebabMenu({
                   setUnlinkOpen(true);
                   closeMenu();
                 }}
+                disabled={player.linkLocked}
               >
                 Unlink
               </button>

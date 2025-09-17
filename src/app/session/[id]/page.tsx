@@ -137,6 +137,7 @@ function SessionManager({ onBack }: { onBack: () => void }) {
   const [gender, setGender] = useState<"M" | "F" | "">("");
   const [bulkError, setBulkError] = useState<string>("");
   const [bulkText, setBulkText] = useState("");
+  // Username flow removed
 
   const occupancy = useMemo(() => {
     if (!session) return [] as number[];
@@ -214,6 +215,8 @@ function SessionManager({ onBack }: { onBack: () => void }) {
       (g) => g.sideA.includes(gamesFilter) || g.sideB.includes(gamesFilter)
     );
   }, [session, gamesFilter]);
+
+  // Username search/add removed
 
   // When the signed-in user is already linked to a player in this session,
   // hide "Link to me" on other players.
@@ -625,6 +628,7 @@ function SessionManager({ onBack }: { onBack: () => void }) {
                 )}
               </form>
             )}
+            {/* Username-based add temporarily disabled */}
           </div>
         </Card>
       )}
@@ -976,15 +980,13 @@ function SessionManager({ onBack }: { onBack: () => void }) {
                   </div>
                   <div className="mt-1 text-xs text-gray-500 truncate">
                     A:{" "}
-                    {(g.sideAPlayers && g.sideAPlayers.length
-                      ? g.sideAPlayers
-                      : g.sideA.map((pid: string) => ({
-                          id: pid,
-                          name:
-                            session.players.find((pp) => pp.id === pid)?.name ||
-                            "(deleted)",
-                        }))
-                    )
+                    {g.sideA
+                      .map((pid: string) => ({
+                        id: pid,
+                        name:
+                          session.players.find((pp) => pp.id === pid)?.name ||
+                          "(deleted)",
+                      }))
                       .map((p: { id: string; name: string }) => (
                         <span
                           key={`A-${p.id}`}
@@ -1004,15 +1006,13 @@ function SessionManager({ onBack }: { onBack: () => void }) {
                       )}
                     <br />
                     B:{" "}
-                    {(g.sideBPlayers && g.sideBPlayers.length
-                      ? g.sideBPlayers
-                      : g.sideB.map((pid: string) => ({
-                          id: pid,
-                          name:
-                            session.players.find((pp) => pp.id === pid)?.name ||
-                            "(deleted)",
-                        }))
-                    )
+                    {g.sideB
+                      .map((pid: string) => ({
+                        id: pid,
+                        name:
+                          session.players.find((pp) => pp.id === pid)?.name ||
+                          "(deleted)",
+                      }))
                       .map((p: { id: string; name: string }) => (
                         <span
                           key={`B-${p.id}`}

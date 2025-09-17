@@ -4,6 +4,10 @@ type Player = {
   gender?: "M" | "F";
   gamesPlayed?: number;
   accountUid?: string;
+  // when linked, capture prior display name to allow revert on unlink
+  nameBeforeLink?: string;
+  // if true, participant (self) cannot unlink (organizer-added by username)
+  linkLocked?: boolean;
 };
 
 // Platform-level player profile (Phase A - added; not yet used by UI)
@@ -37,8 +41,8 @@ type Game = {
   durationMs?: number; // derived when known
   sideA: string[]; // player IDs on side A
   sideB: string[]; // player IDs on side B
-  sideAPlayers: { id: string; name: string }[]; // snapshot of names at game end
-  sideBPlayers: { id: string; name: string }[]; // snapshot of names at game end
+  sideAPlayers?: { id: string; name: string }[]; // legacy snapshot of names at game end
+  sideBPlayers?: { id: string; name: string }[]; // legacy snapshot of names at game end
   scoreA: number; // side A points
   scoreB: number; // side B points
   winner: "A" | "B" | "draw";

@@ -273,8 +273,8 @@ const useStore = create<StoreState>()((set, _get) => ({
           };
         });
         const players = ss.players.filter((p) => p.id !== playerId);
-        // best-effort: also remove matching platform id from attendees by name
-        let attendees = ss.attendees || [];
+        // Remove this player from attendees by id and best-effort by platform id (matched by name)
+        let attendees = (ss.attendees || []).filter((id) => id !== playerId);
         const removed = ss.players.find((p) => p.id === playerId);
         if (removed) {
           const norm = removed.name.trim().toLowerCase();

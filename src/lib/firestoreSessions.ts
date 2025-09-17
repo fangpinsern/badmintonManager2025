@@ -8,6 +8,10 @@ import {
   serverTimestamp,
   onSnapshot,
   runTransaction,
+  query,
+  where,
+  getDocs,
+  updateDoc,
 } from "firebase/firestore";
 
 export type FirestoreSession = {
@@ -26,11 +30,23 @@ export type LinkClaim = {
 };
 
 // --- User profiles / usernames ---
+const isTestMode =
+  typeof process !== "undefined" &&
+  typeof process.env !== "undefined" &&
+  (String(process.env.NEXT_PUBLIC_TEST_MODE || "").toLowerCase() === "true" ||
+    String(process.env.NEXT_PUBLIC_TEST_MODE || "") === "1");
+
+function usersCollectionId(): string {
+  return isTestMode ? "users_test" : "users";
+}
+function usernamesCollectionId(): string {
+  return isTestMode ? "usernames_test" : "usernames";
+}
 function usersCollection() {
-  return collection(db, "users");
+  return collection(db, usersCollectionId());
 }
 function usernamesCollection() {
-  return collection(db, "usernames");
+  return collection(db, usernamesCollectionId());
 }
 export async function getUserProfile(uid: string) {
   const ref = doc(usersCollection(), uid);
@@ -65,20 +81,218 @@ export async function claimUsername(uid: string, username: string) {
   return normalized;
 }
 
+export function subscribeProfileByUsername(
+  username: string,
+  onChange: (profile: { uid: string; username: string } | null) => void
+) {
+  const normalized = (username || "").trim().toLowerCase();
+  if (!normalized) return () => {};
+  const unameRef = doc(usernamesCollection(), normalized);
+  const unsubUname = onSnapshot(unameRef, (snap) => {
+    if (!snap.exists()) {
+      onChange(null);
+      return;
+    }
+    const data = snap.data() as any;
+    const uid = data?.uid as string | undefined;
+    if (!uid) {
+      onChange(null);
+      return;
+    }
+    onChange({ uid, username: normalized });
+  });
+  return () => {
+    unsubUname();
+  };
+}
+
+export async function getProfileByUsername(
+  username: string
+): Promise<{ uid: string; username: string } | null> {
+  const normalized = (username || "").trim().toLowerCase();
+  if (!normalized) return null;
+  const unameRef = doc(usernamesCollection(), normalized);
+  const unameSnap = await getDoc(unameRef);
+  if (!unameSnap.exists()) return null;
+  const data = unameSnap.data() as any;
+  const uid = data?.uid as string | undefined;
+  if (!uid) return null;
+  return { uid, username: normalized };
+}
+
 function sessionsCollectionForUid(uid: string) {
-  return collection(db, "users", uid, "sessions");
+  return collection(db, usersCollectionId(), uid, "sessions");
+}
+
+// Add a new player to an organizer's session by username and link the account.
+// - Finds the uid from the `usernames` collection
+// - Adds a Player with name = username (if not already present by name)
+// - Links player.accountUid = resolved uid
+// - Indexes the linked session under that uid
+export async function addAndLinkPlayerByUsername(
+  organizerUid: string,
+  sessionId: string,
+  username: string
+): Promise<{ playerId: string; uid: string } | null> {
+  const normalized = (username || "").trim().toLowerCase();
+  if (!normalized) return null;
+  return await runTransaction(db, async (tx) => {
+    // resolve username -> uid
+    const unameRef = doc(usernamesCollection(), normalized);
+    const unameSnap = await tx.get(unameRef);
+    if (!unameSnap.exists()) throw new Error("Username not found");
+    const uid = (unameSnap.data() as any)?.uid as string | undefined;
+    if (!uid) throw new Error("Username not linked to any account");
+
+    // load organizer session
+    const sessionRef = doc(sessionsCollectionForUid(organizerUid), sessionId);
+    const sSnap = await tx.get(sessionRef);
+    if (!sSnap.exists()) throw new Error("Session not found");
+    const data = sSnap.data() as FirestoreSession;
+    const payload: any = data.payload || {};
+    const players: any[] = Array.isArray(payload.players)
+      ? [...payload.players]
+      : [];
+
+    // if a player already linked to this uid exists, do nothing (idempotent)
+    const existingByUid = players.find((p) => p && p.accountUid === uid);
+    if (existingByUid) {
+      // ensure name is set to the username
+      const idx = players.findIndex((p) => p && p.id === existingByUid.id);
+      if (idx !== -1)
+        players[idx] = {
+          ...existingByUid,
+          name: normalized,
+          linkLocked: true,
+          nameBeforeLink: existingByUid.name || existingByUid.nameBeforeLink,
+        };
+      const nextPayload = stripUndefinedDeep({ ...payload, players });
+      const linkedUids = collectLinkedUids(nextPayload);
+      tx.set(
+        sessionRef,
+        {
+          id: sessionId,
+          payload: nextPayload,
+          linkedUids,
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      );
+      // ensure index
+      const idxRef = doc(
+        linkedSessionsIndexCol(uid),
+        `${organizerUid}_${sessionId}`
+      );
+      tx.set(
+        idxRef,
+        { organizerUid, sessionId, updatedAt: serverTimestamp() },
+        { merge: true }
+      );
+      return { playerId: existingByUid.id, uid };
+    }
+
+    // if a player with same username (case-insensitive) exists, link it
+    const key = normalized;
+    let idxByName = players.findIndex(
+      (p) => (p?.name || "").trim().toLowerCase() === key
+    );
+    let playerId: string;
+    if (idxByName !== -1) {
+      const before = players[idxByName] || {};
+      playerId =
+        before.id || before.playerId || Math.random().toString(36).slice(2, 10);
+      // clear any previous link of this uid on other players
+      for (let i = 0; i < players.length; i++) {
+        if (i === idxByName) continue;
+        const pl = players[i] || {};
+        if (pl.accountUid === uid) {
+          const { accountUid, ...rest } = pl;
+          players[i] = rest;
+        }
+      }
+      players[idxByName] = {
+        ...before,
+        name: normalized,
+        accountUid: uid,
+        linkLocked: true,
+        nameBeforeLink: before.name || before.nameBeforeLink,
+      };
+    } else {
+      // create new player
+      playerId = Math.random().toString(36).slice(2, 10);
+      // clear any previous link of this uid on other players
+      for (let i = 0; i < players.length; i++) {
+        const pl = players[i] || {};
+        if (pl.accountUid === uid) {
+          const { accountUid, ...rest } = pl;
+          players[i] = rest;
+        }
+      }
+      players.push({
+        id: playerId,
+        name: normalized,
+        accountUid: uid,
+        linkLocked: true,
+      });
+    }
+
+    const nextPayload = stripUndefinedDeep({ ...payload, players });
+    const linkedUids = collectLinkedUids(nextPayload);
+    tx.set(
+      sessionRef,
+      {
+        id: sessionId,
+        payload: nextPayload,
+        linkedUids,
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true }
+    );
+    // index under the user's linked sessions
+    const idxRef = doc(
+      linkedSessionsIndexCol(uid),
+      `${organizerUid}_${sessionId}`
+    );
+    tx.set(
+      idxRef,
+      { organizerUid, sessionId, updatedAt: serverTimestamp() },
+      { merge: true }
+    );
+
+    return { playerId, uid };
+  });
 }
 
 export async function saveSession(sessionId: string, payload: unknown) {
   const uid = auth.currentUser?.uid;
   if (!uid) return; // not signed in; skip
   const ref = doc(sessionsCollectionForUid(uid), sessionId);
-  const linkedUids = collectLinkedUids(payload);
+  // enforce one-link-per-uid within players before persisting
+  let sanitized = payload as any;
+  try {
+    const p: any = payload as any;
+    const arr: any[] = Array.isArray(p?.players) ? [...p.players] : [];
+    const seen = new Set<string>();
+    const updated = arr.map((pl) => ({ ...(pl || {}) }));
+    for (let i = 0; i < updated.length; i++) {
+      const au = updated[i]?.accountUid;
+      if (typeof au === "string" && au) {
+        if (seen.has(au)) {
+          const { accountUid, ...rest } = updated[i];
+          updated[i] = rest;
+        } else {
+          seen.add(au);
+        }
+      }
+    }
+    sanitized = { ...p, players: updated };
+  } catch {}
+  const linkedUids = collectLinkedUids(sanitized);
   await setDoc(
     ref,
     {
       id: sessionId,
-      payload: stripUndefinedDeep(payload),
+      payload: stripUndefinedDeep(sanitized),
       linkedUids,
       updatedAt: serverTimestamp(),
     },
@@ -148,10 +362,38 @@ export async function linkAccountInOrganizerSession(
   if (!snap.exists()) throw new Error("Session not found");
   const data = snap.data() as FirestoreSession;
   const payload: any = data.payload || {};
-  const players: any[] = Array.isArray(payload.players) ? payload.players : [];
+  const players: any[] = Array.isArray(payload.players)
+    ? [...payload.players]
+    : [];
   const idx = players.findIndex((p) => p && p.id === playerId);
   if (idx === -1) throw new Error("Player not found");
-  players[idx] = { ...players[idx], accountUid: claimerUid };
+  // ensure this uid is not linked elsewhere in this session
+  for (let i = 0; i < players.length; i++) {
+    if (i === idx) continue;
+    const pl = players[i] || {};
+    if (pl.accountUid === claimerUid) {
+      const { accountUid, ...rest } = pl;
+      players[i] = rest;
+    }
+  }
+  // resolve username for this uid via usernames collection (reverse lookup)
+  let uname = players[idx]?.name;
+  try {
+    // reverse lookup by uid; usernames documents store { uid } and id is the username
+    // this requires a composite index-free simple where query
+    const qref = usernamesCollection();
+    const qres = await getDocs(query(qref, where("uid", "==", claimerUid)));
+    const first = qres.docs[0];
+    if (first) uname = (first.id || "").trim().toLowerCase();
+  } catch {}
+  players[idx] = {
+    ...players[idx],
+    name: uname || players[idx]?.name,
+    accountUid: claimerUid,
+    // self-link is user-driven; do not lock, allow unlink
+    linkLocked: players[idx]?.linkLocked || false,
+    nameBeforeLink: players[idx]?.name || players[idx]?.nameBeforeLink,
+  };
   const nextPayload = stripUndefinedDeep({ ...payload, players });
   const linkedUids = collectLinkedUids(nextPayload);
   await setDoc(
@@ -195,7 +437,10 @@ export async function unlinkAccountInOrganizerSession(
   const before = players[idx] || {};
   if (before.accountUid !== claimerUid) return; // nothing to do or not allowed
   const { accountUid, ...rest } = before;
-  players[idx] = { ...rest };
+  // revert name to nameBeforeLink if present
+  const revertedName = before.nameBeforeLink || rest.name;
+  const { nameBeforeLink, linkLocked, ...restNoMeta } = rest as any;
+  players[idx] = { ...restNoMeta, name: revertedName };
   const nextPayload = stripUndefinedDeep({ ...payload, players });
   const linkedUids = collectLinkedUids(nextPayload);
   await setDoc(
@@ -261,7 +506,7 @@ export async function organizerUnlinkPlayer(
 
 // Fallback: subscribe to per-user linked sessions index under users/{uid}/linkedSessions
 function linkedSessionsIndexCol(uid: string) {
-  return collection(db, "users", uid, "linkedSessions");
+  return collection(db, usersCollectionId(), uid, "linkedSessions");
 }
 
 export function subscribeLinkedSessions(
@@ -349,7 +594,12 @@ export function subscribeSessionById(
     }
   });
 
-  const idxCol = collection(db, "users", currentUid, "linkedSessions");
+  const idxCol = collection(
+    db,
+    usersCollectionId(),
+    currentUid,
+    "linkedSessions"
+  );
   unsubIndex = onSnapshot(idxCol, async (snap) => {
     linkedChecked = true;
     let foundOrganizer: string | null = null;
@@ -397,7 +647,10 @@ export function subscribeSessionById(
 
 function stripUndefinedDeep<T>(value: T): T {
   if (Array.isArray(value)) {
-    return value.map((v) => stripUndefinedDeep(v)) as unknown as T;
+    const filtered = (value as unknown as any[]).filter(
+      (v) => typeof v !== "undefined"
+    );
+    return filtered.map((v) => stripUndefinedDeep(v)) as unknown as T;
   }
   if (value && typeof value === "object") {
     const out: Record<string, any> = {};
