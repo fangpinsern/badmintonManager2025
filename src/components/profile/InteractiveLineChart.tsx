@@ -150,7 +150,12 @@ export default function InteractiveLineChart({
   return (
     <div>
       <div className="mb-2 flex items-center justify-between">
-        <div className="text-xs font-medium text-gray-600">{title}</div>
+        <div
+          className="text-xs font-medium text-gray-600 select-none cursor-default"
+          aria-hidden
+        >
+          {title}
+        </div>
         <div className="inline-flex items-center gap-0.5 rounded-lg border bg-white p-0.5 text-[11px]">
           <button
             type="button"
