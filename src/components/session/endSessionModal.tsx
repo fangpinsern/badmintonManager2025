@@ -1,7 +1,13 @@
 "use client";
 import { Input } from "@/components/layout";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { auth, db } from "@/lib/firebase";
+import {
+  linkAccountInOrganizerSession,
+  organizerUnlinkPlayer,
+} from "@/lib/firestoreSessions";
 import { QRCodeSVG } from "qrcode.react";
+import { doc, onSnapshot } from "firebase/firestore";
 
 function EndSessionModal({
   title,
@@ -12,6 +18,7 @@ function EndSessionModal({
   organizerUid,
   sessionId,
   unlinkedPlayers = [],
+  organizerLinked = false,
 }: {
   title: string;
   shuttles: string;
@@ -21,12 +28,15 @@ function EndSessionModal({
   organizerUid?: string | null;
   sessionId?: string;
   unlinkedPlayers?: { id: string; name: string }[];
+  organizerLinked?: boolean;
 }) {
   const showReminder =
     Array.isArray(unlinkedPlayers) && unlinkedPlayers.length > 0;
   const [ackUnlinked, setAckUnlinked] = useState(false);
   const [openQr, setOpenQr] = useState<Record<string, boolean>>({});
   const [copied, setCopied] = useState<Record<string, boolean>>({});
+  const [linkedIds, setLinkedIds] = useState<Record<string, boolean>>({});
+  const [linkedToMe, setLinkedToMe] = useState(organizerLinked);
   const toggleQr = (pid: string) =>
     setOpenQr((m) => ({ ...m, [pid]: !m[pid] }));
   const baseOrigin = typeof location !== "undefined" ? location.origin : "";
@@ -41,10 +51,54 @@ function EndSessionModal({
     }
     return map;
   }, [unlinkedPlayers, sessionId, organizerUid, baseOrigin]);
+
+  // Sync initial linked state from parent (covers the moment before snapshot arrives)
+  useEffect(() => {
+    setLinkedToMe(organizerLinked);
+  }, [organizerLinked]);
+
+  const orderedUnlinked = useMemo(() => {
+    const arr = [...unlinkedPlayers];
+    arr.sort((a, b) => {
+      const al = !!linkedIds[a.id];
+      const bl = !!linkedIds[b.id];
+      if (al !== bl) return al ? 1 : -1;
+      return a.name.localeCompare(b.name);
+    });
+    return arr;
+  }, [unlinkedPlayers, linkedIds]);
+
+  useEffect(() => {
+    if (!organizerUid || !sessionId) return;
+    const ref = doc(db as any, "users", organizerUid, "sessions", sessionId);
+    const unsub = onSnapshot(ref as any, (snap: any) => {
+      try {
+        const data: any = snap.data();
+        const payload = data?.payload || {};
+        const players: any[] = Array.isArray(payload.players)
+          ? payload.players
+          : [];
+        const map: Record<string, boolean> = {};
+        const myUid = auth.currentUser?.uid;
+        let mine = false;
+        for (const pl of players) {
+          if (!pl) continue;
+          const pid = pl.id as string | undefined;
+          const au = pl.accountUid as string | undefined;
+          if (pid && au) map[pid] = true;
+          if (myUid && au === myUid) mine = true;
+        }
+        setLinkedIds(map);
+        setLinkedToMe(mine);
+      } catch {}
+    });
+    return () => unsub();
+  }, [organizerUid, sessionId]);
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div className="absolute inset-0 bg-black/40" onClick={onCancel}></div>
-      <div className="relative w-full max-w-sm rounded-t-2xl bg-white p-4 shadow-lg sm:rounded-2xl max-h=[90vh] overflow-auto">
+      <div className="relative w-full max-w-sm rounded-t-2xl bg-white p-4 shadow-lg sm:rounded-2xl max-h-[90vh] overflow-y-auto">
         <div className="mb-2 text-base font-semibold">{title}</div>
         <div className="text-xs text-gray-600">
           This will lock further changes and compute session statistics.
@@ -56,12 +110,72 @@ function EndSessionModal({
             </div>
             <div className="mt-1">
               The following players are not linked yet:
-              <ul className="mt-1 space-y-2">
-                {unlinkedPlayers.map((p) => (
+              <ul className="mt-1 max-h-[50vh] overflow-y-auto space-y-2">
+                {orderedUnlinked.map((p) => (
                   <li key={p.id} className="rounded border bg-white/70 p-2">
                     <div className="flex items-center justify-between gap-2">
-                      <span className="text-gray-900">{p.name}</span>
+                      <span className="flex items-center gap-2 text-gray-900">
+                        {linkedIds[p.id] && (
+                          <span
+                            className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-emerald-100 text-emerald-700"
+                            aria-label="linked"
+                            title="Linked"
+                          >
+                            ✓
+                          </span>
+                        )}
+                        {p.name}
+                      </span>
                       <div className="flex items-center gap-2">
+                        {!organizerLinked &&
+                          !linkedToMe &&
+                          !linkedIds[p.id] && (
+                            <button
+                              onClick={async () => {
+                                if (
+                                  !auth.currentUser ||
+                                  !organizerUid ||
+                                  !sessionId
+                                )
+                                  return;
+                                try {
+                                  setLinkedToMe(true);
+                                  await linkAccountInOrganizerSession(
+                                    organizerUid,
+                                    sessionId,
+                                    p.id,
+                                    auth.currentUser.uid
+                                  );
+                                } catch {
+                                  setLinkedToMe(false);
+                                }
+                              }}
+                              className="rounded border px-2 py-0.5 text-[11px] text-gray-700 disabled:opacity-50"
+                              disabled={
+                                !auth.currentUser || !sessionId || !organizerUid
+                              }
+                            >
+                              Link to me
+                            </button>
+                          )}
+                        {linkedIds[p.id] && (
+                          <button
+                            onClick={async () => {
+                              if (!organizerUid || !sessionId) return;
+                              try {
+                                await organizerUnlinkPlayer(
+                                  organizerUid,
+                                  sessionId,
+                                  p.id
+                                );
+                              } catch {}
+                            }}
+                            className="rounded border px-2 py-0.5 text-[11px] text-gray-700 disabled:opacity-50"
+                            disabled={!organizerUid || !sessionId}
+                          >
+                            Unlink
+                          </button>
+                        )}
                         <button
                           onClick={() => toggleQr(p.id)}
                           className="rounded border px-2 py-0.5 text-[11px] text-gray-700"

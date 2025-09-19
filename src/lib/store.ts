@@ -194,6 +194,7 @@ const useStore = create<StoreState>()((set, _get) => ({
         const attendees = Array.from(
           new Set([...(ss.attendees || []), plat.id])
         );
+        console.log("players", [...ss.players, newP]);
         return { ...ss, players: [...ss.players, newP], attendees };
       }),
     })),
@@ -209,7 +210,7 @@ const useStore = create<StoreState>()((set, _get) => ({
         const toAdd: Player[] = [];
         let invalid = false;
         const newAttendees: string[] = [];
-        const platformPlayers = _get().platformPlayers || [];
+        const nextPlatformPlayers = [...(_get().platformPlayers || [])];
         for (const raw of names) {
           const n = (raw || "").trim();
           if (!n) continue;
@@ -234,12 +235,12 @@ const useStore = create<StoreState>()((set, _get) => ({
           existingNames.add(key);
           const id = nanoid(8);
           toAdd.push({ id, name: namePart, gender });
-          const existingPlat = platformPlayers.find(
+          const existingPlat = nextPlatformPlayers.find(
             (pp) => (pp.name || "").trim().toLowerCase() === key
           );
           const platId = existingPlat ? existingPlat.id : id;
           if (!existingPlat)
-            platformPlayers.push({
+            nextPlatformPlayers.push({
               id: platId,
               name: namePart,
               gender,
@@ -248,7 +249,7 @@ const useStore = create<StoreState>()((set, _get) => ({
           newAttendees.push(platId);
         }
         if (invalid || !toAdd.length) return ss;
-        set({ platformPlayers });
+        set({ platformPlayers: nextPlatformPlayers });
         const attendees = Array.from(
           new Set([...(ss.attendees || []), ...newAttendees])
         );

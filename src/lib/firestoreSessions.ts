@@ -444,17 +444,28 @@ export async function linkAccountInOrganizerSession(
     },
     { merge: true }
   );
-  // Also index under the claimer for easy discovery
+  // Also index under the claimer for easy discovery (skip if claimer is the organizer)
   try {
-    const idxRef = doc(
-      linkedSessionsIndexCol(claimerUid),
-      `${organizerUid}_${sessionId}`
-    );
-    await setDoc(
-      idxRef,
-      { organizerUid, sessionId, updatedAt: serverTimestamp() },
-      { merge: true }
-    );
+    if (claimerUid !== organizerUid) {
+      const idxRef = doc(
+        linkedSessionsIndexCol(claimerUid),
+        `${organizerUid}_${sessionId}`
+      );
+      await setDoc(
+        idxRef,
+        { organizerUid, sessionId, updatedAt: serverTimestamp() },
+        { merge: true }
+      );
+    } else {
+      // best-effort cleanup of an accidental self-index
+      const idxRef = doc(
+        linkedSessionsIndexCol(claimerUid),
+        `${organizerUid}_${sessionId}`
+      );
+      try {
+        await deleteDoc(idxRef);
+      } catch {}
+    }
   } catch {}
 }
 

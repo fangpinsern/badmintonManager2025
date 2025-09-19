@@ -36,6 +36,7 @@ import Link from "next/link";
 import LoadingScreen from "@/components/LoadingScreen";
 import UsernameModal from "@/components/UsernameModal";
 import { subscribeUserProfile, claimUsername } from "@/lib/firestoreSessions";
+import { triggerStatsRecalc } from "@/lib/stats";
 
 /**
  * Single-file Next.js page (drop into app/page.tsx)
@@ -223,35 +224,7 @@ function Page() {
 
   return (
     <main className="mx-auto max-w-md md:max-w-3xl lg:max-w-5xl xl:max-w-6xl p-4 text-sm">
-      <header className="mb-4 flex items-start justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">🏸 Badminton Manager</h1>
-          <p className="text-gray-500">
-            Create sessions, add players, assign courts.
-          </p>
-        </div>
-        {user ? (
-          <Link
-            href="/profile"
-            aria-label="Go to profile"
-            className="ml-4 rounded-full p-2 text-gray-600 hover:bg-gray-100 border"
-          >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.8"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              className="h-8 w-8"
-            >
-              <path d="M12 14.5c-3.59 0-6.5 2.02-6.5 4.5 0 .28.22.5.5.5h12c.28 0 .5-.22.5-.5 0-2.48-2.91-4.5-6.5-4.5z" />
-              <path d="M15.5 8a3.5 3.5 0 11-7 0 3.5 3.5 0 017 0z" />
-            </svg>
-          </Link>
-        ) : null}
-      </header>
+      {/* Header moved to AppHeader (global) */}
 
       {!authReady && <LoadingScreen message="Loading..." />}
       {authReady && !user && (
@@ -274,6 +247,99 @@ function Page() {
             </button>
           </div>
         </Card>
+      )}
+
+      {authReady && !user && (
+        <div className="mt-4 space-y-4">
+          <Card>
+            <h2 className="text-base font-semibold">What you can do</h2>
+            <ul className="mt-2 list-disc pl-5 text-sm text-gray-700">
+              <li>Create and organize badminton sessions</li>
+              <li>Assign players to courts and track games</li>
+              <li>Compute statistics and compare with past performances</li>
+            </ul>
+          </Card>
+          <Card>
+            <h2 className="text-base font-semibold">How it works</h2>
+            <ol className="mt-2 grid gap-2 text-sm text-gray-700 md:grid-cols-3">
+              <li className="rounded-lg border p-3">
+                <div className="text-[11px] font-medium text-gray-500">
+                  Step 1
+                </div>
+                <div className="mt-1 font-semibold">Create a session</div>
+                <div className="mt-1 text-gray-600">
+                  Set date/time, courts and capacity.
+                </div>
+              </li>
+              <li className="rounded-lg border p-3">
+                <div className="text-[11px] font-medium text-gray-500">
+                  Step 2
+                </div>
+                <div className="mt-1 font-semibold">Add players</div>
+                <div className="mt-1 text-gray-600">
+                  Type names one by one or paste a bulk list.
+                </div>
+              </li>
+              <li className="rounded-lg border p-3">
+                <div className="text-[11px] font-medium text-gray-500">
+                  Step 3
+                </div>
+                <div className="mt-1 font-semibold">
+                  Assign players to courts
+                </div>
+                <div className="mt-1 text-gray-600">
+                  Assign players to courts for games or use the auto-assign
+                  feature to rotate players evenly.
+                </div>
+              </li>
+              <li className="rounded-lg border p-3">
+                <div className="text-[11px] font-medium text-gray-500">
+                  Step 4
+                </div>
+                <div className="mt-1 font-semibold">End session</div>
+                <div className="mt-1 text-gray-600">
+                  When session ends, link users to the players and we will
+                  compute stats (win rate, durations, recent form) and store
+                  them in the linked profile.
+                </div>
+              </li>
+            </ol>
+          </Card>
+          <Card>
+            <h2 className="text-base font-semibold">Stats & insights</h2>
+            <div className="mt-2 grid gap-2 md:grid-cols-3">
+              <div className="rounded-lg bg-gray-50 p-3">
+                <div className="text-xs text-gray-500">Games played</div>
+                <div className="mt-1 text-sm text-gray-700">
+                  Singles and doubles totals
+                </div>
+              </div>
+              <div className="rounded-lg bg-gray-50 p-3">
+                <div className="text-xs text-gray-500">Win rate over time</div>
+                <div className="mt-1 text-sm text-gray-700">
+                  Interactive charts by month
+                </div>
+              </div>
+              <div className="rounded-lg bg-gray-50 p-3">
+                <div className="text-xs text-gray-500">Game duration</div>
+                <div className="mt-1 text-sm text-gray-700">
+                  Totals and trends for singles/doubles
+                </div>
+              </div>
+            </div>
+          </Card>
+          <Card>
+            <h2 className="text-base font-semibold">Privacy & data</h2>
+            <ul className="mt-2 list-disc pl-5 text-sm text-gray-700">
+              <li>Only linked accounts get personal stats stored</li>
+              <li>
+                Stats are computed on session end. It cannot be changed later
+              </li>
+              <li>Organizers cannot change your profile stats</li>
+              <li>Sessions are stored in the cloud</li>
+            </ul>
+          </Card>
+        </div>
       )}
 
       {authReady && user && needsUsername && (
@@ -533,8 +599,29 @@ function SessionList({ onOpen }: { onOpen: (id: string) => void }) {
                 endFor,
                 Number.isFinite(num) && num >= 0 ? Math.floor(num) : undefined
               );
+            if (endFor) {
+              void triggerStatsRecalc(auth.currentUser?.uid, endFor);
+            }
             setEndFor(null);
           }}
+          organizerUid={auth.currentUser?.uid || null}
+          sessionId={endFor || ""}
+          unlinkedPlayers={(() => {
+            const ss = sessions.find((s) => s.id === endFor);
+            const arr = Array.isArray(ss?.players) ? ss!.players : [];
+            return arr
+              .filter((p) => !p.accountUid)
+              .map((p) => ({ id: p.id, name: p.name }));
+          })()}
+          organizerLinked={(() => {
+            const ss = sessions.find((s) => s.id === endFor);
+            const myUid = auth.currentUser?.uid;
+            return !!(
+              myUid &&
+              ss &&
+              ss.players.some((p) => p.accountUid === myUid)
+            );
+          })()}
         />
       )}
     </div>

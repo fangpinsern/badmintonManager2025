@@ -17,24 +17,24 @@ export async function triggerStatsRecalc(
       "https://statscalc.techstufffang.workers.dev";
 
     const envTest =
-      String(process.env.NEXT_PUBLIC_STATS_TEST_MODE || "").toLowerCase() ===
-        "true" || process.env.NEXT_PUBLIC_STATS_TEST_MODE === "1";
+      String(process.env.NEXT_PUBLIC_TEST_MODE || "").toLowerCase() ===
+        "true" || process.env.NEXT_PUBLIC_TEST_MODE === "1";
 
     const body: any = {
       organizerUid,
       sessionId,
     };
-    if (opts?.test ?? envTest) body.test = true;
+
+    console.log("opts?.test", opts?.test, envTest, body);
+    if (opts?.test || envTest) body.test = true;
     if (opts?.dryRun) body.dryRun = true;
 
     const fireAndForget = opts?.fireAndForget !== false; // default true
-    const fetchInit: RequestInit = fireAndForget
-      ? { method: "POST", mode: "no-cors", body: JSON.stringify(body) }
-      : {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(body),
-        };
+    const fetchInit: RequestInit = {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    };
 
     const p = fetch(workerUrl, fetchInit);
     if (!fireAndForget) {
