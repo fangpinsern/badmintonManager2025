@@ -53,6 +53,44 @@ export async function getUserProfile(uid: string) {
   const snap = await getDoc(ref);
   return snap.exists() ? (snap.data() as any) : null;
 }
+export async function updateUserProfile(
+  uid: string,
+  data: {
+    racketModels?: string[] | null;
+    favouriteShuttlecock?: string | null;
+    bio?: string | null;
+    level?: string | null;
+  }
+) {
+  const ref = doc(usersCollection(), uid);
+  // Normalize values: trim strings, clamp bio to 200 chars, filter empty models
+  const cleanModels = Array.isArray(data.racketModels)
+    ? data.racketModels
+        .map((s) => String(s || "").trim())
+        .filter((s) => !!s)
+        .slice(0, 10)
+    : data.racketModels === null
+    ? null
+    : undefined;
+  const fav =
+    typeof data.favouriteShuttlecock === "string"
+      ? data.favouriteShuttlecock.trim() || null
+      : data.favouriteShuttlecock;
+  const bio =
+    typeof data.bio === "string"
+      ? (data.bio || "").slice(0, 200).trim() || null
+      : data.bio;
+  const level =
+    typeof data.level === "string" ? data.level.trim() || null : data.level;
+
+  const payload: Record<string, any> = { updatedAt: serverTimestamp() };
+  if (typeof cleanModels !== "undefined") payload.racketModels = cleanModels;
+  if (typeof fav !== "undefined") payload.favouriteShuttlecock = fav;
+  if (typeof bio !== "undefined") payload.bio = bio;
+  if (typeof level !== "undefined") payload.level = level;
+
+  await setDoc(ref, payload, { merge: true });
+}
 export function subscribeUserProfile(
   uid: string,
   onChange: (profile: any | null) => void

@@ -5,7 +5,15 @@ import { Card } from "@/components/layout";
 import LoadingScreen from "@/components/LoadingScreen";
 import UsernameModal from "@/components/UsernameModal";
 import { onAuthStateChanged } from "firebase/auth";
-import { getUserProfile, claimUsername } from "@/lib/firestoreSessions";
+import {
+  getUserProfile,
+  claimUsername,
+  updateUserProfile,
+} from "@/lib/firestoreSessions";
+import ProfileEditForm, {
+  ProfileEditable,
+} from "@/components/profile/ProfileEditForm";
+import UserInfoCard from "@/components/profile/UserInfoCard";
 
 export default function ProfilePage() {
   const [user, setUser] = useState<{
@@ -19,6 +27,14 @@ export default function ProfilePage() {
   const [authReady, setAuthReady] = useState<boolean>(!!auth.currentUser);
   const [needsUsername, setNeedsUsername] = useState(false);
   const [username, setUsername] = useState<string>("");
+  const [profileData, setProfileData] = useState<ProfileEditable>({
+    racketModels: [],
+    favouriteShuttlecock: "",
+    bio: "",
+    level: "",
+  });
+  const [saving, setSaving] = useState(false);
+  const [editing, setEditing] = useState(false);
 
   useEffect(() => {
     return onAuthStateChanged(auth, (u) => {
@@ -41,6 +57,15 @@ export default function ProfilePage() {
         p && typeof p.username === "string" && String(p.username).trim();
       setNeedsUsername(!has);
       setUsername(has ? String(p!.username) : "");
+      setProfileData({
+        racketModels: Array.isArray(p?.racketModels) ? p?.racketModels : [],
+        favouriteShuttlecock:
+          typeof p?.favouriteShuttlecock === "string"
+            ? p?.favouriteShuttlecock
+            : "",
+        bio: typeof p?.bio === "string" ? p?.bio : "",
+        level: typeof p?.level === "string" ? p?.level : "",
+      });
     }
     void load();
     return () => {
@@ -87,21 +112,47 @@ export default function ProfilePage() {
               <div className="text-xs text-gray-500">Username</div>
               <div className="text-base font-semibold">{username || "—"}</div>
             </div>
+          </div>
+        </Card>
+      </section>
+
+      <section className="mb-4">
+        <Card>
+          <div className="flex items-center justify-between">
+            <h2 className="text-base font-semibold">Profile</h2>
             <button
-              onClick={async () => {
-                if (!user) return;
-                const p = await getUserProfile(user.uid);
-                const has =
-                  p &&
-                  typeof p.username === "string" &&
-                  String(p.username).trim();
-                setNeedsUsername(!has);
-                setUsername(has ? String(p!.username) : "");
-              }}
+              onClick={() => setEditing((v) => !v)}
               className="rounded border px-2 py-1 text-xs"
             >
-              Refresh
+              {editing ? "Cancel" : "Edit"}
             </button>
+          </div>
+          <div className="mt-2">
+            {editing ? (
+              <ProfileEditForm
+                value={profileData}
+                onChange={setProfileData}
+                saving={saving}
+                onSubmit={async () => {
+                  if (!user) return;
+                  setSaving(true);
+                  try {
+                    await updateUserProfile(user.uid, profileData);
+                    setEditing(false);
+                  } finally {
+                    setSaving(false);
+                  }
+                }}
+              />
+            ) : (
+              <UserInfoCard
+                username={username}
+                racketModels={profileData.racketModels || []}
+                favouriteShuttlecock={profileData.favouriteShuttlecock || ""}
+                bio={profileData.bio || ""}
+                level={profileData.level || ""}
+              />
+            )}
           </div>
         </Card>
       </section>

@@ -8,8 +8,10 @@ import RecentForm from "@/components/profile/RecentForm";
 import LineChartSelectable from "@/components/profile/LineChartSelectable";
 import InteractiveLineChart from "@/components/profile/InteractiveLineChart";
 import DurationTiles from "@/components/profile/DurationTiles";
+import UserInfoCard from "@/components/profile/UserInfoCard";
 import LoadingScreen from "@/components/LoadingScreen";
-import { getProfileByUsername } from "@/lib/firestoreSessions";
+import { getProfileByUsername, getUserProfile } from "@/lib/firestoreSessions";
+import { getUserStatsSummary, getUserStatsMonthly } from "@/lib/statsClient";
 
 export default function PublicProfilePage() {
   const { username } = useParams<{ username: string }>();
@@ -24,12 +26,35 @@ export default function PublicProfilePage() {
   const [durationSeries, setDurationSeries] = useState<"singles" | "doubles">(
     "singles"
   );
+  const [stats, setStats] = useState<any | null>(null);
+  const [monthly, setMonthly] = useState<{ id: string; data: any }[] | null>(
+    null
+  );
+  const [profileInfo, setProfileInfo] = useState<any | null>(null);
 
   useEffect(() => {
+    console.log("p", username);
     if (!username) return;
     (async () => {
       const p = await getProfileByUsername(username);
       setProfile(p);
+      if (p?.uid) {
+        try {
+          const [sum, months, info] = await Promise.all([
+            getUserStatsSummary(p.uid),
+            getUserStatsMonthly(p.uid, 6),
+            getUserProfile(p.uid),
+          ]);
+
+          console.log("sum", sum);
+          console.log("months", months);
+          setStats(sum);
+          setMonthly(months);
+          setProfileInfo(info);
+        } catch (error) {
+          console.log("error", error);
+        }
+      }
       setReady(true);
     })();
   }, [username]);
@@ -53,83 +78,146 @@ export default function PublicProfilePage() {
         <p className="text-gray-600">Public profile</p>
       </header>
 
+      <section className="mb-4">
+        <Card>
+          <h2 className="text-base font-semibold">Player Info</h2>
+          <div className="mt-2">
+            <UserInfoCard
+              username={profile?.username}
+              racketModels={
+                Array.isArray(profileInfo?.racketModels)
+                  ? profileInfo?.racketModels
+                  : []
+              }
+              favouriteShuttlecock={
+                typeof profileInfo?.favouriteShuttlecock === "string"
+                  ? profileInfo?.favouriteShuttlecock
+                  : ""
+              }
+              bio={typeof profileInfo?.bio === "string" ? profileInfo?.bio : ""}
+              level={
+                typeof profileInfo?.level === "string" ? profileInfo?.level : ""
+              }
+            />
+          </div>
+        </Card>
+      </section>
+
       <section>
         <Card>
-          <h2 className="text-base font-semibold">Statistics (Preview)</h2>
-          <p className="mt-1 text-xs text-gray-500">
-            Sample UI using mock data. Final numbers will be computed when a
-            session ends.
-          </p>
+          <h2 className="text-base font-semibold">Statistics</h2>
 
-          {/* Mock data for preview only */}
           {(() => {
-            const mock = {
-              singles: { games: 12, wins: 7 },
-              doubles: { games: 34, wins: 18 },
-              recent: ["W", "L", "W", "W", "L", "W", "L", "W", "W", "L"] as (
-                | "W"
-                | "L"
-              )[],
+            const safeWinPct = (b?: { games?: number; wins?: number }) => {
+              const g = Number(b?.games || 0);
+              const w = Number(b?.wins || 0);
+              return g > 0 ? Math.round((w / g) * 100) : 0;
             };
-            const winrateLabels = [
-              "Jan",
-              "Feb",
-              "Mar",
-              "Apr",
-              "May",
-              "Jun",
-              "Jul",
-              "Aug",
-              "Sep",
-              "Oct",
-              "Nov",
-              "Dec",
-            ];
-            const winrateSingles = [
-              50, 55, 52, 58, 60, 62, 65, 63, 67, 70, 68, 72,
-            ];
-            const winrateDoubles = [
-              48, 50, 53, 49, 55, 57, 59, 61, 60, 64, 66, 69,
-            ];
-            const durationLabels = winrateLabels;
-            const singlesMin = [
-              50, 65, 40, 72, 85, 90, 105, 80, 110, 130, 95, 140,
-            ];
-            const doublesMin = [
-              120, 135, 160, 140, 170, 185, 200, 210, 190, 220, 230, 240,
-            ];
-            const sum = (a: number[]) => a.reduce((acc, v) => acc + v, 0);
+            const safeMinutes = (m?: number) => Number(m || 0);
+
+            const recent = Array.isArray(stats?.recentForm)
+              ? stats.recentForm
+              : [];
+            const totals = stats?.totals || null;
+            const singlesTotals = totals?.singles || {
+              games: 0,
+              wins: 0,
+              durationMin: 0,
+            };
+            const doublesTotals = totals?.doubles || {
+              games: 0,
+              wins: 0,
+              durationMin: 0,
+            };
+            const last10 = recent.slice(0, 10).map((r: any) => r.result);
+
+            const labels = (monthly || []).map((m) => m.id);
+            const singlesSeries = (monthly || []).map((m) =>
+              safeWinPct(m.data?.singles)
+            );
+            const doublesSeries = (monthly || []).map((m) =>
+              safeWinPct(m.data?.doubles)
+            );
+            const singlesDur = (monthly || []).map((m) =>
+              safeMinutes(m.data?.singles?.durationMin)
+            );
+            const doublesDur = (monthly || []).map((m) =>
+              safeMinutes(m.data?.doubles?.durationMin)
+            );
+
+            const hasSingles = (singlesTotals.games || 0) > 0;
+            const hasDoubles = (doublesTotals.games || 0) > 0;
+            const hasAny =
+              hasSingles ||
+              hasDoubles ||
+              recent.length > 0 ||
+              (monthly && monthly.length > 0);
+
+            if (!hasAny) {
+              return (
+                <div className="mt-3 rounded-lg border bg-gray-50 p-6 text-center text-sm text-gray-600">
+                  No statistics yet. Stats will appear after you participate in
+                  ended sessions.
+                </div>
+              );
+            }
+
             return (
               <div className="mt-3 space-y-4">
                 <GamesPlayedTiles
-                  singlesGames={mock.singles.games}
-                  doublesGames={mock.doubles.games}
+                  singlesGames={singlesTotals.games || 0}
+                  doublesGames={doublesTotals.games || 0}
+                  showSingles={hasSingles}
+                  showDoubles={hasDoubles}
                 />
-                <WinRateTiles singles={mock.singles} doubles={mock.doubles} />
-                <RecentForm results={mock.recent} />
-                <InteractiveLineChart
-                  title="Win rate over time (preview)"
-                  labels={winrateLabels}
-                  singles={winrateSingles}
-                  doubles={winrateDoubles}
-                  selected={winrateSeries}
-                  onSelect={setWinrateSeries}
-                  ySuffix="%"
-                  yMax={100}
+                <WinRateTiles
+                  singles={{
+                    games: singlesTotals.games || 0,
+                    wins: singlesTotals.wins || 0,
+                  }}
+                  doubles={{
+                    games: doublesTotals.games || 0,
+                    wins: doublesTotals.wins || 0,
+                  }}
+                  showSingles={hasSingles}
+                  showDoubles={hasDoubles}
                 />
-                <DurationTiles
-                  totalSinglesMin={sum(singlesMin)}
-                  totalDoublesMin={sum(doublesMin)}
-                />
-                <InteractiveLineChart
-                  title="Game duration over time (preview)"
-                  labels={durationLabels}
-                  singles={singlesMin}
-                  doubles={doublesMin}
-                  selected={durationSeries}
-                  onSelect={setDurationSeries}
-                  ySuffix="m"
-                />
+                {last10.length > 0 && (
+                  <RecentForm results={last10 as ("W" | "L")[]} />
+                )}
+                {(hasSingles || hasDoubles) && labels.length > 0 && (
+                  <InteractiveLineChart
+                    title="Win rate over time"
+                    labels={labels}
+                    singles={singlesSeries}
+                    doubles={doublesSeries}
+                    selected={winrateSeries}
+                    onSelect={setWinrateSeries}
+                    ySuffix="%"
+                    yMax={100}
+                    showSingles={hasSingles}
+                    showDoubles={hasDoubles}
+                  />
+                )}
+                {(hasSingles || hasDoubles) && labels.length > 0 && (
+                  <DurationTiles
+                    totalSinglesMin={singlesTotals.durationMin || 0}
+                    totalDoublesMin={doublesTotals.durationMin || 0}
+                  />
+                )}
+                {(hasSingles || hasDoubles) && labels.length > 0 && (
+                  <InteractiveLineChart
+                    title="Game duration over time"
+                    labels={labels}
+                    singles={singlesDur}
+                    doubles={doublesDur}
+                    selected={durationSeries}
+                    onSelect={setDurationSeries}
+                    ySuffix="m"
+                    showSingles={hasSingles}
+                    showDoubles={hasDoubles}
+                  />
+                )}
               </div>
             );
           })()}

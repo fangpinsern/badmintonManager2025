@@ -1,7 +1,14 @@
 "use client";
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import UPlot from "uplot";
-import "uplot/dist/uPlot.min.css";
+import React, { useMemo } from "react";
+import {
+  ResponsiveContainer,
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+} from "recharts";
 
 type SeriesKey = "singles" | "doubles";
 
@@ -14,6 +21,8 @@ export default function InteractiveLineChart({
   onSelect,
   ySuffix = "%",
   yMax,
+  showSingles = true,
+  showDoubles = true,
 }: {
   title: string;
   labels: string[];
@@ -23,129 +32,41 @@ export default function InteractiveLineChart({
   onSelect: (s: SeriesKey) => void;
   ySuffix?: string;
   yMax?: number | null;
+  showSingles?: boolean;
+  showDoubles?: boolean;
 }) {
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const chartRef = useRef<any>(null);
-  const [ready, setReady] = useState(false);
+  const data = useMemo(
+    () =>
+      labels.map((label, i) => ({
+        label,
+        singles: typeof singles[i] === "number" ? singles[i] : null,
+        doubles: typeof doubles[i] === "number" ? doubles[i] : null,
+      })),
+    [labels, singles, doubles]
+  );
 
-  const data = useMemo(() => {
-    const x = Float64Array.from(labels, (_v, i) => i);
-    const src = selected === "singles" ? singles : doubles;
-    const y = Float64Array.from(src);
-    return [x, y];
-  }, [labels, singles, doubles, selected]);
+  const singlesColor = "#059669"; // emerald
+  const doublesColor = "#f97316"; // orange
+  const enabledKeys = [
+    showSingles ? ("singles" as const) : null,
+    showDoubles ? ("doubles" as const) : null,
+  ].filter(Boolean) as SeriesKey[];
 
-  useEffect(() => {
-    if (typeof window === "undefined" || !containerRef.current) return;
-
-    const singlesColor = "#059669"; // emerald
-    const doublesColor = "#f97316"; // orange
-    const color = selected === "singles" ? singlesColor : doublesColor;
-
-    const width = containerRef.current.clientWidth || 560;
-    const height = 180;
-
-    const maxVal = Math.max(...(selected === "singles" ? singles : doubles));
-    const yMaxEff =
-      yMax ?? (ySuffix === "%" ? 100 : Math.ceil(maxVal / 60) * 60 || 60);
-
-    const opts: any = {
-      width,
-      height,
-      tzDate: (ts: number) => new Date(ts),
-      scales: {
-        x: { time: false },
-        y: { auto: yMax ? false : true },
-      },
-      axes: [
-        {
-          values: (u: any, ticks: number[]) =>
-            ticks.map((t) => labels[Math.round(t)] ?? ""),
-          grid: { stroke: "#e5e7eb" },
-          size: 28,
-          font: "12px system-ui, -apple-system, Segoe UI, Roboto, sans-serif",
-        },
-        {
-          values: (u: any, ticks: number[]) =>
-            ticks.map((t) => `${Math.round(t)}${ySuffix}`),
-          grid: { stroke: "#e5e7eb" },
-          size: 40,
-          font: "12px system-ui, -apple-system, Segoe UI, Roboto, sans-serif",
-        },
-      ],
-      series: [
-        {},
-        {
-          label: title,
-          stroke: color,
-          width: 2.5,
-        },
-      ],
-      hooks: {
-        setSelect: [
-          (u: any) => {
-            const s = u.select;
-            if (s.width > 0) {
-              const min = u.posToVal(s.left, "x");
-              const max = u.posToVal(s.left + s.width, "x");
-              u.setScale("x", { min, max });
-            }
-          },
-        ],
-      },
-      cursor: { drag: { x: true, y: false }, focus: { prox: 16 } },
-      select: { show: true, over: true },
-    };
-
-    if (yMaxEff) {
-      opts.scales.y = { auto: false, min: 0, max: yMaxEff };
-    }
-
-    chartRef.current = new UPlot(opts, data, containerRef.current);
-
-    const onResize = () => {
-      try {
-        if (!containerRef.current || !chartRef.current) return;
-        const w = containerRef.current.clientWidth || width;
-        chartRef.current.setSize({ width: w, height });
-      } catch {}
-    };
-    window.addEventListener("resize", onResize);
-
-    const onDbl = () => {
-      try {
-        if (!chartRef.current) return;
-        chartRef.current.setScale("x", { min: null, max: null });
-      } catch {}
-    };
-    containerRef.current.addEventListener("dblclick", onDbl);
-
-    setReady(true);
-
-    return () => {
-      try {
-        containerRef.current?.removeEventListener("dblclick", onDbl);
-        window.removeEventListener("resize", onResize);
-        chartRef.current?.destroy();
-        chartRef.current = null;
-      } catch {}
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [labels.join("|"), selected]);
-
-  // Update data on selection change
-  useEffect(() => {
-    try {
-      if (!chartRef.current) return;
-      const x = Float64Array.from(labels, (_v, i) => i);
-      const src = selected === "singles" ? singles : doubles;
-      const y = Float64Array.from(src);
-      chartRef.current.setData([x, y]);
-    } catch {}
-  }, [data, labels, singles, doubles, selected]);
-
-  const singlesColor = "#059669";
-  const doublesColor = "#f97316";
+  const effectiveSelected: SeriesKey | null = enabledKeys.includes(selected)
+    ? selected
+    : enabledKeys[0] ?? null;
+  const stroke = effectiveSelected === "singles" ? singlesColor : doublesColor;
+  const dataKey = effectiveSelected ?? "singles";
+  const domain = useMemo(() => {
+    if (typeof yMax === "number") return [0, yMax];
+    if (ySuffix === "%") return [0, 100];
+    const arr = (selected === "singles" ? singles : doubles).filter(
+      (v) => typeof v === "number"
+    ) as number[];
+    const max = arr.length ? Math.max(...arr) : 0;
+    const step = 10;
+    return [0, Math.ceil(max / step) * step];
+  }, [yMax, ySuffix, selected, singles, doubles]);
 
   return (
     <div>
@@ -156,64 +77,130 @@ export default function InteractiveLineChart({
         >
           {title}
         </div>
-        <div className="inline-flex items-center gap-0.5 rounded-lg border bg-white p-0.5 text-[11px]">
-          <button
-            type="button"
-            onClick={() => onSelect("singles")}
-            className={`rounded-md px-2 py-1 ${
-              selected === "singles"
-                ? "bg-emerald-600 text-white"
-                : "text-gray-700"
-            }`}
-            aria-pressed={selected === "singles"}
-          >
-            Singles
-          </button>
-          <button
-            type="button"
-            onClick={() => onSelect("doubles")}
-            className={`rounded-md px-2 py-1 ${
-              selected === "doubles"
-                ? "bg-orange-600 text-white"
-                : "text-gray-700"
-            }`}
-            aria-pressed={selected === "doubles"}
-          >
-            Doubles
-          </button>
-        </div>
+        {enabledKeys.length >= 2 ? (
+          <div className="inline-flex items-center gap-0.5 rounded-lg border bg-white p-0.5 text-[11px]">
+            <button
+              type="button"
+              onClick={() => onSelect("singles")}
+              className={`rounded-md px-2 py-1 focus:outline-none outline-none ${
+                effectiveSelected === "singles"
+                  ? "bg-emerald-600 text-white"
+                  : "text-gray-700"
+              }`}
+              aria-pressed={effectiveSelected === "singles"}
+              disabled={!showSingles}
+            >
+              Singles
+            </button>
+            <button
+              type="button"
+              onClick={() => onSelect("doubles")}
+              className={`rounded-md px-2 py-1 focus:outline-none outline-none ${
+                effectiveSelected === "doubles"
+                  ? "bg-orange-600 text-white"
+                  : "text-gray-700"
+              }`}
+              aria-pressed={effectiveSelected === "doubles"}
+              disabled={!showDoubles}
+            >
+              Doubles
+            </button>
+          </div>
+        ) : enabledKeys.length === 1 ? (
+          <div className="inline-flex items-center gap-1 rounded-lg border bg-white px-2 py-1 text-[11px] text-gray-700">
+            {enabledKeys[0] === "singles" ? "Singles" : "Doubles"}
+          </div>
+        ) : null}
       </div>
-      <div
-        ref={containerRef}
-        className="overflow-hidden rounded-lg border"
-        style={{ minHeight: 180 }}
-      />
-      <div className="flex items-center justify-between border-t px-3 py-2 text-[11px]">
+      {enabledKeys.length === 0 ? (
+        <div className="overflow-hidden rounded-lg border bg-gray-50 p-6 text-center text-[12px] text-gray-600">
+          No data to display.
+        </div>
+      ) : (
         <div
-          className={`inline-flex items-center gap-1 ${
-            selected === "singles" ? "text-gray-900" : "text-gray-500"
-          }`}
+          className="overflow-hidden rounded-lg border focus:outline-none outline-none"
+          style={{ minHeight: 200 }}
+          tabIndex={-1}
         >
+          <div
+            className="mx-auto focus:outline-none outline-none"
+            style={{ width: "100%", maxWidth: 840 }}
+            tabIndex={-1}
+            onMouseDown={(e) => e.preventDefault()}
+          >
+            <ResponsiveContainer width="100%" height={200}>
+              <LineChart
+                data={data}
+                margin={{ top: 8, right: 8, bottom: 8, left: 0 }}
+              >
+                <CartesianGrid stroke="#e5e7eb" />
+                <XAxis
+                  dataKey="label"
+                  tick={{ fontSize: 12, fill: "#6b7280" }}
+                  interval={0}
+                  minTickGap={10}
+                  tickMargin={6}
+                  padding={{ left: 10, right: 10 }}
+                />
+                <YAxis
+                  domain={domain as any}
+                  tick={{ fontSize: 12, fill: "#6b7280" }}
+                  tickFormatter={(v) => `${v}${ySuffix}`}
+                />
+                <Tooltip
+                  formatter={(value: any) => [
+                    `${value}${ySuffix}`,
+                    effectiveSelected === "singles" ? "Singles" : "Doubles",
+                  ]}
+                />
+                {effectiveSelected && (
+                  <Line
+                    type="monotone"
+                    dataKey={dataKey}
+                    stroke={stroke}
+                    strokeWidth={2.5}
+                    dot={false}
+                    activeDot={{ r: 3 }}
+                    isAnimationActive={false}
+                  />
+                )}
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      )}
+      <div className="flex items-center justify-between px-3 py-2 text-[11px]">
+        {showSingles && (
           <span
-            className="inline-block h-2 w-2 rounded-full"
-            style={{ backgroundColor: singlesColor }}
-          />
-          Singles
-        </div>
-        <div className="text-[11px] text-gray-500">
-          Hint: drag to zoom · double‑click to reset
-        </div>
-        <div
-          className={`inline-flex items-center gap-1 ${
-            selected === "doubles" ? "text-gray-900" : "text-gray-500"
-          }`}
-        >
+            className={`inline-flex items-center gap-1 ${
+              effectiveSelected === "singles"
+                ? "text-gray-900"
+                : "text-gray-500"
+            }`}
+          >
+            <span
+              className="inline-block h-2 w-2 rounded-full"
+              style={{ backgroundColor: singlesColor }}
+            />
+            Singles
+          </span>
+        )}
+        <span className="text-[11px] text-gray-500">&nbsp;</span>
+        {showDoubles && (
           <span
-            className="inline-block h-2 w-2 rounded-full"
-            style={{ backgroundColor: doublesColor }}
-          />
-          Doubles
-        </div>
+            className={`inline-flex items-center gap-1 ${
+              effectiveSelected === "doubles"
+                ? "text-gray-900"
+                : "text-gray-500"
+            }`}
+          >
+            <span
+              className="inline-block h-2 w-2 rounded-full"
+              style={{ backgroundColor: doublesColor }}
+            />
+            Doubles
+          </span>
+        )}
       </div>
     </div>
   );

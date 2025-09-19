@@ -20,6 +20,7 @@ import { RowKebabMenu } from "@/components/session/rowKebabMenu";
 import { Input } from "@/components/layout";
 import { Label } from "@/components/layout";
 import { downloadSessionJson, getPlayerCourtIndex } from "@/lib/helper";
+import { triggerStatsRecalc } from "@/lib/stats";
 import {
   saveSession,
   subscribeSessionById,
@@ -61,6 +62,9 @@ function SessionManager({ onBack }: { onBack: () => void }) {
   useEffect(() => {
     return onAuthStateChanged(auth, (u) => {
       setUser(u ? { uid: u.uid, displayName: u.displayName } : null);
+      //   u?.getIdToken().then((token) => {
+      //     console.log("token", token);
+      //   });
       setAuthReady(true);
     });
   }, []);
@@ -82,9 +86,7 @@ function SessionManager({ onBack }: { onBack: () => void }) {
     const currentUid = user?.uid || null;
     if (!id || !currentUid) return;
     const cleanup = subscribeSessionById(currentUid, id, (info) => {
-      console.log("info", info);
       if (!info) {
-        console.log("info not found");
         setNotFound(true);
         setSession(null);
         return;
@@ -93,7 +95,6 @@ function SessionManager({ onBack }: { onBack: () => void }) {
       const payload = (info.doc.payload || {}) as Session;
       const live = { ...payload, storage: "remote" } as Session;
       setSession(live);
-      console.log("session", live);
       try {
         lastSavedRef.current = JSON.stringify(live);
       } catch {}
@@ -398,9 +399,8 @@ function SessionManager({ onBack }: { onBack: () => void }) {
         </div>
       </Card>
 
-      {isOrganizer && (
+      {isOrganizer && !!endOpen && (
         <EndSessionModal
-          open={endOpen}
           title={`End ${formatSessionTitle(session)}?`}
           shuttles={endShuttles}
           onShuttlesChange={setEndShuttles}
@@ -411,8 +411,14 @@ function SessionManager({ onBack }: { onBack: () => void }) {
               session.id,
               Number.isFinite(num) && num >= 0 ? Math.floor(num) : undefined
             );
+            void triggerStatsRecalc(organizerUid, session.id);
             setEndOpen(false);
           }}
+          organizerUid={organizerUid}
+          sessionId={session.id}
+          unlinkedPlayers={session.players
+            .filter((p) => !p.accountUid)
+            .map((p) => ({ id: p.id, name: p.name }))}
         />
       )}
 

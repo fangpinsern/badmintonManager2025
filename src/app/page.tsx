@@ -234,7 +234,7 @@ function Page() {
           <Link
             href="/profile"
             aria-label="Go to profile"
-            className="ml-4 rounded-full p-2 text-gray-600 hover:bg-gray-100"
+            className="ml-4 rounded-full p-2 text-gray-600 hover:bg-gray-100 border"
           >
             <svg
               xmlns="http://www.w3.org/2000/svg"
@@ -514,28 +514,29 @@ function SessionList({ onOpen }: { onOpen: (id: string) => void }) {
           </div>
         </Card>
       ))}
-      <EndSessionModal
-        open={!!endFor}
-        title={
-          endFor
-            ? `End ${formatSessionTitle(
-                sessions.find((s) => s.id === endFor)!
-              )}?`
-            : "End session?"
-        }
-        shuttles={shuttles}
-        onShuttlesChange={setShuttles}
-        onCancel={() => setEndFor(null)}
-        onConfirm={() => {
-          const num = Number(shuttles);
-          if (endFor)
-            endSession(
-              endFor,
-              Number.isFinite(num) && num >= 0 ? Math.floor(num) : undefined
-            );
-          setEndFor(null);
-        }}
-      />
+      {!!endFor && (
+        <EndSessionModal
+          title={
+            endFor
+              ? `End ${formatSessionTitle(
+                  sessions.find((s) => s.id === endFor)!
+                )}?`
+              : "End session?"
+          }
+          shuttles={shuttles}
+          onShuttlesChange={setShuttles}
+          onCancel={() => setEndFor(null)}
+          onConfirm={() => {
+            const num = Number(shuttles);
+            if (endFor)
+              endSession(
+                endFor,
+                Number.isFinite(num) && num >= 0 ? Math.floor(num) : undefined
+              );
+            setEndFor(null);
+          }}
+        />
+      )}
     </div>
   );
 }
