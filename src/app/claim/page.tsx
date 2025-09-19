@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { Card } from "@/components/layout";
 import LoadingScreen from "@/components/LoadingScreen";
@@ -11,7 +11,7 @@ import {
 } from "firebase/auth";
 import { linkAccountInOrganizerSession } from "@/lib/firestoreSessions";
 
-export default function ClaimPage() {
+function ClaimPageInner() {
   const sp = useSearchParams();
   const router = useRouter();
   const [authReady, setAuthReady] = useState<boolean>(!!auth.currentUser);
@@ -151,5 +151,13 @@ export default function ClaimPage() {
         )}
       </Card>
     </main>
+  );
+}
+
+export default function ClaimPage() {
+  return (
+    <Suspense fallback={<LoadingScreen message="Loading…" />}>
+      <ClaimPageInner />
+    </Suspense>
   );
 }
