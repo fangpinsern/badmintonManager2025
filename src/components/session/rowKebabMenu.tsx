@@ -57,7 +57,7 @@ function RowKebabMenu({
   return (
     <>
       <details ref={menuRef} className="relative">
-        <summary className="cursor-pointer list-none px-2 py-1 text-md font-bold">
+        <summary className="cursor-pointer list-none px-2 py-1 text-md font-bold appearance-none [&::-webkit-details-marker]:hidden">
           ⋮
         </summary>
         <div className="absolute right-0 z-10 mt-1 w-44 rounded-md border bg-white p-1 text-sm shadow">
