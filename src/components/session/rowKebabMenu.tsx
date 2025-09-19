@@ -4,6 +4,7 @@ import { useState } from "react";
 import { auth } from "@/lib/firebase";
 import { organizerUnlinkPlayer } from "@/lib/firestoreSessions";
 import { unlinkAccountInOrganizerSession } from "@/lib/firestoreSessions";
+import { linkAccountInOrganizerSession } from "@/lib/firestoreSessions";
 import { QRCodeSVG } from "qrcode.react";
 import { useRef, useEffect } from "react";
 import { Player } from "@/types/player";
@@ -66,8 +67,19 @@ function RowKebabMenu({
               onClick={() => {
                 const uid = auth.currentUser?.uid;
                 if (!uid) return;
-                if (!session.players.some((pp) => pp.accountUid === uid))
-                  linkPlayerToAccount(session.id, player.id, uid);
+                if (isOrganizer && organizerUid) {
+                  // Organizer path: write to Firestore so name updates to username and nameBeforeLink is captured server-side
+                  void linkAccountInOrganizerSession(
+                    organizerUid,
+                    session.id,
+                    player.id,
+                    uid
+                  );
+                } else {
+                  // Fallback: local link only
+                  if (!session.players.some((pp) => pp.accountUid === uid))
+                    linkPlayerToAccount(session.id, player.id, uid);
+                }
                 closeMenu();
               }}
             >
@@ -200,9 +212,9 @@ function ClaimQrButton({
   const organizerUid = auth.currentUser?.uid || "";
   const url = `${
     typeof location !== "undefined" ? location.origin : ""
-  }?claim=1&ouid=${encodeURIComponent(organizerUid)}&sid=${encodeURIComponent(
-    sessionId
-  )}&pid=${encodeURIComponent(playerId)}`;
+  }/claim?claim=1&ouid=${encodeURIComponent(
+    organizerUid
+  )}&sid=${encodeURIComponent(sessionId)}&pid=${encodeURIComponent(playerId)}`;
   return (
     <>
       {!forceOpen && (

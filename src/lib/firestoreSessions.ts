@@ -529,7 +529,10 @@ export async function organizerUnlinkPlayer(
   const linkedUid: string | undefined =
     typeof before.accountUid === "string" ? before.accountUid : undefined;
   const { accountUid, ...rest } = before;
-  players[idx] = { ...rest };
+  // Revert name to nameBeforeLink if present (same semantics as self-unlink)
+  const revertedName = before.nameBeforeLink || rest.name;
+  const { nameBeforeLink, linkLocked, ...restNoMeta } = rest as any;
+  players[idx] = { ...restNoMeta, name: revertedName };
   const nextPayload = stripUndefinedDeep({ ...payload, players });
   const linkedUids = collectLinkedUids(nextPayload);
   await setDoc(

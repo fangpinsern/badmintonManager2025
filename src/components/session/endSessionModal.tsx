@@ -44,7 +44,7 @@ function EndSessionModal({
     if (!sessionId || !organizerUid) return new Map<string, string>();
     const map = new Map<string, string>();
     for (const p of unlinkedPlayers) {
-      const url = `${baseOrigin}?claim=1&ouid=${encodeURIComponent(
+      const url = `${baseOrigin}/claim?claim=1&ouid=${encodeURIComponent(
         organizerUid
       )}&sid=${encodeURIComponent(sessionId)}&pid=${encodeURIComponent(p.id)}`;
       map.set(p.id, url);

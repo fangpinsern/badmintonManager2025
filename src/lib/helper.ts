@@ -220,10 +220,20 @@ function formatSessionTitle(ss: Session) {
   return `${ss.date} · ${ss.time}`;
 }
 
+function isTestMode(): boolean {
+  try {
+    const v = String(process.env.NEXT_PUBLIC_TEST_MODE || "").toLowerCase();
+    return v === "true" || process.env.NEXT_PUBLIC_TEST_MODE === "1";
+  } catch {
+    return false;
+  }
+}
+
 export {
   downloadSessionJson,
   formatDuration,
   getPlayerCourtIndex,
   computeSessionStats,
   formatSessionTitle,
+  isTestMode,
 };

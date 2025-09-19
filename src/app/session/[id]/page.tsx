@@ -397,6 +397,15 @@ function SessionManager({ onBack }: { onBack: () => void }) {
           unlinkedPlayers={session.players
             .filter((p) => !p.accountUid)
             .map((p) => ({ id: p.id, name: p.name }))}
+          organizerLinked={(() => {
+            const ss = session;
+            const myUid = auth.currentUser?.uid;
+            return !!(
+              myUid &&
+              ss &&
+              ss.players.some((p) => p.accountUid === myUid)
+            );
+          })()}
         />
       )}
 
@@ -832,20 +841,22 @@ function SessionManager({ onBack }: { onBack: () => void }) {
                             : `Court ${currentIdx + 1}`}
                         </span>
                       )}
-                      {!session.ended && (
-                        <RowKebabMenu
-                          session={session}
-                          player={p}
-                          inGame={inGame}
-                          isOrganizer={!!isOrganizer}
-                          organizerUid={
-                            organizerUid ||
-                            (window as any).__sessionOwners?.get?.(session.id)
-                          }
-                          linkPlayerToAccount={linkPlayerToAccount}
-                          removePlayer={removePlayer}
-                        />
-                      )}
+                      {!session.ended &&
+                        (isOrganizer ||
+                          p.accountUid === auth.currentUser?.uid) && (
+                          <RowKebabMenu
+                            session={session}
+                            player={p}
+                            inGame={inGame}
+                            isOrganizer={!!isOrganizer}
+                            organizerUid={
+                              organizerUid ||
+                              (window as any).__sessionOwners?.get?.(session.id)
+                            }
+                            linkPlayerToAccount={linkPlayerToAccount}
+                            removePlayer={removePlayer}
+                          />
+                        )}
                     </div>
                   </div>
                 );

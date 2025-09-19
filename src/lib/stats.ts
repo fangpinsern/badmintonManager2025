@@ -25,7 +25,6 @@ export async function triggerStatsRecalc(
       sessionId,
     };
 
-    console.log("opts?.test", opts?.test, envTest, body);
     if (opts?.test || envTest) body.test = true;
     if (opts?.dryRun) body.dryRun = true;
 

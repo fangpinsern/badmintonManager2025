@@ -3,15 +3,14 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { auth } from "@/lib/firebase";
 import { onAuthStateChanged } from "firebase/auth";
+import { isTestMode } from "@/lib/helper";
 
 export default function AppHeader() {
   const [hasUser, setHasUser] = useState(!!auth.currentUser);
   useEffect(() => {
     return onAuthStateChanged(auth, (u) => setHasUser(!!u));
   }, []);
-  const isTest =
-    String(process.env.NEXT_PUBLIC_TEST_MODE || "").toLowerCase() === "true" ||
-    process.env.NEXT_PUBLIC_TEST_MODE === "1";
+  const isTest = isTestMode();
 
   return (
     <header className="border-b bg-white">

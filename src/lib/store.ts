@@ -93,9 +93,14 @@ const useStore = create<StoreState>()((set, _get) => ({
     set((s) => ({
       sessions: s.sessions.map((ss) => {
         if (ss.id !== sessionId) return ss;
-        const players = ss.players.map((p) =>
-          p.id === playerId ? { ...p, accountUid } : p
-        );
+        // set accountUid, capture previous name for organizer-unlink, and optimistically set name to username if known later (left to server)
+        const players = ss.players.map((p) => {
+          if (p.id !== playerId) return p;
+          const nameBeforeLink = (p as any).nameBeforeLink || p.name;
+          return { ...p, accountUid, nameBeforeLink } as Player & {
+            nameBeforeLink?: string;
+          };
+        });
         // attempt to also link platform attendee if names match
         const platIdx = (_get().platformPlayers || []).findIndex(
           (pp) =>
