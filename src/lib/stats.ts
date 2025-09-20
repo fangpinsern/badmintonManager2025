@@ -1,4 +1,5 @@
 import { db } from "@/lib/firebase";
+import { isTestMode } from "@/lib/helper";
 import { doc, setDoc, serverTimestamp } from "firebase/firestore";
 
 export async function triggerStatsRecalc(
@@ -19,9 +20,7 @@ export async function triggerStatsRecalc(
       (process.env.NEXT_PUBLIC_STATS_WORKER_URL as string) ||
       "https://statscalc.techstufffang.workers.dev";
 
-    const envTest =
-      String(process.env.NEXT_PUBLIC_TEST_MODE || "").toLowerCase() ===
-        "true" || process.env.NEXT_PUBLIC_TEST_MODE === "1";
+    const envTest = isTestMode();
 
     const body: any = {
       organizerUid,
@@ -57,7 +56,8 @@ export async function recordStatsRecalcFailure(
 ) {
   if (!organizerUid) return;
   const id = `${organizerUid}_${sessionId}`;
-  const ref = doc(db as any, "statsRecalcFailures", id);
+  const col = isTestMode() ? "statsRecalcFailures_test" : "statsRecalcFailures";
+  const ref = doc(db as any, col, id);
   await setDoc(
     ref as any,
     {
