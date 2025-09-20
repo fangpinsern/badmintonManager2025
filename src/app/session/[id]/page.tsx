@@ -14,6 +14,8 @@ import { AddCourtButton } from "@/components/session/addCourtButton";
 import { CourtCard } from "@/components/session/courtCard";
 import { GameEditModal } from "@/components/session/gameEditModal";
 import LoadingScreen from "@/components/LoadingScreen";
+import Link from "next/link";
+import { toUsernameSlug } from "@/lib/helper";
 import UsernameModal from "@/components/UsernameModal";
 import { Select } from "@/components/layout";
 import { RowKebabMenu } from "@/components/session/rowKebabMenu";
@@ -542,7 +544,25 @@ function SessionManager({ onBack }: { onBack: () => void }) {
                     key={p.playerId}
                     className="flex items-center justify-between px-2 py-1 text-sm"
                   >
-                    <div className="truncate">{p.name}</div>
+                    <div className="truncate">
+                      {(() => {
+                        const sp = session.players.find(
+                          (pp) => pp.id === p.playerId
+                        );
+                        const isLinked = !!sp?.accountUid;
+                        const uname = toUsernameSlug(sp?.name || p.name || "");
+                        return isLinked ? (
+                          <Link
+                            href={`/profile/${uname}`}
+                            className="text-sky-700 hover:underline"
+                          >
+                            {p.name}
+                          </Link>
+                        ) : (
+                          <span>{p.name}</span>
+                        );
+                      })()}
+                    </div>
                     <div className="ml-2 shrink-0 text-xs text-gray-600">
                       {p.wins}W {p.losses}L · {Math.round(p.winRate * 100)}% ·{" "}
                       {p.points}pts

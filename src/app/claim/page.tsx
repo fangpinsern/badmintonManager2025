@@ -9,7 +9,12 @@ import {
   onAuthStateChanged,
   signInWithPopup,
 } from "firebase/auth";
-import { linkAccountInOrganizerSession } from "@/lib/firestoreSessions";
+import {
+  linkAccountInOrganizerSession,
+  getUserProfile,
+  claimUsername,
+} from "@/lib/firestoreSessions";
+import UsernameModal from "@/components/UsernameModal";
 
 function ClaimPageInner() {
   const sp = useSearchParams();
@@ -22,6 +27,8 @@ function ClaimPageInner() {
     "idle"
   );
   const [errorMsg, setErrorMsg] = useState<string>("");
+  const [needsUsername, setNeedsUsername] = useState(true);
+  const [profileChecked, setProfileChecked] = useState(false);
 
   const params = useMemo(() => {
     const ouid = sp.get("ouid") || "";
@@ -38,7 +45,23 @@ function ClaimPageInner() {
   }, []);
 
   useEffect(() => {
+    (async () => {
+      if (!authReady || !userUid) return;
+      try {
+        const p = await getUserProfile(userUid);
+        const has = p && typeof p.username === "string" && p.username.trim();
+        setNeedsUsername(!has);
+      } catch {
+        setNeedsUsername(true);
+      }
+      setProfileChecked(true);
+    })();
+  }, [authReady, userUid]);
+
+  useEffect(() => {
     if (!authReady || !userUid || !params.valid) return;
+    if (!profileChecked) return; // wait until we know username status
+    if (needsUsername) return; // gate until username claimed
     (async () => {
       try {
         setStatus("linking");
@@ -59,7 +82,15 @@ function ClaimPageInner() {
         );
       }
     })();
-  }, [authReady, userUid, params.valid, params.ouid, params.sid, params.pid]);
+  }, [
+    authReady,
+    userUid,
+    params.valid,
+    params.ouid,
+    params.sid,
+    params.pid,
+    needsUsername,
+  ]);
 
   if (!params.valid) {
     return (
@@ -99,10 +130,41 @@ function ClaimPageInner() {
     );
   }
 
+  if (needsUsername) {
+    return (
+      <main className="mx-auto max-w-md p-4 text-sm">
+        <UsernameModal
+          open={true}
+          onClose={() => {}}
+          canCancel={false}
+          onSubmit={async (uname) => {
+            if (!userUid) return;
+            try {
+              await claimUsername(userUid, uname);
+              // Wait for profile to reflect the username to avoid flicker on redirect
+              try {
+                for (let i = 0; i < 10; i++) {
+                  const p = await getUserProfile(userUid);
+                  const has =
+                    p && typeof p.username === "string" && p.username.trim();
+                  if (has) break;
+                  await new Promise((r) => setTimeout(r, 150));
+                }
+              } catch {}
+              setNeedsUsername(false);
+            } catch (e) {
+              alert((e as Error)?.message || "Failed to claim username.");
+            }
+          }}
+        />
+      </main>
+    );
+  }
+
   return (
     <main className="mx-auto max-w-md p-4 text-sm">
       <Card>
-        {status === "linking" && (
+        {status == "linking" && (
           <div>
             <h1 className="text-lg font-semibold">Linking your account…</h1>
             <p className="mt-1 text-gray-600">This only takes a moment.</p>

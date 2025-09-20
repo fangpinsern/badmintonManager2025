@@ -229,6 +229,21 @@ function isTestMode(): boolean {
   }
 }
 
+function toUsernameSlug(input: string): string {
+  const s = String(input || "")
+    .toLowerCase()
+    .trim();
+  // Replace whitespace with dashes
+  let out = s.replace(/\s+/g, "-");
+  // Remove anything not url-safe [a-z0-9-]
+  out = out.replace(/[^a-z0-9-]/g, "");
+  // Collapse multiple dashes
+  out = out.replace(/-+/g, "-");
+  // Trim leading/trailing dashes
+  out = out.replace(/^-+/, "").replace(/-+$/, "");
+  return out || "user";
+}
+
 export {
   downloadSessionJson,
   formatDuration,
@@ -236,4 +251,5 @@ export {
   computeSessionStats,
   formatSessionTitle,
   isTestMode,
+  toUsernameSlug,
 };

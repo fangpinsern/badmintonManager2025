@@ -11,6 +11,7 @@ import DurationTiles from "@/components/profile/DurationTiles";
 import UserInfoCard from "@/components/profile/UserInfoCard";
 import LoadingScreen from "@/components/LoadingScreen";
 import { getProfileByUsername, getUserProfile } from "@/lib/firestoreSessions";
+import { toUsernameSlug } from "@/lib/helper";
 import { getUserStatsSummary, getUserStatsMonthly } from "@/lib/statsClient";
 
 export default function PublicProfilePage() {
@@ -36,7 +37,8 @@ export default function PublicProfilePage() {
     console.log("p", username);
     if (!username) return;
     (async () => {
-      const p = await getProfileByUsername(username);
+      const slug = toUsernameSlug(username);
+      const p = await getProfileByUsername(slug);
       setProfile(p);
       if (p?.uid) {
         try {

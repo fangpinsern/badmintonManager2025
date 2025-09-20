@@ -1,4 +1,5 @@
 import { auth, db } from "./firebase";
+import { toUsernameSlug } from "@/lib/helper";
 import {
   collection,
   doc,
@@ -101,7 +102,7 @@ export function subscribeUserProfile(
   );
 }
 export async function claimUsername(uid: string, username: string) {
-  const normalized = (username || "").trim().toLowerCase();
+  const normalized = toUsernameSlug(username);
   if (!normalized || normalized.length < 3)
     throw new Error("Username too short");
   const usernameRef = doc(usernamesCollection(), normalized);
