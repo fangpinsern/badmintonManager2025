@@ -737,7 +737,7 @@ function SessionManager({ onBack }: { onBack: () => void }) {
                     className="grid grid-cols-12 items-center gap-2"
                   >
                     <div className="col-span-4 grid grid-cols-12 items-center gap-2 min-w-0">
-                      <div className="col-span-3 flex items-center shrink-0">
+                      <div className="col-span-2 flex items-center shrink-0">
                         {p.accountUid ? (
                           <span
                             className="inline-flex items-center"
@@ -790,10 +790,10 @@ function SessionManager({ onBack }: { onBack: () => void }) {
                           </span>
                         )}
                       </div>
-                      <div className="col-span-6 min-w-0 truncate">
+                      <div className="col-span-8 min-w-0 truncate">
                         <span className="block truncate">{p.name}</span>
                       </div>
-                      <div className="col-span-3 flex items-center gap-2 justify-start shrink-0">
+                      <div className="col-span-2 flex items-center gap-2 justify-start shrink-0">
                         {/* no separate dot; icon color indicates Me */}
                         {inGame && (
                           <span
