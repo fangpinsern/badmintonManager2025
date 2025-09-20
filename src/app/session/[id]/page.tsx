@@ -22,7 +22,7 @@ import { RowKebabMenu } from "@/components/session/rowKebabMenu";
 import { Input } from "@/components/layout";
 import { Label } from "@/components/layout";
 import { downloadSessionJson, getPlayerCourtIndex } from "@/lib/helper";
-import { triggerStatsRecalc } from "@/lib/stats";
+import { triggerStatsRecalc, recordStatsRecalcFailure } from "@/lib/stats";
 import {
   saveSession,
   subscribeSessionById,
@@ -391,7 +391,18 @@ function SessionManager({ onBack }: { onBack: () => void }) {
               session.id,
               Number.isFinite(num) && num >= 0 ? Math.floor(num) : undefined
             );
-            void triggerStatsRecalc(organizerUid, session.id);
+            (async () => {
+              const res = await triggerStatsRecalc(organizerUid, session.id, {
+                fireAndForget: false,
+              });
+              if (!res || !res.ok) {
+                await recordStatsRecalcFailure(
+                  organizerUid,
+                  session.id,
+                  res ? res.status : "fetch-error"
+                );
+              }
+            })();
             setEndOpen(false);
           }}
           organizerUid={organizerUid}

@@ -1,3 +1,6 @@
+import { db } from "@/lib/firebase";
+import { doc, setDoc, serverTimestamp } from "firebase/firestore";
+
 export async function triggerStatsRecalc(
   organizerUid: string | null | undefined,
   sessionId: string,
@@ -7,9 +10,9 @@ export async function triggerStatsRecalc(
     workerUrl?: string;
     fireAndForget?: boolean; // default true
   }
-): Promise<void> {
+): Promise<Response | null> {
   try {
-    if (!organizerUid) return;
+    if (!organizerUid) return null;
 
     const workerUrl =
       opts?.workerUrl ||
@@ -38,12 +41,31 @@ export async function triggerStatsRecalc(
     const p = fetch(workerUrl, fetchInit);
     if (!fireAndForget) {
       const res = await p;
-      if (!res.ok) {
-        // surface error for caller in testable mode
-        throw new Error(`Stats worker failed: ${res.status}`);
-      }
+      return res;
     }
-  } catch {
+    return null;
+  } catch (e) {
     // swallow errors for background trigger
+    return null;
   }
+}
+
+export async function recordStatsRecalcFailure(
+  organizerUid: string | null | undefined,
+  sessionId: string,
+  error?: string | number | null
+) {
+  if (!organizerUid) return;
+  const id = `${organizerUid}_${sessionId}`;
+  const ref = doc(db as any, "statsRecalcFailures", id);
+  await setDoc(
+    ref as any,
+    {
+      organizerUid,
+      sessionId,
+      error: typeof error === "undefined" ? null : String(error),
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
 }

@@ -26,6 +26,7 @@ import {
 } from "@/lib/helper";
 import { Card, Label, Input, Select } from "@/components/layout";
 import { EndSessionModal } from "@/components/session/endSessionModal";
+import { triggerStatsRecalc, recordStatsRecalcFailure } from "@/lib/stats";
 import { AutoAssignSettingsButton } from "@/components/session/autoAssignSettingsButton";
 import { ShareClaimsButton } from "@/components/session/rowKebabMenu";
 import { RowKebabMenu } from "@/components/session/rowKebabMenu";
@@ -36,7 +37,6 @@ import Link from "next/link";
 import LoadingScreen from "@/components/LoadingScreen";
 import UsernameModal from "@/components/UsernameModal";
 import { subscribeUserProfile, claimUsername } from "@/lib/firestoreSessions";
-import { triggerStatsRecalc } from "@/lib/stats";
 
 /**
  * Single-file Next.js page (drop into app/page.tsx)
@@ -600,7 +600,22 @@ function SessionList({ onOpen }: { onOpen: (id: string) => void }) {
                 Number.isFinite(num) && num >= 0 ? Math.floor(num) : undefined
               );
             if (endFor) {
-              void triggerStatsRecalc(auth.currentUser?.uid, endFor);
+              (async () => {
+                const res = await triggerStatsRecalc(
+                  auth.currentUser?.uid,
+                  endFor,
+                  {
+                    fireAndForget: false,
+                  }
+                );
+                if (!res || !res.ok) {
+                  await recordStatsRecalcFailure(
+                    auth.currentUser?.uid || null,
+                    endFor,
+                    res ? res.status : "fetch-error"
+                  );
+                }
+              })();
             }
             setEndFor(null);
           }}
