@@ -131,6 +131,10 @@ export default function PublicProfilePage() {
               wins: 0,
               durationMin: 0,
             };
+            recent.sort((a: any, b: any) =>
+              (b.endedAt || "").localeCompare(a.endedAt || "")
+            );
+            console.log("recent", recent);
             const last10 = recent.slice(0, 10).map((r: any) => r.result);
 
             const labels = (monthly || []).map((m) => m.id);
