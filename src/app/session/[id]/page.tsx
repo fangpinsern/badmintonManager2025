@@ -160,6 +160,7 @@ function SessionManager({ onBack }: { onBack: () => void }) {
   const [endShuttles, setEndShuttles] = useState<string>("0");
   const [editGameId, setEditGameId] = useState<string | null>(null);
   const [gamesFilter, setGamesFilter] = useState<string>("");
+  const [gamesPage, setGamesPage] = useState<number>(1); // 10 per page
 
   // Drag-and-drop removed; assignments are via dropdowns only
 
@@ -196,6 +197,12 @@ function SessionManager({ onBack }: { onBack: () => void }) {
       (g) => g.sideA.includes(gamesFilter) || g.sideB.includes(gamesFilter)
     );
   }, [session, gamesFilter]);
+  const pageSize = 10;
+  const pagedGames = useMemo(() => {
+    const start = 0;
+    const end = gamesPage * pageSize;
+    return filteredGames.slice(start, end);
+  }, [filteredGames, gamesPage]);
 
   // Username search/add removed
 
@@ -837,39 +844,54 @@ function SessionManager({ onBack }: { onBack: () => void }) {
                     </div>
                     <div className="col-span-6 flex items-center justify-end gap-2">
                       {isOrganizer && !session.ended && !inGame ? (
-                        <Select
-                          value={currentIdx ?? ""}
-                          disabled={!!session.ended || inGame}
-                          onChange={(v) => {
-                            if (v === "") assign(session.id, p.id, null);
-                            else assign(session.id, p.id, Number(v));
-                          }}
-                        >
-                          <option value="">Unassigned</option>
+                        <div className="flex max-w-full flex-wrap items-center gap-1">
+                          <button
+                            onClick={() => assign(session.id, p.id, null)}
+                            disabled={false}
+                            className={`rounded border px-2 py-0.5 text-[10px] ${
+                              currentIdx == null
+                                ? "bg-gray-900 text-white"
+                                : "text-gray-700"
+                            }`}
+                          >
+                            U
+                          </button>
                           {Array.from({ length: session.numCourts }).map(
                             (_, i) => {
                               const court = session.courts[i];
-                              const cap =
-                                (court?.mode || "doubles") === "singles"
-                                  ? 2
-                                  : 4;
+                              const isSingles =
+                                (court?.mode || "doubles") === "singles";
+                              const cap = isSingles ? 2 : 4;
                               const occ = occupancy[i];
-                              const label =
-                                (court?.mode || "doubles") === "singles"
-                                  ? "S"
-                                  : "D";
+                              const disabled =
+                                inGame ||
+                                !!session.ended ||
+                                (currentIdx !== i && occ >= cap) ||
+                                court?.inProgress;
+                              const active = currentIdx === i;
                               return (
-                                <option
+                                <button
                                   key={i}
-                                  value={i}
-                                  disabled={currentIdx !== i && occ >= cap}
+                                  onClick={() => assign(session.id, p.id, i)}
+                                  disabled={disabled}
+                                  className={`rounded border px-2 py-0.5 text-[10px] ${
+                                    active
+                                      ? "bg-gray-900 text-white"
+                                      : disabled
+                                      ? "text-gray-400"
+                                      : "text-gray-700"
+                                  }`}
+                                  title={`Court ${i + 1} (${
+                                    isSingles ? "S" : "D"
+                                  }) (${occ}/${cap})`}
+                                  aria-label={`Assign to court ${i + 1}`}
                                 >
-                                  Court {i + 1} ({label}) ({occ}/{cap})
-                                </option>
+                                  c{i + 1}
+                                </button>
                               );
                             }
                           )}
-                        </Select>
+                        </div>
                       ) : (
                         <span className="inline-flex items-center rounded-full bg-gray-100 px-2 py-0.5 text-[10px] text-gray-700">
                           {currentIdx === null ||
@@ -946,7 +968,7 @@ function SessionManager({ onBack }: { onBack: () => void }) {
           <p className="text-gray-500">No games recorded yet.</p>
         ) : (
           <div className="space-y-2">
-            {filteredGames.map((g) => {
+            {pagedGames.map((g) => {
               const selected = gamesFilter || "";
               const playedA = selected && g.sideA.includes(selected);
               const playedB = selected && g.sideB.includes(selected);
@@ -1076,6 +1098,20 @@ function SessionManager({ onBack }: { onBack: () => void }) {
                 </div>
               );
             })}
+            {filteredGames.length > pagedGames.length ? (
+              <div className="mt-2 flex justify-center">
+                <button
+                  onClick={() => setGamesPage((p) => p + 1)}
+                  className="rounded border px-2 py-1 text-xs"
+                >
+                  See more
+                </button>
+              </div>
+            ) : (
+              <div className="mt-2 text-center text-[11px] text-gray-500">
+                End of list
+              </div>
+            )}
           </div>
         )}
       </Card>

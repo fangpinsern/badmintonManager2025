@@ -231,7 +231,7 @@ function CourtCard({
                       in other game
                     </span>
                   )}
-                  {isOrganizer && (
+                  {isOrganizer && !court.inProgress && (
                     <button
                       onClick={() => setPair(session.id, idx, pid, null)}
                       className="text-[10px] text-gray-600"
@@ -272,12 +272,14 @@ function CourtCard({
                       in other game
                     </span>
                   )}
-                  <button
-                    onClick={() => setPair(session.id, idx, pid, null)}
-                    className="text-[10px] text-gray-600"
-                  >
-                    ×
-                  </button>
+                  {isOrganizer && !court.inProgress && (
+                    <button
+                      onClick={() => setPair(session.id, idx, pid, null)}
+                      className="text-[10px] text-gray-600"
+                    >
+                      ×
+                    </button>
+                  )}
                 </div>
               );
             })}

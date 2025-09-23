@@ -103,9 +103,30 @@ type Session = {
   stats?: SessionStats;
   autoAssignBlacklist?: { pairs: { a: string; b: string }[] };
   autoAssignConfig?: {
+    // legacy flag retained for backward compatibility (maps to respectGender="soft")
     balanceGender?: boolean;
+    // v2 competitive config (all optional; sensible defaults applied)
+    priority?: "competitiveness" | "variety" | "rest";
+    weights?: Partial<{
+      closeW: number;
+      withinW: number;
+      partnerRepeatW: number;
+      oppRepeatW: number;
+      restW: number;
+      fairnessW: number;
+      genderSoftPenalty: number;
+      randomW: number;
+    }>;
+    maxKSingles?: number;
+    maxKDoubles?: number;
+    respectGender?: "hard" | "soft" | "off";
+    blacklistMode?: "hard" | "soft";
   };
   autoAssignExclude?: string[]; // playerIds to exclude from auto-assign
+  // Competitive ratings (session-local). Optional; defaults used when missing
+  ratings?: Record<string, number>; // Elo-like rating per player (default 1200)
+  synergy?: Record<string, Record<string, number>>; // optional team synergy adjustment (symmetric)
+  ratingMeta?: Record<string, { gamesInSession?: number }>; // per-player session counters for K-schedule
   storage?: "remote" | "local";
 };
 

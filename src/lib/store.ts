@@ -3,6 +3,11 @@ import { nanoid } from "nanoid";
 import { Session, PlatformPlayer, Player, Court, Game } from "@/types/player";
 import { createSessionDoc, deleteSessionDoc } from "@/lib/firestoreSessions";
 import { computeSessionStats } from "@/lib/helper";
+import {
+  computeCompetitiveAssignmentForCourt,
+  computeCompetitiveNextQueue,
+  applyEloAfterGame,
+} from "@/lib/autoAssign";
 
 interface StoreState {
   sessions: Session[];
@@ -84,6 +89,10 @@ interface StoreState {
   // updateAutoAssignConfig removed
   addBlacklistPair: (sessionId: string, a: string, b: string) => void;
   removeBlacklistPair: (sessionId: string, a: string, b: string) => void;
+  updateSessionConfig: (
+    sessionId: string,
+    partial: Partial<NonNullable<Session["autoAssignConfig"]>>
+  ) => void;
 }
 
 const useStore = create<StoreState>()((set, _get) => ({
@@ -306,6 +315,9 @@ const useStore = create<StoreState>()((set, _get) => ({
         let courts = ss.courts.map((c) => ({
           ...c,
           playerIds: c.playerIds.filter((pid) => pid !== playerId),
+          // Also remove from existing team assignments on that court
+          pairA: (c.pairA || []).filter((pid) => pid !== playerId),
+          pairB: (c.pairB || []).filter((pid) => pid !== playerId),
         }));
         if (courtIndex === null) {
           return { ...ss, courts };
@@ -913,271 +925,19 @@ const useStore = create<StoreState>()((set, _get) => ({
         }));
         const court = courts[courtIndex];
         if (!court || court.inProgress) return ss;
-        const isSingles = (court.mode || "doubles") === "singles";
-        const cap = isSingles ? 2 : 4;
-        const need = cap - court.playerIds.length;
-        if (need <= 0) return ss;
-
-        // Build unassigned pool
-        const assigned = new Set<string>(courts.flatMap((c) => c.playerIds));
-        const allPlayers = ss.players.map((p) => ({
-          id: p.id,
-          name: p.name,
-          games: p.gamesPlayed ?? 0,
-        }));
-        const excluded = new Set(ss.autoAssignExclude || []);
-        const pool = allPlayers.filter(
-          (p) => !assigned.has(p.id) && !excluded.has(p.id)
+        const result = computeCompetitiveAssignmentForCourt(
+          { ...ss, courts },
+          courtIndex
         );
-        if (pool.length === 0) return ss;
-
-        // Compute consecutive-game streaks (higher means more back-to-back games)
-        const streak = new Map<string, number>();
-        const gamesSorted = [...(ss.games || [])].sort(
-          (a, b) =>
-            new Date(b.endedAt).getTime() - new Date(a.endedAt).getTime()
-        );
-        for (const p of ss.players) {
-          let cst = 0;
-          for (const g of gamesSorted) {
-            const inG = (
-              g.players && g.players.length
-                ? g.players
-                : [...g.sideA, ...g.sideB]
-            ).includes(p.id);
-            if (inG) cst += 1;
-            else break;
-          }
-          streak.set(p.id, cst);
-        }
-
-        // Pairwise co-appearance counts from session games (voided included)
-        const coCount = new Map<string, Map<string, number>>();
-        const inc = (a: string, b: string) => {
-          if (a === b) return;
-          if (!coCount.has(a)) coCount.set(a, new Map());
-          const m = coCount.get(a)!;
-          m.set(b, (m.get(b) || 0) + 1);
-        };
-        for (const g of ss.games || []) {
-          const ps =
-            g.players && g.players.length
-              ? g.players
-              : [...g.sideA, ...g.sideB];
-          for (let i = 0; i < ps.length; i++) {
-            for (let j = i + 1; j < ps.length; j++) {
-              inc(ps[i], ps[j]);
-              inc(ps[j], ps[i]);
-            }
-          }
-        }
-        const getCo = (a: string, b: string) => coCount.get(a)?.get(b) || 0;
-
-        // Sort pool by games asc, then name
-        {
-          pool.sort(
-            (a, b) => a.games - b.games || a.name.localeCompare(b.name)
-          );
-        }
-
-        const chosen: string[] = [];
-        const candidateIds = pool.map((p) => p.id);
-        const fairnessW = 1;
-        const repeatW = 1000;
-        const restW = 2000; // strong penalty to avoid back-to-back
-        const genderBalancePenalty = (ids: string[]) => {
-          // Only applies to doubles; penalize if team A and B can't be balanced by gender (M/F)
-          // We don't know team split here; approximate by penalizing odd counts of M or F in the chosen set
-          const genders = new Map<string, Player["gender"]>();
-          ss.players.forEach((p) => {
-            if (p.gender) genders.set(p.id, p.gender);
-          });
-          let m = 0,
-            f = 0;
-          for (const id of ids) {
-            const g = genders.get(id);
-            if (g === "M") m++;
-            else if (g === "F") f++;
-          }
-          // best-balanced doubles set has even counts of each (e.g., 0/4, 2/2, 4/0), otherwise add penalty
-          const isBalanced = m % 2 === 0 && f % 2 === 0;
-          if ((ss.autoAssignConfig?.balanceGender ?? true) === false) return 0;
-          return isBalanced ? 0 : 500; // moderate penalty
-        };
-
-        if (isSingles) {
-          // Choose best pair among top K candidates (limit for perf)
-          const K = Math.min(candidateIds.length, 10);
-          let best: { pair: [string, string]; score: number } | null = null;
-          for (let i = 0; i < K; i++) {
-            for (let j = i + 1; j < K; j++) {
-              const a = pool[i];
-              const b = pool[j];
-              const repeat = getCo(a.id, b.id);
-              const score =
-                repeat * repeatW +
-                fairnessW * (a.games + b.games) +
-                restW * ((streak.get(a.id) || 0) + (streak.get(b.id) || 0));
-              if (!best || score < best.score)
-                best = { pair: [a.id, b.id], score };
-            }
-          }
-          if (best) chosen.push(...best.pair);
-          else
-            chosen.push(
-              ...candidateIds.slice(0, Math.min(need, candidateIds.length))
-            );
-        } else {
-          // Doubles: choose 4 players minimizing co-appearance among the 4 and total games
-          const K = Math.min(candidateIds.length, 8);
-          let bestSet: string[] = [];
-          let bestScore = Infinity;
-          let bestHasBlacklist = true; // prefer non-blacklisted sets first
-          const idxs: number[] = Array.from({ length: K }, (_, i) => i);
-          // enumerate combinations of size (need) but at least up to 4; if need<4, still pick need
-          const choose = (
-            arr: number[],
-            k: number,
-            start: number,
-            acc: number[]
-          ) => {
-            if (acc.length === k) {
-              const ids = acc.map((ii) => pool[ii].id);
-              // blacklist detection for doubles pairs (highest priority to avoid)
-              let hasBlacklist = false;
-              if ((ss.autoAssignBlacklist?.pairs || []).length) {
-                const bl = ss.autoAssignBlacklist!.pairs;
-                const hasPair = (x: string, y: string) =>
-                  bl.some(
-                    (p) => (p.a === x && p.b === y) || (p.a === y && p.b === x)
-                  );
-                outer: for (let i = 0; i < ids.length; i++) {
-                  for (let j = i + 1; j < ids.length; j++) {
-                    if (hasPair(ids[i], ids[j])) {
-                      hasBlacklist = true;
-                      break outer;
-                    }
-                  }
-                }
-              }
-              // compute repeat score
-              let repeat = 0;
-              for (let i = 0; i < ids.length; i++) {
-                for (let j = i + 1; j < ids.length; j++)
-                  repeat += getCo(ids[i], ids[j]);
-              }
-              let gamesSum = 0;
-              for (const ii of acc) gamesSum += pool[ii].games;
-              let restSum = 0;
-              for (const id of ids) restSum += streak.get(id) || 0;
-              const score =
-                genderBalancePenalty(ids) +
-                repeat * repeatW +
-                fairnessW * gamesSum +
-                restW * restSum;
-              if (
-                (!hasBlacklist && bestHasBlacklist) ||
-                (hasBlacklist === bestHasBlacklist && score < bestScore)
-              ) {
-                bestHasBlacklist = hasBlacklist;
-                bestScore = score;
-                bestSet = ids;
-              }
-              return;
-            }
-            for (let i = start; i < arr.length; i++) {
-              acc.push(arr[i]);
-              choose(arr, k, i + 1, acc);
-              acc.pop();
-            }
-          };
-          choose(idxs, Math.min(need, 4), 0, []);
-          if (bestSet.length) bestSet.forEach((id) => chosen.push(id));
-        }
-
-        // Fill the court
-        for (const pid of chosen) {
+        if (!result) return ss;
+        const { playerIdsToAdd, pairA, pairB } = result;
+        const cap = (court.mode || "doubles") === "singles" ? 2 : 4;
+        for (const pid of playerIdsToAdd) {
           if (court.playerIds.length >= cap) break;
           if (!court.playerIds.includes(pid)) court.playerIds.push(pid);
         }
-
-        // Also assign teams (Pair A / Pair B) up to required sizes, avoiding blacklisted pairs in the same team
-        const reqTeam = isSingles ? 1 : 2;
-        const initialA = [...(court.pairA || [])];
-        const initialB = [...(court.pairB || [])];
-        const remaining = court.playerIds.filter(
-          (pid) => !initialA.includes(pid) && !initialB.includes(pid)
-        );
-        const blPairs = ss.autoAssignBlacklist?.pairs || [];
-        const isBL = (x: string, y: string) =>
-          blPairs.some(
-            (p) => (p.a === x && p.b === y) || (p.a === y && p.b === x)
-          );
-
-        function canPlace(pid: string, team: string[]): boolean {
-          for (const q of team) {
-            if (isBL(pid, q)) return false;
-          }
-          return true;
-        }
-
-        let bestAssign: { a: string[]; b: string[] } | null = null as any;
-        function dfs(idx: number, a: string[], b: string[]) {
-          if (a.length > reqTeam || b.length > reqTeam) return;
-          if (idx === remaining.length) {
-            if (a.length === reqTeam && b.length === reqTeam) {
-              bestAssign = { a: [...a], b: [...b] };
-            }
-            return;
-          }
-          const pid = remaining[idx];
-          // try A
-          if (a.length < reqTeam && canPlace(pid, a)) {
-            a.push(pid);
-            dfs(idx + 1, a, b);
-            a.pop();
-            if (bestAssign) return; // found valid
-          }
-          // try B
-          if (b.length < reqTeam && canPlace(pid, b)) {
-            b.push(pid);
-            dfs(idx + 1, a, b);
-            b.pop();
-            if (bestAssign) return;
-          }
-          // try skipping (if not required to fill completely)
-          dfs(idx + 1, a, b);
-        }
-
-        // seed with initial members (ensure they don't violate blacklist among themselves)
-        const initValid =
-          initialA.every((x, i) =>
-            initialA.slice(i + 1).every((y) => !isBL(x, y))
-          ) &&
-          initialB.every((x, i) =>
-            initialB.slice(i + 1).every((y) => !isBL(x, y))
-          );
-        if (initValid) {
-          dfs(0, [...initialA], [...initialB]);
-        }
-        if (bestAssign) {
-          court.pairA = bestAssign.a;
-          court.pairB = bestAssign.b;
-        } else {
-          // fallback to naive fill if constraints impossible
-          const pairA = [...initialA];
-          const pairB = [...initialB];
-          for (const pid of remaining) {
-            if (pairA.length < reqTeam && canPlace(pid, pairA)) pairA.push(pid);
-            else if (pairB.length < reqTeam && canPlace(pid, pairB))
-              pairB.push(pid);
-            else if (pairA.length < reqTeam) pairA.push(pid);
-            else if (pairB.length < reqTeam) pairB.push(pid);
-            if (pairA.length >= reqTeam && pairB.length >= reqTeam) break;
-          }
-          court.pairA = pairA;
-          court.pairB = pairB;
-        }
+        court.pairA = pairA.slice(0);
+        court.pairB = pairB.slice(0);
         return { ...ss, courts };
       }),
     })),
@@ -1190,223 +950,23 @@ const useStore = create<StoreState>()((set, _get) => ({
         const courts = ss.courts.map((c) => ({
           ...c,
           queue: [...(c.queue || [])],
+          nextA: [...(c.nextA || [])],
+          nextB: [...(c.nextB || [])],
         }));
-        const court = courts[courtIndex];
-        if (!court) return ss;
-        const isSingles = (court.mode || "doubles") === "singles";
-        const cap = isSingles ? 2 : 4;
-
-        // Build eligible pool: not on any court, not busy (in-progress), not excluded, not in any other queue
-        const busy = new Set<string>();
-        const queuedElsewhere = new Set<string>();
-        courts.forEach((c, i) => {
-          if (c.inProgress) c.playerIds.forEach((pid) => busy.add(pid));
-          if (i !== courtIndex)
-            (c.queue || []).forEach((pid) => queuedElsewhere.add(pid));
-        });
-        const excluded = new Set(ss.autoAssignExclude || []);
-        const assigned = new Set<string>(courts.flatMap((c) => c.playerIds));
-        const allPlayers = ss.players.map((p) => ({
-          id: p.id,
-          name: p.name,
-          games: p.gamesPlayed ?? 0,
-        }));
-        // allow queuing busy players; only filter when starting the game, not for next selection
-        const pool = allPlayers.filter(
-          (p) =>
-            !assigned.has(p.id) &&
-            !excluded.has(p.id) &&
-            !queuedElsewhere.has(p.id)
+        const result = computeCompetitiveNextQueue(
+          { ...ss, courts },
+          courtIndex
         );
-        if (pool.length < cap) return ss;
-
-        // Build co-appearance counts
-        const coCount = new Map<string, Map<string, number>>();
-        const inc = (a: string, b: string) => {
-          if (a === b) return;
-          if (!coCount.has(a)) coCount.set(a, new Map());
-          const m = coCount.get(a)!;
-          m.set(b, (m.get(b) || 0) + 1);
-        };
-        for (const g of ss.games || []) {
-          const ps =
-            g.players && g.players.length
-              ? g.players
-              : [...g.sideA, ...g.sideB];
-          for (let i = 0; i < ps.length; i++) {
-            for (let j = i + 1; j < ps.length; j++) {
-              inc(ps[i], ps[j]);
-              inc(ps[j], ps[i]);
-            }
-          }
+        if (!result) {
+          (ss as any).__lastAutoAssignError =
+            "Not enough eligible players to auto-assign next teams.";
+          return ss;
         }
-        const getCo = (a: string, b: string) => coCount.get(a)?.get(b) || 0;
-
-        // gender balance penalty (like court auto-assign) + rest streak
-        const genderBalancePenalty = (ids: string[]) => {
-          const genders = new Map<string, Player["gender"]>();
-          ss.players.forEach((p) => {
-            if (p.gender) genders.set(p.id, p.gender);
-          });
-          let m = 0,
-            f = 0;
-          for (const id of ids) {
-            const g = genders.get(id);
-            if (g === "M") m++;
-            else if (g === "F") f++;
-          }
-          const isBalanced = m % 2 === 0 && f % 2 === 0;
-          if ((ss.autoAssignConfig?.balanceGender ?? true) === false) return 0;
-          return isBalanced ? 0 : 500;
-        };
-        const streak = new Map<string, number>();
-        const gamesSorted = [...(ss.games || [])].sort(
-          (a, b) =>
-            new Date(b.endedAt).getTime() - new Date(a.endedAt).getTime()
-        );
-        for (const p of ss.players) {
-          let cst = 0;
-          for (const g of gamesSorted) {
-            const inG = (
-              g.players && g.players.length
-                ? g.players
-                : [...g.sideA, ...g.sideB]
-            ).includes(p.id);
-            if (inG) cst += 1;
-            else break;
-          }
-          streak.set(p.id, cst);
-        }
-
-        const fairnessW = 1;
-        const repeatW = 1000;
-
-        const chosen: string[] = [];
-        if (isSingles) {
-          const K = Math.min(pool.length, 10);
-          let best: { pair: [string, string]; score: number } | null = null;
-          for (let i = 0; i < K; i++) {
-            for (let j = i + 1; j < K; j++) {
-              const a = pool[i];
-              const b = pool[j];
-              const repeat = getCo(a.id, b.id);
-              const score =
-                repeat * repeatW +
-                fairnessW * (a.games + b.games) +
-                2000 * ((streak.get(a.id) || 0) + (streak.get(b.id) || 0));
-              if (!best || score < best.score)
-                best = { pair: [a.id, b.id], score };
-            }
-          }
-          if (best) chosen.push(...best.pair);
-        } else {
-          const K = Math.min(pool.length, 8);
-          let bestSet: string[] = [];
-          let bestScore = Infinity;
-          let bestHasBlacklist = true;
-          const idxs: number[] = Array.from({ length: K }, (_, i) => i);
-          const choose = (
-            arr: number[],
-            k: number,
-            start: number,
-            acc: number[]
-          ) => {
-            if (acc.length === k) {
-              const ids = acc.map((ii) => pool[ii].id);
-              let hasBlacklist = false;
-              const bl = ss.autoAssignBlacklist?.pairs || [];
-              const hasPair = (x: string, y: string) =>
-                bl.some(
-                  (p) => (p.a === x && p.b === y) || (p.a === y && p.b === x)
-                );
-              outer: for (let i = 0; i < ids.length; i++) {
-                for (let j = i + 1; j < ids.length; j++) {
-                  if (hasPair(ids[i], ids[j])) {
-                    hasBlacklist = true;
-                    break outer;
-                  }
-                }
-              }
-              let repeat = 0;
-              for (let i = 0; i < ids.length; i++) {
-                for (let j = i + 1; j < ids.length; j++)
-                  repeat += getCo(ids[i], ids[j]);
-              }
-              let gamesSum = 0;
-              for (const ii of acc) gamesSum += pool[ii].games;
-              let restSum = 0;
-              for (const id of ids) restSum += streak.get(id) || 0;
-              const score =
-                genderBalancePenalty(ids) +
-                repeat * repeatW +
-                fairnessW * gamesSum +
-                2000 * restSum;
-              if (
-                (!hasBlacklist && bestHasBlacklist) ||
-                (hasBlacklist === bestHasBlacklist && score < bestScore)
-              ) {
-                bestHasBlacklist = hasBlacklist;
-                bestScore = score;
-                bestSet = ids;
-              }
-              return;
-            }
-            for (let i = start; i < arr.length; i++) {
-              acc.push(arr[i]);
-              choose(arr, k, i + 1, acc);
-              acc.pop();
-            }
-          };
-          choose(idxs, 4, 0, []);
-          if (bestSet.length) chosen.push(...bestSet);
-        }
-        if (chosen.length < cap) return ss;
-
-        // Set queue to chosen and compute nextA/nextB avoiding blacklists
-        court.queue = chosen.slice(0, cap);
-        court.nextA = [];
-        court.nextB = [];
-        const blPairs = ss.autoAssignBlacklist?.pairs || [];
-        const isBL = (x: string, y: string) =>
-          blPairs.some(
-            (p) => (p.a === x && p.b === y) || (p.a === y && p.b === x)
-          );
-        function canPlace(pid: string, team: string[]): boolean {
-          for (const q of team) {
-            if (isBL(pid, q)) return false;
-          }
-          return true;
-        }
-        const reqTeam = isSingles ? 1 : 2;
-        let bestAssign: { a: string[]; b: string[] } | null = null as any;
-        function dfs(idx: number, a: string[], b: string[]) {
-          if (a.length > reqTeam || b.length > reqTeam) return;
-          if (idx === court.queue.length) {
-            if (a.length === reqTeam && b.length === reqTeam)
-              bestAssign = { a: [...a], b: [...b] };
-            return;
-          }
-          const pid = court.queue[idx];
-          if (a.length < reqTeam && canPlace(pid, a)) {
-            a.push(pid);
-            dfs(idx + 1, a, b);
-            a.pop();
-            if (bestAssign) return;
-          }
-          if (b.length < reqTeam && canPlace(pid, b)) {
-            b.push(pid);
-            dfs(idx + 1, a, b);
-            b.pop();
-            if (bestAssign) return;
-          }
-          dfs(idx + 1, a, b);
-        }
-        dfs(0, [], []);
-        if (bestAssign) {
-          court.nextA = bestAssign.a;
-          court.nextB = bestAssign.b;
-        }
-
+        const { queue, nextA, nextB } = result;
+        courts[courtIndex].queue = queue;
+        courts[courtIndex].nextA = nextA;
+        courts[courtIndex].nextB = nextB;
+        (ss as any).__lastAutoAssignError = undefined;
         return { ...ss, courts };
       }),
     })),
@@ -1433,6 +993,16 @@ const useStore = create<StoreState>()((set, _get) => ({
           (p) => !((p.a === a && p.b === b) || (p.a === b && p.b === a))
         );
         return { ...ss, autoAssignBlacklist: { pairs: filtered } };
+      }),
+    })),
+
+  updateSessionConfig: (sessionId, partial) =>
+    set((s) => ({
+      sessions: s.sessions.map((ss) => {
+        if (ss.id !== sessionId) return ss;
+        const prev = ss.autoAssignConfig || {};
+        const next = { ...prev, ...partial } as Session["autoAssignConfig"];
+        return { ...ss, autoAssignConfig: next };
       }),
     })),
 

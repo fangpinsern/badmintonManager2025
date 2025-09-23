@@ -470,7 +470,14 @@ function SessionForm({
 
 function SessionList({ onOpen }: { onOpen: (id: string) => void }) {
   const router = useRouter();
-  const sessions = useStore((s) => s.sessions);
+  const sessions = useStore((s) => {
+    s.sessions.sort((a, b) =>
+      (b.date + "T" + (b.time ?? "00:00")).localeCompare(
+        a.date + "T" + (a.time ?? "00:00")
+      )
+    );
+    return s.sessions;
+  });
   const deleteSession = useStore((s) => s.deleteSession);
   const endSession = useStore((s) => s.endSession);
   const [endFor, setEndFor] = useState<string | null>(null);
@@ -487,99 +494,95 @@ function SessionList({ onOpen }: { onOpen: (id: string) => void }) {
 
   return (
     <div className="space-y-3">
-      {sessions.map((ss) => (
-        <Card key={ss.id}>
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <div className="font-medium flex items-center gap-2">
-                <span>{formatSessionTitle(ss)}</span>
-                {(() => {
-                  try {
-                    const owner =
-                      (window as any).__sessionOwners?.get?.(ss.id) || null;
-                    const isOrganizer = owner && me ? owner === me : false;
-                    return (
-                      <span
-                        className={`rounded-full px-2 py-0.5 text-[10px] ${
-                          isOrganizer
-                            ? "bg-blue-50 text-blue-700"
-                            : "bg-gray-100 text-gray-600"
-                        }`}
-                      >
-                        {isOrganizer ? "Organizer" : "Participant"}
-                      </span>
-                    );
-                  } catch {
-                    return null;
-                  }
-                })()}
-              </div>
-              <div className="text-xs text-gray-500">
-                {ss.numCourts} court{ss.numCourts > 1 ? "s" : ""}
-                {(() => {
-                  const singles = (ss.courts || []).filter(
-                    (c) => (c.mode || "doubles") === "singles"
-                  ).length;
-                  const doubles = (ss.courts || []).filter(
-                    (c) => (c.mode || "doubles") === "doubles"
-                  ).length;
-                  const parts: string[] = [];
-                  if (doubles) parts.push(`${doubles} doubles`);
-                  if (singles) parts.push(`${singles} singles`);
-                  return parts.length ? ` · ${parts.join(", ")}` : "";
-                })()}
-                · {ss.players.length} player{ss.players.length !== 1 ? "s" : ""}
-              </div>
-              {ss.ended && (
-                <div className="mt-1 text-[11px] text-emerald-700">
-                  Ended
-                  {ss.endedAt
-                    ? ` · ${new Date(ss.endedAt).toLocaleString()}`
-                    : ""}
+      {sessions.map((ss) => {
+        const owner = (window as any).__sessionOwners?.get?.(ss.id) || null;
+        const isOrganizer = owner && me ? owner === me : false;
+        return (
+          <Card key={ss.id}>
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="font-medium flex items-center gap-2">
+                  <span>{formatSessionTitle(ss)}</span>
+                  <span
+                    className={`rounded-full px-2 py-0.5 text-[10px] ${
+                      isOrganizer
+                        ? "bg-blue-50 text-blue-700"
+                        : "bg-gray-100 text-gray-600"
+                    }`}
+                  >
+                    {isOrganizer ? "Organizer" : "Participant"}
+                  </span>
                 </div>
-              )}
-            </div>
-            <div className="flex items-center gap-2">
-              {/* <Link
+                <div className="text-xs text-gray-500">
+                  {ss.numCourts} court{ss.numCourts > 1 ? "s" : ""}
+                  {(() => {
+                    const singles = (ss.courts || []).filter(
+                      (c) => (c.mode || "doubles") === "singles"
+                    ).length;
+                    const doubles = (ss.courts || []).filter(
+                      (c) => (c.mode || "doubles") === "doubles"
+                    ).length;
+                    const parts: string[] = [];
+                    if (doubles) parts.push(`${doubles} doubles`);
+                    if (singles) parts.push(`${singles} singles`);
+                    return parts.length ? ` · ${parts.join(", ")}` : "";
+                  })()}
+                  · {ss.players.length} player
+                  {ss.players.length !== 1 ? "s" : ""}
+                </div>
+                {ss.ended && (
+                  <div className="mt-1 text-[11px] text-emerald-700">
+                    Ended
+                    {ss.endedAt
+                      ? ` · ${new Date(ss.endedAt).toLocaleString()}`
+                      : ""}
+                  </div>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                {/* <Link
                 href={`/session/${ss.id}`}
                 className="rounded-xl border border-gray-300 px-3 py-1.5"
               >
                 Open
               </Link> */}
-              <button
-                onClick={() => {
-                  onOpen(ss.id);
-                  router.push(`/session/${ss.id}`);
-                }}
-                className="rounded-xl border border-gray-300 px-3 py-1.5"
-              >
-                Open
-              </button>
-              {!ss.ended && (
                 <button
                   onClick={() => {
-                    if ((ss.courts || []).some((c) => c.inProgress)) return;
-                    setEndFor(ss.id);
-                    setShuttles("0");
+                    onOpen(ss.id);
+                    router.push(`/session/${ss.id}`);
                   }}
-                  disabled={(ss.courts || []).some((c) => c.inProgress)}
-                  className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-1.5 text-amber-700 disabled:opacity-50"
+                  className="rounded-xl border border-gray-300 px-3 py-1.5"
                 >
-                  End
+                  Open
                 </button>
-              )}
-              <button
-                onClick={() => {
-                  if (confirm("Delete this session?")) deleteSession(ss.id);
-                }}
-                className="rounded-xl border border-red-200 bg-red-50 px-3 py-1.5 text-red-600"
-              >
-                Delete
-              </button>
+                {!ss.ended && isOrganizer && (
+                  <button
+                    onClick={() => {
+                      if ((ss.courts || []).some((c) => c.inProgress)) return;
+                      setEndFor(ss.id);
+                      setShuttles("0");
+                    }}
+                    disabled={(ss.courts || []).some((c) => c.inProgress)}
+                    className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-1.5 text-amber-700 disabled:opacity-50"
+                  >
+                    End
+                  </button>
+                )}
+                {isOrganizer && (
+                  <button
+                    onClick={() => {
+                      if (confirm("Delete this session?")) deleteSession(ss.id);
+                    }}
+                    className="rounded-xl border border-red-200 bg-red-50 px-3 py-1.5 text-red-600"
+                  >
+                    Delete
+                  </button>
+                )}
+              </div>
             </div>
-          </div>
-        </Card>
-      ))}
+          </Card>
+        );
+      })}
       {!!endFor && (
         <EndSessionModal
           title={
