@@ -464,7 +464,7 @@ export function computeCompetitiveNextQueue(
   if (baseSelectable.length === 0) return null;
 
   // Prefer free players first, but also include those currently on the same court
-  let pool = baseSelectable.filter(
+  const pool = baseSelectable.filter(
     (p) => !assigned.has(p.id) || court.playerIds.includes(p.id)
   );
   if (pool.length < cap) return null;
