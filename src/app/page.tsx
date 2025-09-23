@@ -85,8 +85,8 @@ function Page() {
   const lastSaved = useRef<Map<string, string>>(new Map());
   const ownSessionIdsRef = useRef<Set<string>>(new Set());
   const sessionOwnerUidRef = useRef<Map<string, string>>(new Map());
-  // const linkPlayerToAccount = useStore((s) => s.linkPlayerToAccount);
-  // const searchParams = useSearchParams();
+  const linkPlayerToAccount = useStore((s) => s.linkPlayerToAccount);
+  const searchParams = useSearchParams();
   const pendingClaimRef = useRef<{
     ouid: string;
     sid: string;
@@ -115,16 +115,16 @@ function Page() {
   }, [user?.uid]);
 
   // Capture claim params from URL, preselect session
-  // useEffect(() => {
-  //   const claim = searchParams.get("claim");
-  //   const ouid = searchParams.get("ouid");
-  //   const sid = searchParams.get("sid");
-  //   const pid = searchParams.get("pid");
-  //   if (claim && ouid && sid && pid) {
-  //     pendingClaimRef.current = { ouid, sid, pid };
-  //     setSelectedSessionId(sid);
-  //   }
-  // }, [searchParams]);
+  useEffect(() => {
+    const claim = searchParams.get("claim");
+    const ouid = searchParams.get("ouid");
+    const sid = searchParams.get("sid");
+    const pid = searchParams.get("pid");
+    if (claim && ouid && sid && pid) {
+      pendingClaimRef.current = { ouid, sid, pid };
+      setSelectedSessionId(sid);
+    }
+  }, [searchParams]);
 
   // Replicate any remote session changes to Firestore (only for organizer-owned sessions)
   useEffect(() => {
@@ -190,11 +190,6 @@ function Page() {
       for (const s of owned) map.set(s.id, s);
       for (const s of linked) map.set(s.id, s);
       const merged = Array.from(map.values());
-      // merged.sort((a, b) =>
-      //   (b.date + "T" + (b.time ?? "00:00")).localeCompare(
-      //     a.date + "T" + (a.time ?? "00:00")
-      //   )
-      // );
       useStore.setState({ sessions: merged });
       for (const ss of linked) {
         lastSaved.current.set(ss.id, JSON.stringify(ss));
@@ -211,12 +206,6 @@ function Page() {
         const payload = (d as any).payload as Session;
         return { ...payload, storage: "remote" };
       });
-
-      // remoteSessions.sort((a, b) =>
-      //   (b.date + "T" + (b.time ?? "00:00")).localeCompare(
-      //     a.date + "T" + (a.time ?? "00:00")
-      //   )
-      // );
       useStore.setState({ sessions: remoteSessions });
       ownSessionIdsRef.current = new Set(remoteSessions.map((s) => s.id));
       for (const ss of remoteSessions)
@@ -482,11 +471,6 @@ function SessionForm({
 function SessionList({ onOpen }: { onOpen: (id: string) => void }) {
   const router = useRouter();
   const sessions = useStore((s) => s.sessions);
-  sessions.sort((a, b) =>
-    (b.date + "T" + (b.time ?? "00:00")).localeCompare(
-      a.date + "T" + (a.time ?? "00:00")
-    )
-  );
   const deleteSession = useStore((s) => s.deleteSession);
   const endSession = useStore((s) => s.endSession);
   const [endFor, setEndFor] = useState<string | null>(null);
@@ -503,95 +487,99 @@ function SessionList({ onOpen }: { onOpen: (id: string) => void }) {
 
   return (
     <div className="space-y-3">
-      {sessions.map((ss) => {
-        const owner = (window as any).__sessionOwners?.get?.(ss.id) || null;
-        const isOrganizer = owner && me ? owner === me : false;
-        return (
-          <Card key={ss.id}>
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <div className="font-medium flex items-center gap-2">
-                  <span>{formatSessionTitle(ss)}</span>
-                  <span
-                    className={`rounded-full px-2 py-0.5 text-[10px] ${
-                      isOrganizer
-                        ? "bg-blue-50 text-blue-700"
-                        : "bg-gray-100 text-gray-600"
-                    }`}
-                  >
-                    {isOrganizer ? "Organizer" : "Participant"}
-                  </span>
-                </div>
-                <div className="text-xs text-gray-500">
-                  {ss.numCourts} court{ss.numCourts > 1 ? "s" : ""}
-                  {(() => {
-                    const singles = (ss.courts || []).filter(
-                      (c) => (c.mode || "doubles") === "singles"
-                    ).length;
-                    const doubles = (ss.courts || []).filter(
-                      (c) => (c.mode || "doubles") === "doubles"
-                    ).length;
-                    const parts: string[] = [];
-                    if (doubles) parts.push(`${doubles} doubles`);
-                    if (singles) parts.push(`${singles} singles`);
-                    return parts.length ? ` · ${parts.join(", ")}` : "";
-                  })()}
-                  · {ss.players.length} player
-                  {ss.players.length !== 1 ? "s" : ""}
-                </div>
-                {ss.ended && (
-                  <div className="mt-1 text-[11px] text-emerald-700">
-                    Ended
-                    {ss.endedAt
-                      ? ` · ${new Date(ss.endedAt).toLocaleString()}`
-                      : ""}
-                  </div>
-                )}
+      {sessions.map((ss) => (
+        <Card key={ss.id}>
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <div className="font-medium flex items-center gap-2">
+                <span>{formatSessionTitle(ss)}</span>
+                {(() => {
+                  try {
+                    const owner =
+                      (window as any).__sessionOwners?.get?.(ss.id) || null;
+                    const isOrganizer = owner && me ? owner === me : false;
+                    return (
+                      <span
+                        className={`rounded-full px-2 py-0.5 text-[10px] ${
+                          isOrganizer
+                            ? "bg-blue-50 text-blue-700"
+                            : "bg-gray-100 text-gray-600"
+                        }`}
+                      >
+                        {isOrganizer ? "Organizer" : "Participant"}
+                      </span>
+                    );
+                  } catch {
+                    return null;
+                  }
+                })()}
               </div>
-              <div className="flex items-center gap-2">
-                {/* <Link
+              <div className="text-xs text-gray-500">
+                {ss.numCourts} court{ss.numCourts > 1 ? "s" : ""}
+                {(() => {
+                  const singles = (ss.courts || []).filter(
+                    (c) => (c.mode || "doubles") === "singles"
+                  ).length;
+                  const doubles = (ss.courts || []).filter(
+                    (c) => (c.mode || "doubles") === "doubles"
+                  ).length;
+                  const parts: string[] = [];
+                  if (doubles) parts.push(`${doubles} doubles`);
+                  if (singles) parts.push(`${singles} singles`);
+                  return parts.length ? ` · ${parts.join(", ")}` : "";
+                })()}
+                · {ss.players.length} player{ss.players.length !== 1 ? "s" : ""}
+              </div>
+              {ss.ended && (
+                <div className="mt-1 text-[11px] text-emerald-700">
+                  Ended
+                  {ss.endedAt
+                    ? ` · ${new Date(ss.endedAt).toLocaleString()}`
+                    : ""}
+                </div>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              {/* <Link
                 href={`/session/${ss.id}`}
                 className="rounded-xl border border-gray-300 px-3 py-1.5"
               >
                 Open
               </Link> */}
+              <button
+                onClick={() => {
+                  onOpen(ss.id);
+                  router.push(`/session/${ss.id}`);
+                }}
+                className="rounded-xl border border-gray-300 px-3 py-1.5"
+              >
+                Open
+              </button>
+              {!ss.ended && (
                 <button
                   onClick={() => {
-                    onOpen(ss.id);
-                    router.push(`/session/${ss.id}`);
+                    if ((ss.courts || []).some((c) => c.inProgress)) return;
+                    setEndFor(ss.id);
+                    setShuttles("0");
                   }}
-                  className="rounded-xl border border-gray-300 px-3 py-1.5"
+                  disabled={(ss.courts || []).some((c) => c.inProgress)}
+                  className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-1.5 text-amber-700 disabled:opacity-50"
                 >
-                  Open
+                  End
                 </button>
-                {!ss.ended && isOrganizer && (
-                  <button
-                    onClick={() => {
-                      if ((ss.courts || []).some((c) => c.inProgress)) return;
-                      setEndFor(ss.id);
-                      setShuttles("0");
-                    }}
-                    disabled={(ss.courts || []).some((c) => c.inProgress)}
-                    className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-1.5 text-amber-700 disabled:opacity-50"
-                  >
-                    End
-                  </button>
-                )}
-                {isOrganizer && (
-                  <button
-                    onClick={() => {
-                      if (confirm("Delete this session?")) deleteSession(ss.id);
-                    }}
-                    className="rounded-xl border border-red-200 bg-red-50 px-3 py-1.5 text-red-600"
-                  >
-                    Delete
-                  </button>
-                )}
-              </div>
+              )}
+              <button
+                onClick={() => {
+                  if (confirm("Delete this session?")) deleteSession(ss.id);
+                }}
+                className="rounded-xl border border-red-200 bg-red-50 px-3 py-1.5 text-red-600"
+              >
+                Delete
+              </button>
             </div>
-          </Card>
-        );
-      })}
+          </div>
+        </Card>
+      ))}
       {!!endFor && (
         <EndSessionModal
           title={
@@ -613,6 +601,12 @@ function SessionList({ onOpen }: { onOpen: (id: string) => void }) {
               );
             if (endFor) {
               (async () => {
+                try {
+                  const latest = (useStore.getState().sessions || []).find(
+                    (s) => s.id === endFor
+                  );
+                  if (latest) await saveSession(endFor, latest);
+                } catch {}
                 const res = await triggerStatsRecalc(
                   auth.currentUser?.uid,
                   endFor,

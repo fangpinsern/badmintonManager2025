@@ -392,6 +392,12 @@ function SessionManager({ onBack }: { onBack: () => void }) {
               Number.isFinite(num) && num >= 0 ? Math.floor(num) : undefined
             );
             (async () => {
+              try {
+                const latest = (useStore.getState().sessions || []).find(
+                  (s) => s.id === session.id
+                );
+                if (latest) await saveSession(session.id, latest);
+              } catch {}
               const res = await triggerStatsRecalc(organizerUid, session.id, {
                 fireAndForget: false,
               });
