@@ -470,21 +470,33 @@ function SessionForm({
 
 function SessionList({ onOpen }: { onOpen: (id: string) => void }) {
   const router = useRouter();
-  const sessions = useStore((s) => {
-    s.sessions.sort((a, b) =>
-      (b.date + "T" + (b.time ?? "00:00")).localeCompare(
-        a.date + "T" + (a.time ?? "00:00")
-      )
-    );
-    return s.sessions;
-  });
+  const allSessions = useStore((s) => s.sessions);
   const deleteSession = useStore((s) => s.deleteSession);
   const endSession = useStore((s) => s.endSession);
   const [endFor, setEndFor] = useState<string | null>(null);
   const [shuttles, setShuttles] = useState<string>("0");
   const me = auth.currentUser?.uid || null;
 
-  if (!sessions.length) {
+  const nowIsoDate = new Date().toISOString().slice(0, 10);
+  const sorted = useMemo(() => {
+    const toTs = (s: Session) =>
+      new Date(`${s.date}T${s.time ?? "00:00"}`).getTime();
+    return [...allSessions].sort((a, b) => toTs(b) - toTs(a));
+  }, [allSessions]);
+
+  const [tab, setTab] = useState<"upcoming" | "closed">("upcoming");
+  const upcoming = useMemo(() => sorted.filter((s) => !s.ended), [sorted]);
+  const closed = useMemo(() => sorted.filter((s) => !!s.ended), [sorted]);
+
+  // pagination (10 per page)
+  const [upShown, setUpShown] = useState<number>(10);
+  const [clShown, setClShown] = useState<number>(10);
+  const list = tab === "upcoming" ? upcoming : closed;
+  const shown = tab === "upcoming" ? upShown : clShown;
+  const canSeeMore = list.length > shown;
+  const display = list.slice(0, shown);
+
+  if (!sorted.length) {
     return (
       <Card>
         <p className="text-gray-500">No sessions yet. Create one above.</p>
@@ -494,24 +506,55 @@ function SessionList({ onOpen }: { onOpen: (id: string) => void }) {
 
   return (
     <div className="space-y-3">
-      {sessions.map((ss) => {
+      <div className="mb-1 flex items-center gap-2">
+        <button
+          onClick={() => setTab("upcoming")}
+          className={`rounded-xl border px-3 py-1.5 text-xs ${
+            tab === "upcoming"
+              ? "border-blue-300 bg-blue-50 text-blue-700"
+              : "border-gray-300"
+          }`}
+        >
+          Upcoming
+        </button>
+        <button
+          onClick={() => setTab("closed")}
+          className={`rounded-xl border px-3 py-1.5 text-xs ${
+            tab === "closed"
+              ? "border-gray-400 bg-gray-100 text-gray-700"
+              : "border-gray-300"
+          }`}
+        >
+          Closed
+        </button>
+      </div>
+
+      {display.map((ss) => {
         const owner = (window as any).__sessionOwners?.get?.(ss.id) || null;
         const isOrganizer = owner && me ? owner === me : false;
+        const isToday = ss.date === nowIsoDate;
         return (
           <Card key={ss.id}>
             <div className="flex items-center justify-between gap-3">
               <div>
                 <div className="font-medium flex items-center gap-2">
                   <span>{formatSessionTitle(ss)}</span>
-                  <span
-                    className={`rounded-full px-2 py-0.5 text-[10px] ${
-                      isOrganizer
-                        ? "bg-blue-50 text-blue-700"
-                        : "bg-gray-100 text-gray-600"
-                    }`}
-                  >
-                    {isOrganizer ? "Organizer" : "Participant"}
-                  </span>
+                  <div className="flex flex-col items-end gap-1">
+                    {isToday && (
+                      <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] text-emerald-700">
+                        Today
+                      </span>
+                    )}
+                    <span
+                      className={`rounded-full px-2 py-0.5 text-[10px] ${
+                        isOrganizer
+                          ? "bg-blue-50 text-blue-700"
+                          : "bg-gray-100 text-gray-600"
+                      }`}
+                    >
+                      {isOrganizer ? "Organizer" : "Participant"}
+                    </span>
+                  </div>
                 </div>
                 <div className="text-xs text-gray-500">
                   {ss.numCourts} court{ss.numCourts > 1 ? "s" : ""}
@@ -540,12 +583,6 @@ function SessionList({ onOpen }: { onOpen: (id: string) => void }) {
                 )}
               </div>
               <div className="flex items-center gap-2">
-                {/* <Link
-                href={`/session/${ss.id}`}
-                className="rounded-xl border border-gray-300 px-3 py-1.5"
-              >
-                Open
-              </Link> */}
                 <button
                   onClick={() => {
                     onOpen(ss.id);
@@ -583,12 +620,30 @@ function SessionList({ onOpen }: { onOpen: (id: string) => void }) {
           </Card>
         );
       })}
+
+      {canSeeMore && (
+        <div className="flex justify-center">
+          <button
+            className="rounded-xl border px-3 py-1.5 text-xs"
+            onClick={() =>
+              tab === "upcoming"
+                ? setUpShown((n) => n + 10)
+                : setClShown((n) => n + 10)
+            }
+          >
+            See more
+          </button>
+        </div>
+      )}
+
       {!!endFor && (
         <EndSessionModal
           title={
             endFor
               ? `End ${formatSessionTitle(
-                  sessions.find((s) => s.id === endFor)!
+                  (tab === "upcoming" ? upcoming : closed).find(
+                    (s) => s.id === endFor
+                  )!
                 )}?`
               : "End session?"
           }
@@ -631,14 +686,18 @@ function SessionList({ onOpen }: { onOpen: (id: string) => void }) {
           organizerUid={auth.currentUser?.uid || null}
           sessionId={endFor || ""}
           unlinkedPlayers={(() => {
-            const ss = sessions.find((s) => s.id === endFor);
+            const ss = (useStore.getState().sessions || []).find(
+              (s) => s.id === endFor
+            );
             const arr = Array.isArray(ss?.players) ? ss!.players : [];
             return arr
               .filter((p) => !p.accountUid)
               .map((p) => ({ id: p.id, name: p.name }));
           })()}
           organizerLinked={(() => {
-            const ss = sessions.find((s) => s.id === endFor);
+            const ss = (useStore.getState().sessions || []).find(
+              (s) => s.id === endFor
+            );
             const myUid = auth.currentUser?.uid;
             return !!(
               myUid &&
