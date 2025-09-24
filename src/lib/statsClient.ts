@@ -53,6 +53,9 @@ export async function getUserFriends(uid: string, test?: boolean) {
     const ag = Number(a.data?.together?.games || 0);
     const bg = Number(b.data?.together?.games || 0);
     if (bg !== ag) return bg - ag;
+    const aw = Number(a.data?.together?.wins || 0);
+    const bw = Number(b.data?.together?.wins || 0);
+    if (bw !== aw) return bw - aw;
     const at = String(a.data?.lastPlayedAt || "");
     const bt = String(b.data?.lastPlayedAt || "");
     return bt.localeCompare(at);
@@ -71,6 +74,9 @@ export async function getUserOpponents(uid: string, test?: boolean) {
     const ag = Number(a.data?.against?.totals?.games || 0);
     const bg = Number(b.data?.against?.totals?.games || 0);
     if (bg !== ag) return bg - ag;
+    const winsA = Number(a.data?.against?.totals?.wins || 0);
+    const winsB = Number(b.data?.against?.totals?.wins || 0);
+    if (winsB !== winsA) return winsB - winsA;
     const at = String(a.data?.lastPlayedAt || "");
     const bt = String(b.data?.lastPlayedAt || "");
     return bt.localeCompare(at);

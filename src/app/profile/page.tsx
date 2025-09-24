@@ -345,30 +345,38 @@ export default function ProfilePage() {
                 highlightUid={user?.uid || null}
               />
             </div>
-            <div>
-              <div className="mb-2 text-xs font-medium text-gray-600">
-                Top opponents (Singles)
-              </div>
-              <TopOpponentsTable
-                items={opponents || []}
-                usernames={usernameMap}
-                highlightUid={user?.uid || null}
-                mode="singles"
-              />
-            </div>
-          </div>
-          <div className="mt-3 grid grid-cols-1 gap-4 md:grid-cols-2">
-            <div>
-              <div className="mb-2 text-xs font-medium text-gray-600">
-                Top opponents (Doubles)
-              </div>
-              <TopOpponentsTable
-                items={opponents || []}
-                usernames={usernameMap}
-                highlightUid={user?.uid || null}
-                mode="doubles"
-              />
-            </div>
+            {opponents &&
+              opponents.filter((o) => o.data?.against?.doubles?.games > 0)
+                .length > 0 && (
+                <div className="mt-3 grid grid-cols-1 gap-4 md:grid-cols-2">
+                  <div>
+                    <div className="mb-2 text-xs font-medium text-gray-600">
+                      Top opponents (Doubles)
+                    </div>
+                    <TopOpponentsTable
+                      items={opponents || []}
+                      usernames={usernameMap}
+                      highlightUid={user?.uid || null}
+                      mode="doubles"
+                    />
+                  </div>
+                </div>
+              )}
+            {opponents &&
+              opponents.filter((o) => o.data?.against?.singles?.games > 0)
+                .length > 0 && (
+                <div>
+                  <div className="mb-2 text-xs font-medium text-gray-600">
+                    Top opponents (Singles)
+                  </div>
+                  <TopOpponentsTable
+                    items={opponents || []}
+                    usernames={usernameMap}
+                    highlightUid={user?.uid || null}
+                    mode="singles"
+                  />
+                </div>
+              )}
           </div>
         </Card>
       </section>
