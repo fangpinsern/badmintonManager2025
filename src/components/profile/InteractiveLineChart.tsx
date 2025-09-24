@@ -118,7 +118,7 @@ export default function InteractiveLineChart({
         </div>
       ) : (
         <div
-          className="overflow-hidden rounded-lg border focus:outline-none outline-none"
+          className="overflow-hidden rounded-lg focus:outline-none outline-none"
           style={{ minHeight: 200 }}
           tabIndex={-1}
         >

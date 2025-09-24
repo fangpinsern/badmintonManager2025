@@ -12,7 +12,23 @@ import UserInfoCard from "@/components/profile/UserInfoCard";
 import LoadingScreen from "@/components/LoadingScreen";
 import { getProfileByUsername, getUserProfile } from "@/lib/firestoreSessions";
 import { toUsernameSlug } from "@/lib/helper";
-import { getUserStatsSummary, getUserStatsMonthly } from "@/lib/statsClient";
+import {
+  getUserStatsSummary,
+  getUserStatsMonthly,
+  getUserFriends,
+  getUserOpponents,
+  getFriendMirror,
+  getOpponentMirror,
+  resolveUsernames,
+  getFriendEdgeMonthly,
+  getOpponentEdgeMonthly,
+  getOpponentEdgeMonthlySplit,
+} from "@/lib/statsClient";
+import TopPartnersTable from "@/components/profile/TopPartnersTable";
+import TopOpponentsTable from "@/components/profile/TopOpponentsTable";
+import DuoFriendshipCard from "@/components/profile/DuoFriendshipCard";
+import HeadToHeadCard from "@/components/profile/HeadToHeadCard";
+import { auth } from "@/lib/firebase";
 
 export default function PublicProfilePage() {
   const { username } = useParams<{ username: string }>();
@@ -32,6 +48,28 @@ export default function PublicProfilePage() {
     null
   );
   const [profileInfo, setProfileInfo] = useState<any | null>(null);
+  const [friends, setFriends] = useState<
+    { otherUid: string; data: any }[] | null
+  >(null);
+  const [opponents, setOpponents] = useState<
+    { otherUid: string; data: any }[] | null
+  >(null);
+  const [usernameMap, setUsernameMap] = useState<Record<string, string>>({});
+  const [viewerUid, setViewerUid] = useState<string | null>(
+    auth.currentUser?.uid || null
+  );
+  const [viewerVsViewed, setViewerVsViewed] = useState<{
+    friend: any | null;
+    opponent: any | null;
+    viewerName?: string;
+    friendMonthly?: { month: string; games: number; wins: number }[];
+    opponentMonthly?:
+      | { month: string; games: number; wins: number; losses: number }[]
+      | {
+          singles: { month: string; games: number; wins: number }[];
+          doubles: { month: string; games: number; wins: number }[];
+        };
+  } | null>(null);
 
   useEffect(() => {
     console.log("p", username);
@@ -42,10 +80,12 @@ export default function PublicProfilePage() {
       setProfile(p);
       if (p?.uid) {
         try {
-          const [sum, months, info] = await Promise.all([
+          const [sum, months, info, fr, opp] = await Promise.all([
             getUserStatsSummary(p.uid),
             getUserStatsMonthly(p.uid, 6),
             getUserProfile(p.uid),
+            getUserFriends(p.uid),
+            getUserOpponents(p.uid),
           ]);
 
           console.log("sum", sum);
@@ -53,6 +93,45 @@ export default function PublicProfilePage() {
           setStats(sum);
           setMonthly(months);
           setProfileInfo(info);
+          setFriends(fr);
+          setOpponents(opp);
+          const uids = Array.from(
+            new Set([
+              ...(fr || []).map((i) => i.otherUid),
+              ...(opp || []).map((i) => i.otherUid),
+            ])
+          );
+          try {
+            const names = await resolveUsernames(uids);
+            setUsernameMap(names);
+          } catch {}
+          try {
+            // viewer context
+            const vuid = auth.currentUser?.uid || null;
+            setViewerUid(vuid);
+            if (vuid && vuid !== p.uid) {
+              const [vf, vo] = await Promise.all([
+                getFriendMirror(vuid, p.uid),
+                getOpponentMirror(vuid, p.uid),
+              ]);
+              const [friendMonthly, opponentMonthly] = await Promise.all([
+                getFriendEdgeMonthly(vuid, p.uid),
+                getOpponentEdgeMonthlySplit(vuid, p.uid),
+              ]);
+              const names2 = await resolveUsernames([vuid]);
+              setViewerVsViewed({
+                friend: vf,
+                opponent: vo,
+                viewerName: names2?.[vuid] || vuid,
+                friendMonthly,
+                opponentMonthly,
+              });
+            } else {
+              setViewerVsViewed(null);
+            }
+          } catch (error) {
+            console.log("error", error);
+          }
         } catch (error) {
           console.log("error", error);
         }
@@ -104,6 +183,36 @@ export default function PublicProfilePage() {
           </div>
         </Card>
       </section>
+
+      {viewerUid && viewerUid !== profile?.uid && (
+        <section className="mb-4">
+          <Card>
+            <h2 className="text-base font-semibold">
+              Your connection with @{profile?.username}
+            </h2>
+            <div className="mt-3 grid grid-cols-1 gap-4 md:grid-cols-2">
+              {viewerVsViewed?.friend?.together && (
+                <div>
+                  <DuoFriendshipCard
+                    partnerUsername={viewerVsViewed?.viewerName || "you"}
+                    together={viewerVsViewed?.friend?.together}
+                    monthly={viewerVsViewed?.friendMonthly}
+                  />
+                </div>
+              )}
+              {viewerVsViewed?.opponent?.against && (
+                <div>
+                  <HeadToHeadCard
+                    opponentUsername={viewerVsViewed?.viewerName || "you"}
+                    against={viewerVsViewed?.opponent?.against}
+                    monthly={viewerVsViewed?.opponentMonthly}
+                  />
+                </div>
+              )}
+            </div>
+          </Card>
+        </section>
+      )}
 
       <section>
         <Card>
@@ -223,6 +332,56 @@ export default function PublicProfilePage() {
               </div>
             );
           })()}
+        </Card>
+      </section>
+
+      <section className="mt-4">
+        <Card>
+          <h2 className="text-base font-semibold">Partners & Opponents</h2>
+          <div className="mt-3 grid grid-cols-1 gap-4 md:grid-cols-2">
+            <div>
+              <div className="mb-2 text-xs font-medium text-gray-600">
+                Top partners
+              </div>
+              <TopPartnersTable
+                items={friends || []}
+                usernames={usernameMap}
+                highlightUid={viewerUid}
+              />
+            </div>
+            {opponents &&
+              opponents.filter((o) => o.data?.against?.doubles?.games > 0)
+                .length > 0 && (
+                <div className="mt-3 grid grid-cols-1 gap-4 md:grid-cols-2">
+                  <div>
+                    <div className="mb-2 text-xs font-medium text-gray-600">
+                      Top opponents (Doubles)
+                    </div>
+                    <TopOpponentsTable
+                      items={opponents || []}
+                      usernames={usernameMap}
+                      highlightUid={viewerUid}
+                      mode="doubles"
+                    />
+                  </div>
+                </div>
+              )}
+            {opponents &&
+              opponents.filter((o) => o.data?.against?.singles?.games > 0)
+                .length > 0 && (
+                <div>
+                  <div className="mb-2 text-xs font-medium text-gray-600">
+                    Top opponents (Singles)
+                  </div>
+                  <TopOpponentsTable
+                    items={opponents || []}
+                    usernames={usernameMap}
+                    highlightUid={viewerUid}
+                    mode="singles"
+                  />
+                </div>
+              )}
+          </div>
         </Card>
       </section>
     </main>

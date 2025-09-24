@@ -7,6 +7,7 @@ import {
   query,
   orderBy,
   limit,
+  where,
 } from "firebase/firestore";
 
 function isTestMode(): boolean {
@@ -37,4 +38,191 @@ export async function getUserStatsMonthly(
   // reverse to ascending by month for nicer left-to-right charts
   out.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   return out;
+}
+
+// ---- Friends & Opponents mirrors ----
+
+export async function getUserFriends(uid: string, test?: boolean) {
+  const root = test ?? isTestMode() ? "userStats_test" : "userStats";
+  const col = collection(db as any, root, uid, "friends");
+  const snap = await getDocs(col as any);
+  const out: { otherUid: string; data: any }[] = [];
+  snap.forEach((d) => out.push({ otherUid: d.id, data: d.data() }));
+  // Sort by games desc, then lastPlayedAt desc
+  out.sort((a, b) => {
+    const ag = Number(a.data?.together?.games || 0);
+    const bg = Number(b.data?.together?.games || 0);
+    if (bg !== ag) return bg - ag;
+    const at = String(a.data?.lastPlayedAt || "");
+    const bt = String(b.data?.lastPlayedAt || "");
+    return bt.localeCompare(at);
+  });
+  return out;
+}
+
+export async function getUserOpponents(uid: string, test?: boolean) {
+  const root = test ?? isTestMode() ? "userStats_test" : "userStats";
+  const col = collection(db as any, root, uid, "opponents");
+  const snap = await getDocs(col as any);
+  const out: { otherUid: string; data: any }[] = [];
+  snap.forEach((d) => out.push({ otherUid: d.id, data: d.data() }));
+  // Sort by totals.games desc, then lastPlayedAt desc
+  out.sort((a, b) => {
+    const ag = Number(a.data?.against?.totals?.games || 0);
+    const bg = Number(b.data?.against?.totals?.games || 0);
+    if (bg !== ag) return bg - ag;
+    const at = String(a.data?.lastPlayedAt || "");
+    const bt = String(b.data?.lastPlayedAt || "");
+    return bt.localeCompare(at);
+  });
+  return out;
+}
+
+export async function getFriendMirror(
+  uid: string,
+  otherUid: string,
+  test?: boolean
+) {
+  const root = test ?? isTestMode() ? "userStats_test" : "userStats";
+  const ref = doc(db as any, root, uid, "friends", otherUid);
+  const snap = await getDoc(ref);
+  return snap.exists() ? (snap.data() as any) : null;
+}
+
+export async function getOpponentMirror(
+  uid: string,
+  otherUid: string,
+  test?: boolean
+) {
+  const root = test ?? isTestMode() ? "userStats_test" : "userStats";
+  const ref = doc(db as any, root, uid, "opponents", otherUid);
+  const snap = await getDoc(ref);
+  return snap.exists() ? (snap.data() as any) : null;
+}
+
+// Resolve usernames for display (best-effort; falls back to uid)
+export async function resolveUsernames(uids: string[]) {
+  const results: Record<string, string> = {};
+  const seen = new Set<string>();
+  const col = collection(
+    db as any,
+    isTestMode() ? "usernames_test" : "usernames"
+  );
+  for (const uid of uids.slice(0, 20)) {
+    if (!uid || seen.has(uid)) continue;
+    seen.add(uid);
+    try {
+      const qres = await getDocs(query(col as any, where("uid", "==", uid)));
+      const first = qres.docs[0];
+      if (first) results[uid] = String(first.id || "");
+    } catch {}
+  }
+  return results;
+}
+
+// ---- Monthly edges (for mini charts) ----
+
+// Global friendEdges monthly counters
+export async function getFriendEdgeMonthly(uidA: string, uidB: string) {
+  const [u1, u2] = [uidA, uidB].sort();
+  const edgeKey = `${u1}__${u2}`;
+  const col = collection(
+    db as any,
+    isTestMode() ? "friendEdges_test" : "friendEdges",
+    edgeKey,
+    "monthly"
+  );
+  const q = query(col as any, orderBy("__name__", "desc"), limit(12));
+  const snap = await getDocs(q);
+  const rows: { month: string; games: number; wins: number }[] = [];
+  snap.forEach((d) => {
+    const data = d.data() as any;
+    const together = data?.together || {};
+    rows.push({
+      month: String(data?.month || d.id || ""),
+      games: Number(together?.games || 0),
+      wins: Number(together?.wins || 0),
+    });
+  });
+  rows.sort((a, b) => (a.month < b.month ? -1 : a.month > b.month ? 1 : 0));
+  return rows;
+}
+
+// Global opponentEdges monthly counters. wins are for the first participant in the pair
+export async function getOpponentEdgeMonthly(
+  viewerUid: string,
+  otherUid: string
+) {
+  const [u1, u2] = [viewerUid, otherUid].sort();
+  const pairKey = `${u1}__${u2}`;
+  const col = collection(
+    db as any,
+    isTestMode() ? "opponentEdges_test" : "opponentEdges",
+    pairKey,
+    "monthly"
+  );
+  const q = query(col as any, orderBy("__name__", "desc"), limit(12));
+  const snap = await getDocs(q);
+  const rows: { month: string; games: number; wins: number; losses: number }[] =
+    [];
+  const viewerIsU1 = viewerUid === u1;
+  snap.forEach((d) => {
+    const data = d.data() as any;
+    const head = data?.head?.totals || {};
+    const winsU1 = Number(head?.winsU1 || 0);
+    const winsU2 = Number(head?.winsU2 || 0);
+    const games = Number(head?.games || winsU1 + winsU2);
+    const viewerWins = viewerIsU1 ? winsU1 : winsU2;
+    const viewerLosses = viewerIsU1 ? winsU2 : winsU1;
+    rows.push({
+      month: String(data?.month || d.id || ""),
+      games,
+      wins: viewerWins,
+      losses: viewerLosses,
+    });
+  });
+  rows.sort((a, b) => (a.month < b.month ? -1 : a.month > b.month ? 1 : 0));
+  return rows;
+}
+
+// Split monthly for opponent edges (viewer perspective)
+export async function getOpponentEdgeMonthlySplit(
+  viewerUid: string,
+  otherUid: string
+) {
+  const [u1, u2] = [viewerUid, otherUid].sort();
+  const pairKey = `${u1}__${u2}`;
+  const col = collection(
+    db as any,
+    isTestMode() ? "opponentEdges_test" : "opponentEdges",
+    pairKey,
+    "monthly"
+  );
+  const q = query(col as any, orderBy("__name__", "desc"), limit(12));
+  const snap = await getDocs(q);
+  const viewerIsU1 = viewerUid === u1;
+  const singles: { month: string; games: number; wins: number }[] = [];
+  const doubles: { month: string; games: number; wins: number }[] = [];
+  snap.forEach((d) => {
+    const data = d.data() as any;
+    const s = data?.head?.singles || {};
+    const dbl = data?.head?.doubles || {};
+    const sWinsU1 = Number(s?.winsU1 || 0);
+    const sWinsU2 = Number(s?.winsU2 || 0);
+    const dWinsU1 = Number(dbl?.winsU1 || 0);
+    const dWinsU2 = Number(dbl?.winsU2 || 0);
+    singles.push({
+      month: String(data?.month || d.id || ""),
+      games: Number(s?.games || sWinsU1 + sWinsU2),
+      wins: viewerIsU1 ? sWinsU1 : sWinsU2,
+    });
+    doubles.push({
+      month: String(data?.month || d.id || ""),
+      games: Number(dbl?.games || dWinsU1 + dWinsU2),
+      wins: viewerIsU1 ? dWinsU1 : dWinsU2,
+    });
+  });
+  singles.sort((a, b) => (a.month < b.month ? -1 : a.month > b.month ? 1 : 0));
+  doubles.sort((a, b) => (a.month < b.month ? -1 : a.month > b.month ? 1 : 0));
+  return { singles, doubles };
 }

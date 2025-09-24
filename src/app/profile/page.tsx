@@ -19,7 +19,15 @@ import WinRateTiles from "@/components/profile/WinRateTiles";
 import RecentForm from "@/components/profile/RecentForm";
 import InteractiveLineChart from "@/components/profile/InteractiveLineChart";
 import DurationTiles from "@/components/profile/DurationTiles";
-import { getUserStatsMonthly, getUserStatsSummary } from "@/lib/statsClient";
+import {
+  getUserStatsMonthly,
+  getUserStatsSummary,
+  getUserFriends,
+  getUserOpponents,
+  resolveUsernames,
+} from "@/lib/statsClient";
+import TopPartnersTable from "@/components/profile/TopPartnersTable";
+import TopOpponentsTable from "@/components/profile/TopOpponentsTable";
 
 export default function ProfilePage() {
   const [user, setUser] = useState<{
@@ -51,6 +59,13 @@ export default function ProfilePage() {
   const [durationSeries, setDurationSeries] = useState<"singles" | "doubles">(
     "singles"
   );
+  const [friends, setFriends] = useState<
+    { otherUid: string; data: any }[] | null
+  >(null);
+  const [opponents, setOpponents] = useState<
+    { otherUid: string; data: any }[] | null
+  >(null);
+  const [usernameMap, setUsernameMap] = useState<Record<string, string>>({});
 
   useEffect(() => {
     return onAuthStateChanged(auth, (u) => {
@@ -83,13 +98,27 @@ export default function ProfilePage() {
         level: typeof p?.level === "string" ? p?.level : "",
       });
       try {
-        const [sum, months] = await Promise.all([
+        const [sum, months, fr, opp] = await Promise.all([
           getUserStatsSummary(user.uid),
           getUserStatsMonthly(user.uid, 6),
+          getUserFriends(user.uid),
+          getUserOpponents(user.uid),
         ]);
         if (!cancelled) {
           setStats(sum);
           setMonthly(months);
+          setFriends(fr);
+          setOpponents(opp);
+          const uids = Array.from(
+            new Set([
+              ...(fr || []).map((i) => i.otherUid),
+              ...(opp || []).map((i) => i.otherUid),
+            ])
+          );
+          try {
+            const names = await resolveUsernames(uids);
+            if (!cancelled) setUsernameMap(names);
+          } catch {}
         }
       } catch {}
     }
@@ -299,6 +328,48 @@ export default function ProfilePage() {
               </div>
             );
           })()}
+        </Card>
+      </section>
+
+      <section className="mt-4">
+        <Card>
+          <h2 className="text-base font-semibold">Partners & Opponents</h2>
+          <div className="mt-3 grid grid-cols-1 gap-4 md:grid-cols-2">
+            <div>
+              <div className="mb-2 text-xs font-medium text-gray-600">
+                Top partners
+              </div>
+              <TopPartnersTable
+                items={friends || []}
+                usernames={usernameMap}
+                highlightUid={user?.uid || null}
+              />
+            </div>
+            <div>
+              <div className="mb-2 text-xs font-medium text-gray-600">
+                Top opponents (Singles)
+              </div>
+              <TopOpponentsTable
+                items={opponents || []}
+                usernames={usernameMap}
+                highlightUid={user?.uid || null}
+                mode="singles"
+              />
+            </div>
+          </div>
+          <div className="mt-3 grid grid-cols-1 gap-4 md:grid-cols-2">
+            <div>
+              <div className="mb-2 text-xs font-medium text-gray-600">
+                Top opponents (Doubles)
+              </div>
+              <TopOpponentsTable
+                items={opponents || []}
+                usernames={usernameMap}
+                highlightUid={user?.uid || null}
+                mode="doubles"
+              />
+            </div>
+          </div>
         </Card>
       </section>
     </main>
