@@ -380,7 +380,17 @@ function Page() {
 
       <footer className="mt-12 text-center text-xs text-gray-400">
         <div className="flex items-center justify-center gap-3">
-          <p>New sessions are saved to Firestore.</p>
+          <a
+            href={
+              (process.env.NEXT_PUBLIC_TELEGRAM_URL as string) ||
+              "https://t.me/bm25r"
+            }
+            target="_blank"
+            rel="noopener noreferrer"
+            className="rounded border px-2 py-1 text-xs"
+          >
+            Subscribe for Updates
+          </a>
           <Link href="/faq" className="rounded border px-2 py-1 text-xs">
             FAQ
           </Link>
