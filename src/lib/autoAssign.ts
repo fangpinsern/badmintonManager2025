@@ -314,10 +314,7 @@ export function computeCompetitiveAssignmentForCourt(
           best = { pair: [fixed, cand.id], score, tie };
       }
     } else {
-      const consider = Math.min(
-        seededOnCourt.length > 0 ? candidateIds.length : candidateIds.length,
-        K
-      );
+      const consider = Math.min(candidateIds.length, K);
       for (let i = 0; i < consider; i++) {
         for (let j = i + 1; j < consider; j++) {
           const a = poolBase[i].id;

@@ -595,7 +595,6 @@ export function subscribeLinkedSessions(
             e.sessionId
           );
           const s = await getDoc(ref);
-          console.log("iamhere", s.data());
           return s.exists()
             ? {
                 doc: s.data() as FirestoreSession,

@@ -66,7 +66,6 @@ export default function HeadToHeadCard({
     const labels = (singles.length >= doubles.length ? singles : doubles).map(
       (m) => m.month
     );
-    console.log("singles", singles, doubles);
     const sRates = singles.map((m) =>
       m.games > 0 ? Math.round((m.wins / m.games) * 100) : 0
     );
@@ -74,7 +73,6 @@ export default function HeadToHeadCard({
       m.games > 0 ? Math.round((m.wins / m.games) * 100) : 0
     );
 
-    console.log("sRates", sRates, dRates);
     return {
       labels,
       singlesSeries: sRates,

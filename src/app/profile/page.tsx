@@ -224,8 +224,9 @@ export default function ProfilePage() {
             const safeMinutes = (m?: number) => Number(m || 0);
 
             const recent = Array.isArray(stats?.recentForm)
-              ? stats.recentForm
+              ? [...stats.recentForm].reverse()
               : [];
+
             const totals = stats?.totals || null;
             const singlesTotals = totals?.singles || {
               games: 0,

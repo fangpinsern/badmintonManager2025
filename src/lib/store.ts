@@ -208,7 +208,6 @@ const useStore = create<StoreState>()((set, _get) => ({
         const attendees = Array.from(
           new Set([...(ss.attendees || []), plat.id])
         );
-        console.log("players", [...ss.players, newP]);
         return { ...ss, players: [...ss.players, newP], attendees };
       }),
     })),

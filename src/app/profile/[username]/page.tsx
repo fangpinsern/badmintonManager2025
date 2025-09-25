@@ -72,7 +72,6 @@ export default function PublicProfilePage() {
   } | null>(null);
 
   useEffect(() => {
-    console.log("p", username);
     if (!username) return;
     (async () => {
       const slug = toUsernameSlug(username);
@@ -88,8 +87,6 @@ export default function PublicProfilePage() {
             getUserOpponents(p.uid),
           ]);
 
-          console.log("sum", sum);
-          console.log("months", months);
           setStats(sum);
           setMonthly(months);
           setProfileInfo(info);
@@ -129,12 +126,8 @@ export default function PublicProfilePage() {
             } else {
               setViewerVsViewed(null);
             }
-          } catch (error) {
-            console.log("error", error);
-          }
-        } catch (error) {
-          console.log("error", error);
-        }
+          } catch (error) {}
+        } catch (error) {}
       }
       setReady(true);
     })();
@@ -227,7 +220,7 @@ export default function PublicProfilePage() {
             const safeMinutes = (m?: number) => Number(m || 0);
 
             const recent = Array.isArray(stats?.recentForm)
-              ? stats.recentForm
+              ? [...stats.recentForm].reverse()
               : [];
             const totals = stats?.totals || null;
             const singlesTotals = totals?.singles || {

@@ -17,7 +17,6 @@ function isTestMode(): boolean {
 
 export async function getUserStatsSummary(uid: string, test?: boolean) {
   const root = test ?? isTestMode() ? "userStats_test" : "userStats";
-  console.log("root", root);
   const ref = doc(db as any, root, uid);
   const snap = await getDoc(ref);
   return snap.exists() ? (snap.data() as any) : null;
