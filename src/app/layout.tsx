@@ -2,6 +2,8 @@ import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import AppHeader from "@/components/AppHeader";
+import ServiceWorkerRegister from "@/components/ServiceWorkerRegister";
+import { PushProvider } from "@/app/push/PushProvider";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -31,11 +33,16 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
+      <head>
+        <link rel="manifest" href="/manifest.json" />
+        <meta name="theme-color" content="#111827" />
+      </head>
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
         <AppHeader />
-        {children}
+        <ServiceWorkerRegister />
+        <PushProvider>{children}</PushProvider>
       </body>
     </html>
   );

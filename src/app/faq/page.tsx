@@ -41,7 +41,11 @@ export default function FaqPage() {
               {item.question}
             </summary>
             {item.answer.split("\n").map((val) => {
-              return <p className="mt-2 text-gray-700">{val}</p>;
+              return (
+                <p key={val} className="mt-2 text-gray-700">
+                  {val}
+                </p>
+              );
             })}
           </details>
         ))}
