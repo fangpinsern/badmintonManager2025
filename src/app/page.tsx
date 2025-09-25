@@ -206,7 +206,12 @@ function Page() {
         const payload = (d as any).payload as Session;
         return { ...payload, storage: "remote" };
       });
-      useStore.setState({ sessions: remoteSessions });
+      // Preserve any already-linked sessions from other organizers instead of overwriting them
+      const current = useStore.getState().sessions || [];
+      const ownSet = new Set(remoteSessions.map((s) => s.id));
+      const linked = current.filter((s) => !ownSet.has(s.id));
+      const merged = [...remoteSessions, ...linked];
+      useStore.setState({ sessions: merged });
       ownSessionIdsRef.current = new Set(remoteSessions.map((s) => s.id));
       for (const ss of remoteSessions)
         sessionOwnerUidRef.current.set(ss.id, user.uid);
@@ -215,7 +220,7 @@ function Page() {
         w.__sessionOwners = w.__sessionOwners || new Map<string, string>();
         for (const ss of remoteSessions) w.__sessionOwners.set(ss.id, user.uid);
       } catch {}
-      for (const ss of remoteSessions) {
+      for (const ss of merged) {
         lastSaved.current.set(ss.id, JSON.stringify(ss));
       }
     });
@@ -376,6 +381,9 @@ function Page() {
       <footer className="mt-12 text-center text-xs text-gray-400">
         <div className="flex items-center justify-center gap-3">
           <p>New sessions are saved to Firestore.</p>
+          <Link href="/faq" className="rounded border px-2 py-1 text-xs">
+            FAQ
+          </Link>
           {user ? (
             <>
               <Link
@@ -416,6 +424,7 @@ function SessionForm({
   onCreated: (sessionId: string) => void;
 }) {
   const createSession = useStore((s) => s.createSession);
+  const [error, setError] = useState<string | null>(null);
   const [date, setDate] = useState<string>(
     new Date().toISOString().slice(0, 10)
   );
@@ -424,10 +433,15 @@ function SessionForm({
 
   function submit(e: React.FormEvent) {
     e.preventDefault();
+    const desired = Math.max(1, Number(numCourts || 1));
+    if (desired > 10) {
+      setError("Courts per session are limited to 10.");
+      return;
+    }
     const id = createSession({
       date,
       time,
-      numCourts: Math.max(1, Number(numCourts || 1)),
+      numCourts: desired,
       // playersPerCourt defaults to 4 in the store
     });
     onCreated(id);
@@ -457,6 +471,7 @@ function SessionForm({
           value={numCourts}
           onChange={(e) => setNumCourts(e.target.value)}
         />
+        {error && <div className="text-xs text-red-600">{error}</div>}
         <button
           type="submit"
           className="mt-1 rounded-xl bg-black px-4 py-2 text-white disabled:opacity-50"

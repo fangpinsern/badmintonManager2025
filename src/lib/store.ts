@@ -140,27 +140,25 @@ const useStore = create<StoreState>()((set, _get) => ({
     })),
 
   createSession: ({ date, time, numCourts, playersPerCourt = 4 }) => {
+    const clampedCourts = Math.max(1, Math.min(10, numCourts));
     const id = nanoid(10);
-    const courts: Court[] = Array.from(
-      { length: Math.max(1, numCourts) },
-      (_, i) => ({
-        id: nanoid(8),
-        index: i,
-        playerIds: [],
-        pairA: [],
-        pairB: [],
-        inProgress: false,
-        mode: "doubles",
-        queue: [],
-        nextA: [],
-        nextB: [],
-      })
-    );
+    const courts: Court[] = Array.from({ length: clampedCourts }, (_, i) => ({
+      id: nanoid(8),
+      index: i,
+      playerIds: [],
+      pairA: [],
+      pairB: [],
+      inProgress: false,
+      mode: "doubles",
+      queue: [],
+      nextA: [],
+      nextB: [],
+    }));
     const session: Session = {
       id,
       date,
       time,
-      numCourts: Math.max(1, numCourts),
+      numCourts: clampedCourts,
       playersPerCourt: 4,
       players: [],
       attendees: [],
@@ -767,6 +765,7 @@ const useStore = create<StoreState>()((set, _get) => ({
       sessions: s.sessions.map((ss) => {
         if (ss.id !== sessionId) return ss;
         if (ss.ended) return ss;
+        if (ss.courts.length >= 10) return ss; // enforce max 10 courts
         const nextIndex = ss.courts.length;
         const newCourt: Court = {
           id: nanoid(8),
