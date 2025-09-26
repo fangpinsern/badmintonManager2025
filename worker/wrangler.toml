@@ -1,0 +1,12 @@
+name = "statscalc"
+
+compatibility_date = "2022-04-05"
+
+[durable_objects]
+bindings = [
+  { name = "MAILBOX", class_name = "NotificationMailbox" }
+]
+
+[[migrations]]
+tag = "v1-mailbox"
+new_classes = ["NotificationMailbox"]
