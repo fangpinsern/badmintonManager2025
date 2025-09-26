@@ -49,7 +49,7 @@ export default function AppHeader() {
 
   return (
     <header className="border-b bg-white">
-      <div className="mx-auto max-w-3xl p-4">
+      <div className="mx-auto max-w-3xl p-4 flex flex-col gap-2">
         <div className="flex items-start justify-between">
           <div>
             <div className="flex items-center gap-2">
@@ -67,35 +67,6 @@ export default function AppHeader() {
             </p>
           </div>
           <div className="flex items-center gap-2">
-            {canInstall && (
-              <button
-                onClick={async () => {
-                  try {
-                    const promptEvt = (window as any).__deferredInstallPrompt;
-                    if (promptEvt) {
-                      promptEvt.prompt();
-                      await promptEvt.userChoice;
-                    }
-                  } catch {}
-                }}
-                className="rounded-full border px-3 py-1 text-xs text-gray-700 hover:bg-gray-100"
-              >
-                Install app
-              </button>
-            )}
-            {canEnablePush && (
-              <button
-                onClick={() => (window as any).__enablePush?.()}
-                className="rounded-full border px-3 py-1 text-xs text-gray-700 hover:bg-gray-100"
-              >
-                Enable notifications
-              </button>
-            )}
-            {showIosInstallHint && (
-              <div className="hidden sm:block text-[11px] text-gray-500">
-                Add to Home Screen to receive iOS push
-              </div>
-            )}
             {hasUser ? (
               <Link
                 href="/profile"
@@ -118,6 +89,37 @@ export default function AppHeader() {
               </Link>
             ) : null}
           </div>
+        </div>
+        <div className="flex flex-row justify-between items-end gap-2">
+          {(showIosInstallHint || true) && (
+            <div className="block text-[11px] text-gray-500 w-1/2">
+              Add to Home Screen to receive iOS push notifications
+            </div>
+          )}
+          {!showIosInstallHint && canEnablePush && hasUser && (
+            <button
+              onClick={() => (window as any).__enablePush?.()}
+              className="rounded-full border px-3 py-1 text-xs text-gray-700 hover:bg-gray-100"
+            >
+              Enable notifications
+            </button>
+          )}
+          {canInstall && (
+            <button
+              onClick={async () => {
+                try {
+                  const promptEvt = (window as any).__deferredInstallPrompt;
+                  if (promptEvt) {
+                    promptEvt.prompt();
+                    await promptEvt.userChoice;
+                  }
+                } catch {}
+              }}
+              className="rounded-full border px-3 py-1 text-xs text-gray-700 hover:bg-gray-100"
+            >
+              Install app
+            </button>
+          )}
         </div>
       </div>
     </header>
