@@ -1,10 +1,42 @@
 const WORKER_VERSION = "2025-09-22.1";
 
+// --- Push/aggregation policy ---
+const AGG_WINDOW_MS   = 3 * 60 * 1000;   // aggregate events for 3 min
+const MIN_INTERVAL_MS = 2 * 60 * 1000;   // no more than 1 push / 2 min per user
+const DAILY_MAX       = 5;               // cap per user per UTC day
+
+
 export default {
   async fetch(req, env) {
     // Preflight
     if (req.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: corsHeaders(req) });
+    }
+
+    const url = new URL(req.url);
+
+    // ---- New: event ingestion endpoint ----
+    if (req.method === "POST" && url.pathname === "/push/events") {
+      let body; try { body = await req.json(); } catch { 
+        return withCors(new Response("Bad JSON", { status: 400 }), req); 
+      }
+      const userId = body?.userId;
+      const events = Array.isArray(body?.events) ? body.events : [];
+      if (!userId || !events.length) {
+        return withCors(new Response("Missing userId/events", { status: 400 }), req);
+      }
+
+      // (Optional) verify client-side auth here if you’ll call this from the app.
+      // For now, we assume internal calls from this Worker.
+
+      const id   = env.MAILBOX.idFromName(userId);
+      const stub = env.MAILBOX.get(id);
+      const resp = await stub.fetch("https://do/push/enqueue", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ userId, events })
+      });
+      return withCors(resp, req);
     }
 
     if (req.method !== "POST") {
@@ -778,3 +810,231 @@ function withCors(resp, req, opts) {
   for (const [k, v] of ch) h.set(k, v);
   return new Response(resp.body, { status: resp.status, headers: h });
 }
+
+export class NotificationMailbox {
+  constructor(state, env) {
+    this.state = state;
+    this.env = env;
+  }
+
+  async fetch(req) {
+    const url = new URL(req.url);
+    if (req.method === "POST" && url.pathname.endsWith("/push/enqueue")) {
+      const { userId, events } = await req.json();
+      isDemo = true;
+      if (isDemo) {
+        console.log("isDemo", userId, events);
+        return new Response("is in demo mode", { status: 200 });
+      }
+      if (!userId || !Array.isArray(events) || !events.length) return new Response("bad", { status: 400 });
+
+      // Load existing queue
+      const queue = (await this.state.storage.get("q")) || [];
+      const seen  = new Set(queue.map((e) => e.idempotencyKey));
+      for (const e of events) {
+        if (!e?.idempotencyKey) continue;
+        if (seen.has(e.idempotencyKey)) continue;
+        queue.push({
+          idempotencyKey: e.idempotencyKey,
+          type: e.type || "event",
+          title: e.title || "Update",
+          url: e.url || "/",
+          occurredAt: e.occurredAt || new Date().toISOString()
+        });
+      }
+      await this.state.storage.put("q", queue);
+
+      // Set alarm if none pending
+      const alarmAt = await this.state.storage.get("alarmAt");
+      if (!alarmAt) {
+        const when = Date.now() + AGG_WINDOW_MS;
+        await this.state.storage.setAlarm(when);
+        await this.state.storage.put("alarmAt", when);
+      }
+      return new Response("queued");
+    }
+
+    return new Response("not-found", { status: 404 });
+  }
+
+  async alarm() {
+    // Clear alarm marker
+    await this.state.storage.delete("alarmAt");
+
+    let queue = (await this.state.storage.get("q")) || [];
+    if (!queue.length) return;
+
+    // Rate limiting state
+    let rate = (await this.state.storage.get("rate")) || { lastSentAt: 0, day: dayKey(), count: 0 };
+    const now = Date.now();
+    const today = dayKey();
+    if (rate.day !== today) rate = { lastSentAt: 0, day: today, count: 0 };
+
+    // Respect min interval
+    const nextAllowed = rate.lastSentAt + MIN_INTERVAL_MS;
+    if (now < nextAllowed) {
+      const when = nextAllowed; // push alarm forward
+      await this.state.storage.setAlarm(when);
+      await this.state.storage.put("alarmAt", when);
+      return;
+    }
+
+    // Respect daily cap
+    if (rate.count >= DAILY_MAX) {
+      // Defer a digest to midnight UTC
+      const when = nextUtcMidnight();
+      await this.state.storage.setAlarm(when);
+      await this.state.storage.put("alarmAt", when);
+      return;
+    }
+
+    // Coalesce: dedupe by idempotencyKey and type
+    const coalesced = [];
+    const seen = new Set();
+    for (const e of queue) {
+      if (seen.has(e.idempotencyKey)) continue;
+      seen.add(e.idempotencyKey);
+      coalesced.push(e);
+    }
+
+    // Build payload
+    let title, body, url;
+    if (coalesced.length === 1) {
+      title = coalesced[0].title || "Update";
+      body  = "Tap to view";
+      url   = coalesced[0].url || "/";
+    } else {
+      title = "You have updates";
+      body  = `${coalesced.length} new items • Tap to review`;
+      // Route to an inbox page that shows items since the oldest occurredAt
+      const since = encodeURIComponent(coalesced[0].occurredAt);
+      url = `/inbox?since=${since}`;
+    }
+
+    // Fetch user tokens fresh from Firestore (and cacheable if you want)
+    const userId = this.state.id.toString(); // DO name is the userId
+    const fsToken = await getAccessTokenScoped(this.env, "https://www.googleapis.com/auth/datastore");
+    const tokens = await listUserFcmTokens(fsToken, this.env, userId);
+
+    if (tokens.length) {
+      const fcmToken = await getAccessTokenScoped(this.env, "https://www.googleapis.com/auth/firebase.messaging");
+      const sendResults = await sendFcmToMany(this.env, fcmToken, tokens, { title, body, url });
+
+      // (Optional) remove invalid tokens from Firestore using fsToken + document paths from sendResults.removable
+      // keep minimal for now
+      if (!sendResults.anySucceeded) {
+        // If nothing delivered, don't lose the queue; retry later
+        const when = Date.now() + MIN_INTERVAL_MS;
+        await this.state.storage.setAlarm(when);
+        await this.state.storage.put("alarmAt", when);
+        return;
+      }
+    }
+
+    // Success: clear queue & bump rate
+    await this.state.storage.put("q", []);
+    rate.lastSentAt = Date.now();
+    rate.count += 1;
+    await this.state.storage.put("rate", rate);
+
+    // If more events arrived during send (race), set a fresh alarm
+    const remaining = (await this.state.storage.get("q")) || [];
+    if (remaining.length) {
+      const when = Date.now() + AGG_WINDOW_MS;
+      await this.state.storage.setAlarm(when);
+      await this.state.storage.put("alarmAt", when);
+    }
+  }
+}
+
+function dayKey(d = new Date()) {
+  return d.toISOString().slice(0, 10); // YYYY-MM-DD (UTC)
+}
+function nextUtcMidnight() {
+  const d = new Date();
+  d.setUTCHours(24, 0, 0, 0);
+  return +d;
+}
+
+async function listUserFcmTokens(accessToken, env, uid, isTest) {
+  const { url: baseUrl } = fsBases(env.GCP_PROJECT_ID, env.FIRESTORE_DB);
+  const col = isTest ? "usersNoti_test" : "usersNoti";
+  const res = await fetch(`${baseUrl}/${col}/${uid}/devices`, {
+    headers: { authorization: `Bearer ${accessToken}` }
+  });
+  if (!res.ok) return [];
+  const j = await res.json();
+  const docs = Array.isArray(j.documents) ? j.documents : [];
+  const tokens = [];
+  for (const d of docs) {
+    const f = d.fields || {};
+    const token  = jsonFromFields(f.token);
+    const pwa    = !!jsonFromFields(f.installedPwa);
+    if (token && pwa !== false) tokens.push(token); // keep all; optionally require pwa===true
+  }
+  return tokens;
+}
+
+async function getAccessTokenScoped(env, scope) {
+  const G_AUTH = "https://oauth2.googleapis.com/token";
+  const now = Math.floor(Date.now() / 1000);
+  const header = { alg: "RS256", typ: "JWT" };
+  const claim = {
+    iss: env.GOOGLE_SA_EMAIL,
+    sub: env.GOOGLE_SA_EMAIL,
+    aud: G_AUTH,
+    iat: now,
+    exp: now + 3600,
+    scope
+  };
+  const encHeader = b64urlFromJSON(header);
+  const encPayload = b64urlFromJSON(claim);
+  const data = `${encHeader}.${encPayload}`;
+  const key = await importPkcs8(env.GOOGLE_SA_PRIVATE_KEY, "RSASSA-PKCS1-v1_5");
+  const sigBuf = await crypto.subtle.sign({ name: "RSASSA-PKCS1-v1_5" }, key, new TextEncoder().encode(data));
+  const signature = b64urlFromString(String.fromCharCode(...new Uint8Array(sigBuf)));
+  const jwt = `${data}.${signature}`;
+  const res = await fetch(G_AUTH, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer", assertion: jwt }),
+  });
+  if (!res.ok) throw new Error(`token error: ${res.status} ${await res.text()}`);
+  const t = await res.json();
+  return t.access_token;
+}
+
+
+async function sendFcmToMany(env, oauthAccessToken, tokens, { title, body, url }) {
+  const endpoint = `https://fcm.googleapis.com/v1/projects/${env.FCM_PROJECT_ID}/messages:send`;
+  let anySucceeded = false;
+  const removable = [];
+
+  for (const token of tokens) {
+    const payload = {
+      message: {
+        token,
+        notification: { title, body },
+        data: url ? { url } : undefined
+      }
+    };
+    const res = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${oauthAccessToken}`,
+        "content-type": "application/json"
+      },
+      body: JSON.stringify(payload)
+    });
+
+    if (res.ok) { anySucceeded = true; continue; }
+
+    // Try to detect "bad token" to allow cleanup later (optional)
+    const txt = await res.text();
+    if (/UNREGISTERED|NotRegistered|invalid-argument|registration token|requested entity was not found/i.test(txt)) {
+      removable.push(token);
+    }
+  }
+  return { anySucceeded, removable };
+}
+
