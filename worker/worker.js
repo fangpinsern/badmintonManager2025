@@ -611,7 +611,7 @@ export default {
           idempotencyKey: `stats:${organizerUid}:${sessionId}:${uid}`,
           type: "stats_update",
           title: "Session stats updated",
-          url: `/sessions/${sessionId}?u=${uid}`,     // deep link your PWA handles
+          url: `/session/${sessionId}?u=${uid}`,     // deep link your PWA handles
           occurredAt: new Date().toISOString()
         };
         // Fire-and-forget; DO alarm will aggregate and send
