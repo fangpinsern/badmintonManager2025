@@ -927,7 +927,7 @@ export class NotificationMailbox {
       return;
     }
     const fsToken = await getAccessTokenScoped(this.env, "https://www.googleapis.com/auth/datastore");
-    const tokens = await listUserFcmTokens(fsToken, this.env, userId);
+    const tokens = await listUserFcmTokens(fsToken, this.env, userId, true);
     try { console.log("[DO alarm] uid=", userId, "items=", coalesced.length, "tokens=", tokens.length); } catch {}
 
     if (tokens.length) {
