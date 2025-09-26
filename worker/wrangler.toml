@@ -9,4 +9,4 @@ bindings = [
 
 [[migrations]]
 tag = "v1-mailbox-sqlite"
-new_classes = ["NotificationMailbox"]
+new_sqlite_classes = ["NotificationMailbox"]
