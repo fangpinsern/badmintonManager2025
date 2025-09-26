@@ -1,9 +1,9 @@
 const WORKER_VERSION = "2025-09-22.1";
 
 // --- Push/aggregation policy ---
-const AGG_WINDOW_MS   = 3 * 60 * 1000;   // aggregate events for 3 min
-const MIN_INTERVAL_MS = 2 * 60 * 1000;   // no more than 1 push / 2 min per user
-const DAILY_MAX       = 5;               // cap per user per UTC day
+const AGG_WINDOW_MS   = 1 * 30 * 1000;   // aggregate events for 3 min
+const MIN_INTERVAL_MS = 1 * 30 * 1000;   // no more than 1 push / 2 min per user
+const DAILY_MAX       = 100;               // cap per user per UTC day
 
 
 export default {
