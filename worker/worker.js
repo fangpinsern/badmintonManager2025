@@ -269,6 +269,7 @@ export default {
       const uids = Object.keys(perUser);
       if (!uids.length) return withCors(new Response("No linked players", { status: 200 }), req);
 
+      console.log("uids", uids);
       if (dryRun) {
         const sessionKey = `${organizerUid}_${sessionId}`;
         const endMonth = monthKey(payload.endedAt || (games[games.length - 1] || {}).endedAt);
