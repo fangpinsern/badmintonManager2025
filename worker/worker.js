@@ -16,33 +16,33 @@ export default {
     const url = new URL(req.url);
 
     // ---- New: event ingestion endpoint ----
-    if (req.method === "POST" && url.pathname === "/push/events") {
-      let body; try { body = await req.json(); } catch { 
-        return withCors(new Response("Bad JSON", { status: 400 }), req); 
-      }
-      const userId = body?.userId;
-      const events = Array.isArray(body?.events) ? body.events : [];
-      const isDemo = body?.isDemo;
-      if (isDemo) {
-        console.log("isDemo", userId, events);
-        return new Response(`is in demo mode ${userId} ${events}`, { status: 200 });
-      }
-      if (!userId || !events.length) {
-        return withCors(new Response("Missing userId/events", { status: 400 }), req);
-      }
+    // if (req.method === "POST" && url.pathname === "/push/events") {
+    //   let body; try { body = await req.json(); } catch { 
+    //     return withCors(new Response("Bad JSON", { status: 400 }), req); 
+    //   }
+    //   const userId = body?.userId;
+    //   const events = Array.isArray(body?.events) ? body.events : [];
+    //   const isDemo = body?.isDemo;
+    //   if (isDemo) {
+    //     console.log("isDemo", userId, events);
+    //     return new Response(`is in demo mode ${userId} ${events}`, { status: 200 });
+    //   }
+    //   if (!userId || !events.length) {
+    //     return withCors(new Response("Missing userId/events", { status: 400 }), req);
+    //   }
 
-      // (Optional) verify client-side auth here if you’ll call this from the app.
-      // For now, we assume internal calls from this Worker.
+    //   // (Optional) verify client-side auth here if you’ll call this from the app.
+    //   // For now, we assume internal calls from this Worker.
 
-      const id   = env.MAILBOX.idFromName(userId);
-      const stub = env.MAILBOX.get(id);
-      const resp = await stub.fetch("https://do/push/enqueue", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ userId, events })
-      });
-      return withCors(resp, req);
-    }
+    //   const id   = env.MAILBOX.idFromName(userId);
+    //   const stub = env.MAILBOX.get(id);
+    //   const resp = await stub.fetch("https://do/push/enqueue", {
+    //     method: "POST",
+    //     headers: { "content-type": "application/json" },
+    //     body: JSON.stringify({ userId, events })
+    //   });
+    //   return withCors(resp, req);
+    // }
 
     if (req.method !== "POST") {
       return withCors(new Response("Method Not Allowed", { status: 405 }), req);
@@ -610,7 +610,7 @@ export default {
         const ev = {
           idempotencyKey: `stats:${organizerUid}:${sessionId}:${uid}`,
           type: "stats_update",
-          title: "Session stats updated",
+          title: "Session Ended. View your stats now",
           url: `/session/${sessionId}?u=${uid}`,     // deep link your PWA handles
           occurredAt: new Date().toISOString()
         };
@@ -621,7 +621,6 @@ export default {
         } catch (e) {
           console.log("enqueueEvent error", e);
         }
-        // .catch((e) => {console.log("enqueueEvent error", e)});
       }
 
       return withCors(new Response("OK"), req);
