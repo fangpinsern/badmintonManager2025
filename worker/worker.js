@@ -916,6 +916,7 @@ export class NotificationMailbox {
     const userId = this.state.id.toString(); // DO name is the userId
     const fsToken = await getAccessTokenScoped(this.env, "https://www.googleapis.com/auth/datastore");
     const tokens = await listUserFcmTokens(fsToken, this.env, userId);
+    console.log("tokens", tokens);
 
     if (tokens.length) {
       const fcmToken = await getAccessTokenScoped(this.env, "https://www.googleapis.com/auth/firebase.messaging");
