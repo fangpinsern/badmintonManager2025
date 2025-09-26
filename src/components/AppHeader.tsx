@@ -91,7 +91,7 @@ export default function AppHeader() {
           </div>
         </div>
         <div className="flex flex-row justify-between items-end gap-2">
-          {(showIosInstallHint || true) && (
+          {showIosInstallHint && (
             <div className="block text-[11px] text-gray-500 w-1/2">
               Add to Home Screen to receive iOS push notifications
             </div>
