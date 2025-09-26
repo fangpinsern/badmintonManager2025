@@ -821,10 +821,10 @@ export class NotificationMailbox {
     const url = new URL(req.url);
     if (req.method === "POST" && url.pathname.endsWith("/push/enqueue")) {
       const { userId, events } = await req.json();
-      isDemo = true;
+      const isDemo = true;
       if (isDemo) {
         console.log("isDemo", userId, events);
-        return new Response("is in demo mode", { status: 200 });
+        return new Response(`is in demo mode ${userId} ${events}`, { status: 200 });
       }
       if (!userId || !Array.isArray(events) || !events.length) return new Response("bad", { status: 400 });
 

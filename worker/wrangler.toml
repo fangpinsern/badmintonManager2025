@@ -10,3 +10,6 @@ bindings = [
 [[migrations]]
 tag = "v1-mailbox-sqlite"
 new_sqlite_classes = ["NotificationMailbox"]
+
+[observability.logs]
+enabled = true
