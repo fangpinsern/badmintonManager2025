@@ -2,6 +2,8 @@ name = "statscalc"
 
 compatibility_date = "2022-04-05"
 
+keep_vars = true
+
 [durable_objects]
 bindings = [
   { name = "MAILBOX", class_name = "NotificationMailbox" }
