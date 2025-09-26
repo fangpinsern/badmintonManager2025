@@ -829,6 +829,12 @@ export class NotificationMailbox {
 
       if (!userId || !Array.isArray(events) || !events.length) return new Response("bad", { status: 400 });
 
+      // Persist the app userId so alarm() can look up FCM tokens correctly
+      try {
+        const storedUid = await this.state.storage.get("uid");
+        if (storedUid !== userId) await this.state.storage.put("uid", userId);
+      } catch {}
+
       // Load existing queue
       const queue = (await this.state.storage.get("q")) || [];
       const seen  = new Set(queue.map((e) => e.idempotencyKey));
@@ -913,10 +919,16 @@ export class NotificationMailbox {
     }
 
     // Fetch user tokens fresh from Firestore (and cacheable if you want)
-    const userId = this.state.id.toString(); // DO name is the userId
+    const userId = await this.state.storage.get("uid");
+    if (!userId) {
+      const when = Date.now() + MIN_INTERVAL_MS;
+      await this.state.storage.setAlarm(when);
+      await this.state.storage.put("alarmAt", when);
+      return;
+    }
     const fsToken = await getAccessTokenScoped(this.env, "https://www.googleapis.com/auth/datastore");
     const tokens = await listUserFcmTokens(fsToken, this.env, userId);
-    console.log("tokens", tokens);
+    try { console.log("[DO alarm] uid=", userId, "items=", coalesced.length, "tokens=", tokens.length); } catch {}
 
     if (tokens.length) {
       const fcmToken = await getAccessTokenScoped(this.env, "https://www.googleapis.com/auth/firebase.messaging");
@@ -931,6 +943,12 @@ export class NotificationMailbox {
         await this.state.storage.put("alarmAt", when);
         return;
       }
+    } else {
+      // No devices registered; keep queue and retry later
+      const when = Date.now() + MIN_INTERVAL_MS;
+      await this.state.storage.setAlarm(when);
+      await this.state.storage.put("alarmAt", when);
+      return;
     }
 
     // Success: clear queue & bump rate
