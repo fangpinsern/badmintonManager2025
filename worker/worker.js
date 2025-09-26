@@ -604,6 +604,19 @@ export default {
         }
       }
 
+      console.log("notifying uids", uids);
+      for (const uid of uids) {
+        const ev = {
+          idempotencyKey: `stats:${organizerUid}:${sessionId}:${uid}`,
+          type: "stats_update",
+          title: "Session stats updated",
+          url: `/sessions/${sessionId}?u=${uid}`,     // deep link your PWA handles
+          occurredAt: new Date().toISOString()
+        };
+        // Fire-and-forget; DO alarm will aggregate and send
+        enqueueEvent(env, uid, ev).catch(() => {});
+      }
+
       return withCors(new Response("OK"), req);
     } catch (e) {
       return withCors(new Response(`Error: ${e?.message || "Internal Error"}`, { status: 500 }), req);
@@ -814,6 +827,16 @@ function withCors(resp, req, opts) {
   const ch = corsHeaders(req, opts);
   for (const [k, v] of ch) h.set(k, v);
   return new Response(resp.body, { status: resp.status, headers: h });
+}
+
+async function enqueueEvent(env, userId, ev) {
+  const id   = env.MAILBOX.idFromName(userId);
+  const stub = env.MAILBOX.get(id);
+  return stub.fetch("https://do/push/enqueue", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ userId, events: [ev] })
+  });
 }
 
 export class NotificationMailbox {
