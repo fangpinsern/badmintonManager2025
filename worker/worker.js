@@ -615,7 +615,13 @@ export default {
           occurredAt: new Date().toISOString()
         };
         // Fire-and-forget; DO alarm will aggregate and send
-        enqueueEvent(env, uid, ev).catch((e) => {console.log("enqueueEvent error", e)});
+        try {
+          const res = await enqueueEvent(env, uid, ev)
+          console.log("enqueueEvent res", res);
+        } catch (e) {
+          console.log("enqueueEvent error", e);
+        }
+        // .catch((e) => {console.log("enqueueEvent error", e)});
       }
 
       return withCors(new Response("OK"), req);
@@ -834,11 +840,12 @@ async function enqueueEvent(env, userId, ev) {
   const id   = env.MAILBOX.idFromName(userId);
   const stub = env.MAILBOX.get(id);
   console.log("enqueueEvent", userId, ev);
-  return stub.fetch("https://do/push/enqueue", {
+  const res = await stub.fetch("https://do/push/enqueue", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ userId, events: [ev] })
   });
+  return res
 }
 
 export class NotificationMailbox {
