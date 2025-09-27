@@ -30,11 +30,8 @@ import {
   claimUsername,
 } from "@/lib/firestoreSessions";
 import { useParams, useRouter } from "next/navigation";
-import {
-  GoogleAuthProvider,
-  onAuthStateChanged,
-  signInWithPopup,
-} from "firebase/auth";
+import { GoogleAuthProvider, onAuthStateChanged } from "firebase/auth";
+import { signInWithGoogleSafe } from "@/lib/authClient";
 
 function SessionManager({ onBack }: { onBack: () => void }) {
   const { id } = useParams<{ id: string }>();
@@ -256,8 +253,7 @@ function SessionManager({ onBack }: { onBack: () => void }) {
             </div>
             <button
               onClick={async () => {
-                const provider = new GoogleAuthProvider();
-                await signInWithPopup(auth, provider);
+                await signInWithGoogleSafe(auth);
               }}
               className="rounded-xl bg-black px-4 py-2 text-white"
             >

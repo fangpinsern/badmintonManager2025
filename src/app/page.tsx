@@ -9,12 +9,8 @@ import {
 } from "@/lib/firestoreSessions";
 import { subscribeLinkedSessions } from "@/lib/firestoreSessions";
 import { auth } from "@/lib/firebase";
-import {
-  GoogleAuthProvider,
-  onAuthStateChanged,
-  signInWithPopup,
-  signOut,
-} from "firebase/auth";
+import { GoogleAuthProvider, onAuthStateChanged, signOut } from "firebase/auth";
+import { signInWithGoogleSafe } from "@/lib/authClient";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Session, Player } from "@/types/player";
 import { useStore } from "@/lib/store";
@@ -243,8 +239,7 @@ function Page() {
             </div>
             <button
               onClick={async () => {
-                const provider = new GoogleAuthProvider();
-                await signInWithPopup(auth, provider);
+                await signInWithGoogleSafe(auth);
               }}
               className="rounded-xl bg-black px-4 py-2 text-white"
             >

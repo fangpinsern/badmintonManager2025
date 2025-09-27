@@ -4,11 +4,8 @@ import { useSearchParams, useRouter } from "next/navigation";
 import { Card } from "@/components/layout";
 import LoadingScreen from "@/components/LoadingScreen";
 import { auth } from "@/lib/firebase";
-import {
-  GoogleAuthProvider,
-  onAuthStateChanged,
-  signInWithPopup,
-} from "firebase/auth";
+import { GoogleAuthProvider, onAuthStateChanged } from "firebase/auth";
+import { signInWithGoogleSafe } from "@/lib/authClient";
 import {
   linkAccountInOrganizerSession,
   getUserProfile,
@@ -117,8 +114,7 @@ function ClaimPageInner() {
           <div className="mt-3 flex items-center gap-2">
             <button
               onClick={async () => {
-                const provider = new GoogleAuthProvider();
-                await signInWithPopup(auth, provider);
+                await signInWithGoogleSafe(auth);
               }}
               className="rounded-xl bg-black px-4 py-2 text-white"
             >
