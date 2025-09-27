@@ -974,13 +974,15 @@ export class NotificationMailbox {
         await this.state.storage.put("alarmAt", when);
         return;
       }
-    } else {
-      // No devices registered; keep queue and retry later
-      const when = Date.now() + MIN_INTERVAL_MS;
-      await this.state.storage.setAlarm(when);
-      await this.state.storage.put("alarmAt", when);
-      return;
-    }
+    } 
+    
+    // else {
+    //   // No devices registered; keep queue and retry later
+    //   const when = Date.now() + MIN_INTERVAL_MS;
+    //   await this.state.storage.setAlarm(when);
+    //   await this.state.storage.put("alarmAt", when);
+    //   return;
+    // }
 
     // Success: clear queue & bump rate
     await this.state.storage.put("q", []);
