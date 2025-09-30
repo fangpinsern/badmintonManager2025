@@ -32,6 +32,7 @@ function RowKebabMenu({
   const router = useRouter();
   const [unlinkOpen, setUnlinkOpen] = useState(false);
   const unlinkModeRef = useRef<"self" | "organizer" | null>(null);
+  const [removeOpen, setRemoveOpen] = useState(false);
   const alreadyLinkedToMe =
     !!auth.currentUser?.uid &&
     session.players.some((pp) => pp.accountUid === auth.currentUser!.uid);
@@ -67,8 +68,11 @@ function RowKebabMenu({
               onClick={() => {
                 const uid = auth.currentUser?.uid;
                 if (!uid) return;
+                // Enforce 1:1 mapping client-side: if this uid already linked anywhere, do not allow
+                if (session.players.some((pp) => pp.accountUid === uid)) {
+                  return;
+                }
                 if (isOrganizer && organizerUid) {
-                  // Organizer path: write to Firestore so name updates to username and nameBeforeLink is captured server-side
                   void linkAccountInOrganizerSession(
                     organizerUid,
                     session.id,
@@ -76,9 +80,7 @@ function RowKebabMenu({
                     uid
                   );
                 } else {
-                  // Fallback: local link only
-                  if (!session.players.some((pp) => pp.accountUid === uid))
-                    linkPlayerToAccount(session.id, player.id, uid);
+                  linkPlayerToAccount(session.id, player.id, uid);
                 }
                 closeMenu();
               }}
@@ -98,20 +100,22 @@ function RowKebabMenu({
             </button>
           )}
           {player.accountUid &&
-            !player.linkLocked &&
             (auth.currentUser?.uid === player.accountUid ? (
-              <button
-                className="w-full rounded px-2 py-1 text-left hover:bg-gray-50"
-                onClick={() => {
-                  unlinkModeRef.current = "self";
-                  setUnlinkOpen(true);
-                  closeMenu();
-                }}
-                disabled={player.linkLocked}
-              >
-                Unlink
-              </button>
+              // Self unlink only if not locked
+              !player.linkLocked ? (
+                <button
+                  className="w-full rounded px-2 py-1 text-left hover:bg-gray-50"
+                  onClick={() => {
+                    unlinkModeRef.current = "self";
+                    setUnlinkOpen(true);
+                    closeMenu();
+                  }}
+                >
+                  Unlink
+                </button>
+              ) : null
             ) : isOrganizer && organizerUid ? (
+              // Organizer can unlink regardless of lock state
               <button
                 className="w-full rounded px-2 py-1 text-left hover:bg-gray-50"
                 onClick={() => {
@@ -127,7 +131,7 @@ function RowKebabMenu({
             className="w-full rounded px-2 py-1 text-left hover:bg-gray-50 disabled:opacity-50"
             disabled={inGame}
             onClick={() => {
-              removePlayer(session.id, player.id);
+              setRemoveOpen(true);
               closeMenu();
             }}
           >
@@ -135,6 +139,22 @@ function RowKebabMenu({
           </button>
         </div>
       </details>
+      <ConfirmModal
+        open={removeOpen}
+        title={"Remove player?"}
+        body={
+          "This will remove the player from the session. If linked, their session access will be revoked."
+        }
+        confirmText="Remove"
+        onCancel={() => setRemoveOpen(false)}
+        onConfirm={() => {
+          try {
+            removePlayer(session.id, player.id);
+          } finally {
+            setRemoveOpen(false);
+          }
+        }}
+      />
       {showQr && (
         <ClaimQrButton
           forceOpen

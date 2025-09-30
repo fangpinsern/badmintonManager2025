@@ -29,6 +29,7 @@ import {
   subscribeSessionById,
   subscribeUserProfile,
   claimUsername,
+  addAndLinkPlayerByUsername,
 } from "@/lib/firestoreSessions";
 import { useParams, useRouter } from "next/navigation";
 import { GoogleAuthProvider, onAuthStateChanged } from "firebase/auth";
@@ -137,6 +138,12 @@ function SessionManager({ onBack }: { onBack: () => void }) {
   const [gender, setGender] = useState<"M" | "F" | "">("");
   const [bulkError, setBulkError] = useState<string>("");
   const [bulkText, setBulkText] = useState("");
+  const [usernameToAdd, setUsernameToAdd] = useState("");
+  const [usernameAddBusy, setUsernameAddBusy] = useState(false);
+  const [usernameAddError, setUsernameAddError] = useState<string>("");
+  const [showAddByUsername, setShowAddByUsername] = useState(false);
+  const [usernameSuggestions, setUsernameSuggestions] = useState<string[]>([]);
+  const suggestTimerRef = useRef<number | null>(null);
   // Username flow removed
 
   const occupancy = useMemo(() => {
@@ -666,43 +673,212 @@ function SessionManager({ onBack }: { onBack: () => void }) {
             >
               {bulkOpen ? "Hide bulk add" : "Add multiple players"}
             </button>
-            {bulkOpen && (
-              <form onSubmit={addBulk} className="space-y-2">
-                <div>
-                  <Label>Paste names (one per line)</Label>
-                  <Label>Add gender M/F with comma (optional)</Label>
-                  <Label>Example: Alice, F</Label>
-                  <textarea
-                    value={bulkText}
-                    onChange={(e) => setBulkText(e.target.value)}
-                    rows={4}
-                    className="w-full rounded-xl border border-gray-300 px-3 py-2 text-sm outline-none"
-                    placeholder="Alice, F\nBob, M\nCharlie, F"
-                    disabled={!!session.ended}
-                  />
-                </div>
-                <div className="flex items-center gap-2">
+            <div className="space-y-2">
+              {bulkOpen && (
+                <form onSubmit={addBulk} className="space-y-2">
+                  <div>
+                    <Label>Paste names (one per line)</Label>
+                    <Label>Add gender M/F with comma (optional)</Label>
+                    <Label>Example: Alice, F</Label>
+                    <textarea
+                      value={bulkText}
+                      onChange={(e) => setBulkText(e.target.value)}
+                      rows={4}
+                      className="w-full rounded-xl border border-gray-300 px-3 py-2 text-sm outline-none"
+                      placeholder="Alice, F\nBob, M\nCharlie, F"
+                      disabled={!!session.ended}
+                    />
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="submit"
+                      disabled={!!session.ended}
+                      className="rounded-xl bg-black px-3 py-1.5 text-xs text-white disabled:opacity-50"
+                    >
+                      Add players
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setBulkOpen(false)}
+                      className="rounded-xl border px-3 py-1.5 text-xs"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                  {bulkError && (
+                    <div className="text-[11px] text-red-600">{bulkError}</div>
+                  )}
+                </form>
+              )}
+              {isOrganizer && !session.ended && (
+                <>
                   <button
-                    type="submit"
+                    onClick={() => setShowAddByUsername((v) => !v)}
                     disabled={!!session.ended}
-                    className="rounded-xl bg-black px-3 py-1.5 text-xs text-white disabled:opacity-50"
+                    className="text-xs text-gray-600 underline disabled:opacity-50"
                   >
-                    Add players
+                    {showAddByUsername
+                      ? "Hide add by username"
+                      : "Add by username"}
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => setBulkOpen(false)}
-                    className="rounded-xl border px-3 py-1.5 text-xs"
-                  >
-                    Cancel
-                  </button>
-                </div>
-                {bulkError && (
-                  <div className="text-[11px] text-red-600">{bulkError}</div>
-                )}
-              </form>
-            )}
-            {/* Username-based add temporarily disabled */}
+                  {showAddByUsername && (
+                    <form
+                      onSubmit={async (e) => {
+                        e.preventDefault();
+                        setUsernameAddError("");
+                        const uname = (usernameToAdd || "").trim();
+                        if (!uname) return;
+                        setUsernameAddBusy(true);
+                        try {
+                          const linkedUids = new Set(
+                            session.players
+                              .map((p) => p.accountUsername?.toLowerCase())
+                              .filter(Boolean) as string[]
+                          );
+                          if (linkedUids.has(uname.toLowerCase())) {
+                            throw new Error(
+                              "This user is already linked to a player in this session"
+                            );
+                          }
+                          const owner =
+                            organizerUid ||
+                            (window as any).__sessionOwners?.get?.(
+                              session.id
+                            ) ||
+                            auth.currentUser?.uid;
+                          if (!owner)
+                            throw new Error("Organizer not resolved yet");
+                          await addAndLinkPlayerByUsername(
+                            owner,
+                            session.id,
+                            uname
+                          );
+                          setUsernameToAdd("");
+                        } catch (err: any) {
+                          setUsernameAddError(
+                            err?.message || "Failed to add by username"
+                          );
+                        } finally {
+                          setUsernameAddBusy(false);
+                        }
+                      }}
+                      className="mt-2 space-y-2"
+                    >
+                      <div className="flex gap-2">
+                        <Input
+                          placeholder="Add by username (without @)"
+                          value={usernameToAdd}
+                          onChange={(e) => {
+                            const v = e.target.value;
+                            setUsernameToAdd(v);
+                            setUsernameAddError("");
+                            if (suggestTimerRef.current)
+                              window.clearTimeout(suggestTimerRef.current);
+                            suggestTimerRef.current = window.setTimeout(
+                              async () => {
+                                try {
+                                  const q = v.trim().toLowerCase();
+                                  if (!q) {
+                                    setUsernameSuggestions([]);
+                                    return;
+                                  }
+                                  const { suggestUsernames } = await import(
+                                    "@/lib/firestoreSessions"
+                                  );
+                                  const suggestions = await suggestUsernames(
+                                    q,
+                                    5
+                                  );
+                                  setUsernameSuggestions(suggestions);
+                                } catch {
+                                  setUsernameSuggestions([]);
+                                }
+                              },
+                              200
+                            );
+                          }}
+                          className="flex-1"
+                          disabled={!!session.ended || usernameAddBusy}
+                        />
+                        <button
+                          type="submit"
+                          disabled={!!session.ended || usernameAddBusy}
+                          className="rounded-xl bg-black px-3 py-1.5 text-xs text-white disabled:opacity-50"
+                        >
+                          {usernameAddBusy ? "Adding…" : "Add by username"}
+                        </button>
+                      </div>
+                      {!!usernameSuggestions.length && (
+                        <div className="rounded border bg-white">
+                          {usernameSuggestions.map((s) => (
+                            <button
+                              type="button"
+                              key={s}
+                              onClick={async () => {
+                                setUsernameToAdd(s);
+                                setUsernameAddError("");
+                                // auto-attempt add on click
+                                if (usernameAddBusy) return;
+                                setUsernameAddBusy(true);
+                                try {
+                                  const linkedUids = new Set(
+                                    session.players
+                                      .map((p) =>
+                                        p.accountUsername?.toLowerCase()
+                                      )
+                                      .filter(Boolean) as string[]
+                                  );
+                                  if (linkedUids.has(s.toLowerCase())) {
+                                    throw new Error(
+                                      "This user is already linked to a player in this session"
+                                    );
+                                  }
+                                  const owner =
+                                    organizerUid ||
+                                    (window as any).__sessionOwners?.get?.(
+                                      session.id
+                                    ) ||
+                                    auth.currentUser?.uid;
+                                  if (!owner)
+                                    throw new Error(
+                                      "Organizer not resolved yet"
+                                    );
+                                  await addAndLinkPlayerByUsername(
+                                    owner,
+                                    session.id,
+                                    s
+                                  );
+                                  setUsernameToAdd("");
+                                  setUsernameSuggestions([]);
+                                } catch (err: any) {
+                                  setUsernameAddError(
+                                    err?.message || "Failed to add by username"
+                                  );
+                                } finally {
+                                  setUsernameAddBusy(false);
+                                }
+                              }}
+                              className="block w-full px-2 py-1 text-left hover:bg-gray-50"
+                            >
+                              {s}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                      {usernameAddError && (
+                        <div className="text-[11px] text-red-600">
+                          {usernameAddError}
+                        </div>
+                      )}
+                      <div className="text-[10px] text-gray-500">
+                        Users added by username are auto-linked and cannot
+                        unlink themselves.
+                      </div>
+                    </form>
+                  )}
+                </>
+              )}
+            </div>
           </div>
         </Card>
       )}

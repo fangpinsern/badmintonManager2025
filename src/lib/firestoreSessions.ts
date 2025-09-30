@@ -13,6 +13,11 @@ import {
   where,
   getDocs,
   updateDoc,
+  orderBy,
+  startAt,
+  endAt,
+  limit as fsLimit,
+  documentId,
 } from "firebase/firestore";
 
 export type FirestoreSession = {
@@ -159,6 +164,30 @@ export async function getProfileByUsername(
   return { uid, username: normalized };
 }
 
+// Suggest usernames by prefix (case-insensitive). Returns list of username strings.
+export async function suggestUsernames(
+  prefix: string,
+  limitN: number = 5
+): Promise<string[]> {
+  const q = (prefix || "").trim().toLowerCase();
+  if (!q) return [];
+  const col = usernamesCollection();
+  const qref = query(
+    col,
+    orderBy(documentId()),
+    startAt(q),
+    endAt(q + "\uf8ff"),
+    fsLimit(Math.max(1, Math.min(20, limitN)))
+  );
+  const snap = await getDocs(qref);
+  const out: string[] = [];
+  snap.forEach((d) => {
+    const id = (d.id || "").trim().toLowerCase();
+    if (id) out.push(id);
+  });
+  return out.slice(0, limitN);
+}
+
 function sessionsCollectionForUid(uid: string) {
   return collection(db, usersCollectionId(), uid, "sessions");
 }
@@ -193,42 +222,12 @@ export async function addAndLinkPlayerByUsername(
       ? [...payload.players]
       : [];
 
-    // if a player already linked to this uid exists, do nothing (idempotent)
+    // if this uid is already linked to any player in this session, disallow
     const existingByUid = players.find((p) => p && p.accountUid === uid);
     if (existingByUid) {
-      // ensure name is set to the username
-      const idx = players.findIndex((p) => p && p.id === existingByUid.id);
-      if (idx !== -1)
-        players[idx] = {
-          ...existingByUid,
-          name: normalized,
-          accountUsername: normalized,
-          linkLocked: true,
-          nameBeforeLink: existingByUid.name || existingByUid.nameBeforeLink,
-        };
-      const nextPayload = stripUndefinedDeep({ ...payload, players });
-      const linkedUids = collectLinkedUids(nextPayload);
-      tx.set(
-        sessionRef,
-        {
-          id: sessionId,
-          payload: nextPayload,
-          linkedUids,
-          updatedAt: serverTimestamp(),
-        },
-        { merge: true }
+      throw new Error(
+        "This account is already linked to another player in this session"
       );
-      // ensure index
-      const idxRef = doc(
-        linkedSessionsIndexCol(uid),
-        `${organizerUid}_${sessionId}`
-      );
-      tx.set(
-        idxRef,
-        { organizerUid, sessionId, updatedAt: serverTimestamp() },
-        { merge: true }
-      );
-      return { playerId: existingByUid.id, uid };
     }
 
     // if a player with same username (case-insensitive) exists, link it
@@ -239,17 +238,16 @@ export async function addAndLinkPlayerByUsername(
     let playerId: string;
     if (idxByName !== -1) {
       const before = players[idxByName] || {};
+      if (before.accountUid && before.accountUid !== uid)
+        throw new Error("Player is already linked to another account");
       playerId =
         before.id || before.playerId || Math.random().toString(36).slice(2, 10);
-      // clear any previous link of this uid on other players
-      for (let i = 0; i < players.length; i++) {
-        if (i === idxByName) continue;
-        const pl = players[i] || {};
-        if (pl.accountUid === uid) {
-          const { accountUid, ...rest } = pl;
-          players[i] = rest;
-        }
-      }
+      // if uid already linked elsewhere (should not happen since existingByUid was null), block
+      const linkedElsewhere = players.some(
+        (p, i) => i !== idxByName && p && p.accountUid === uid
+      );
+      if (linkedElsewhere)
+        throw new Error("This account is already linked to another player");
       players[idxByName] = {
         ...before,
         name: normalized,
@@ -261,14 +259,9 @@ export async function addAndLinkPlayerByUsername(
     } else {
       // create new player
       playerId = Math.random().toString(36).slice(2, 10);
-      // clear any previous link of this uid on other players
-      for (let i = 0; i < players.length; i++) {
-        const pl = players[i] || {};
-        if (pl.accountUid === uid) {
-          const { accountUid, ...rest } = pl;
-          players[i] = rest;
-        }
-      }
+      const linkedElsewhere = players.some((p) => p && p.accountUid === uid);
+      if (linkedElsewhere)
+        throw new Error("This account is already linked to another player");
       players.push({
         id: playerId,
         name: normalized,
@@ -330,6 +323,15 @@ export async function saveSession(sessionId: string, payload: unknown) {
     sanitized = { ...p, players: updated };
   } catch {}
   const linkedUids = collectLinkedUids(sanitized);
+  // Read previous linkedUids to update per-user linkedSessions index
+  let prevLinked: string[] = [];
+  try {
+    const prevSnap = await getDoc(ref);
+    if (prevSnap.exists()) {
+      const d = prevSnap.data() as any;
+      if (Array.isArray(d?.linkedUids)) prevLinked = [...d.linkedUids];
+    }
+  } catch {}
   await setDoc(
     ref,
     {
@@ -340,6 +342,37 @@ export async function saveSession(sessionId: string, payload: unknown) {
     },
     { merge: true }
   );
+  // Sync index docs (users/{uid}/linkedSessions/{organizer_session})
+  try {
+    const next = new Set(linkedUids || []);
+    const prev = new Set(prevLinked || []);
+    const added: string[] = [];
+    const removed: string[] = [];
+    next.forEach((u) => {
+      if (!prev.has(u)) added.push(u);
+    });
+    prev.forEach((u) => {
+      if (!next.has(u)) removed.push(u);
+    });
+    // add new index entries
+    await Promise.all(
+      added.map(async (u) => {
+        const idxRef = doc(linkedSessionsIndexCol(u), `${uid}_${sessionId}`);
+        await setDoc(
+          idxRef,
+          { organizerUid: uid, sessionId, updatedAt: serverTimestamp() },
+          { merge: true }
+        );
+      })
+    );
+    // remove stale index entries
+    await Promise.all(
+      removed.map(async (u) => {
+        const idxRef = doc(linkedSessionsIndexCol(u), `${uid}_${sessionId}`);
+        await deleteDoc(idxRef);
+      })
+    );
+  } catch {}
 }
 
 export async function createSessionDoc(sessionId: string, payload: unknown) {
@@ -409,15 +442,17 @@ export async function linkAccountInOrganizerSession(
     : [];
   const idx = players.findIndex((p) => p && p.id === playerId);
   if (idx === -1) throw new Error("Player not found");
-  // ensure this uid is not linked elsewhere in this session
-  for (let i = 0; i < players.length; i++) {
-    if (i === idx) continue;
-    const pl = players[i] || {};
-    if (pl.accountUid === claimerUid) {
-      const { accountUid, ...rest } = pl;
-      players[i] = rest;
-    }
-  }
+  // Enforce 1:1 mapping strictly
+  const alreadyLinkedElsewhere = players.some(
+    (p, i) => i !== idx && p && p.accountUid === claimerUid
+  );
+  if (alreadyLinkedElsewhere)
+    throw new Error(
+      "Your account is already linked to another player in this session"
+    );
+  // Block claiming if this player already has a different linked account
+  if (players[idx]?.accountUid && players[idx].accountUid !== claimerUid)
+    throw new Error("This player is already linked to another account");
   // best-effort: resolve username for storage (optional) for backward compatibility
   let uname: string | undefined;
   try {
@@ -487,6 +522,10 @@ export async function unlinkAccountInOrganizerSession(
   if (idx === -1) throw new Error("Player not found");
   const before = players[idx] || {};
   if (before.accountUid !== claimerUid) return; // nothing to do or not allowed
+  // Prevent self-unlink if organizer locked this link
+  if (before.linkLocked) {
+    throw new Error("This link is locked by the organizer");
+  }
   const { accountUid, accountUsername, ...rest } = before as any;
   // revert name to nameBeforeLink if present
   const revertedName = before.nameBeforeLink || rest.name;

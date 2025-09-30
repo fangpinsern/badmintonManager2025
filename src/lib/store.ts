@@ -103,8 +103,12 @@ const useStore = create<StoreState>()((set, _get) => ({
       sessions: s.sessions.map((ss) => {
         if (ss.id !== sessionId) return ss;
         // set accountUid, capture previous name for organizer-unlink, and optimistically set name to username if known later (left to server)
+        // Enforce 1:1 mapping locally: if accountUid already linked to another player, do not link
+        if (ss.players.some((p) => p.accountUid === accountUid)) return ss;
         const players = ss.players.map((p) => {
           if (p.id !== playerId) return p;
+          // If this player is already linked to a different account, block
+          if (p.accountUid && p.accountUid !== accountUid) return p;
           const nameBeforeLink = (p as any).nameBeforeLink || p.name;
           return { ...p, accountUid, nameBeforeLink } as Player & {
             nameBeforeLink?: string;
