@@ -202,6 +202,7 @@ export async function addAndLinkPlayerByUsername(
         players[idx] = {
           ...existingByUid,
           name: normalized,
+          accountUsername: normalized,
           linkLocked: true,
           nameBeforeLink: existingByUid.name || existingByUid.nameBeforeLink,
         };
@@ -253,6 +254,7 @@ export async function addAndLinkPlayerByUsername(
         ...before,
         name: normalized,
         accountUid: uid,
+        accountUsername: normalized,
         linkLocked: true,
         nameBeforeLink: before.name || before.nameBeforeLink,
       };
@@ -271,6 +273,7 @@ export async function addAndLinkPlayerByUsername(
         id: playerId,
         name: normalized,
         accountUid: uid,
+        accountUsername: normalized,
         linkLocked: true,
       });
     }
@@ -415,11 +418,9 @@ export async function linkAccountInOrganizerSession(
       players[i] = rest;
     }
   }
-  // resolve username for this uid via usernames collection (reverse lookup)
-  let uname = players[idx]?.name;
+  // best-effort: resolve username for storage (optional) for backward compatibility
+  let uname: string | undefined;
   try {
-    // reverse lookup by uid; usernames documents store { uid } and id is the username
-    // this requires a composite index-free simple where query
     const qref = usernamesCollection();
     const qres = await getDocs(query(qref, where("uid", "==", claimerUid)));
     const first = qres.docs[0];
@@ -427,8 +428,8 @@ export async function linkAccountInOrganizerSession(
   } catch {}
   players[idx] = {
     ...players[idx],
-    name: uname || players[idx]?.name,
     accountUid: claimerUid,
+    accountUsername: uname || players[idx]?.accountUsername,
     // self-link is user-driven; do not lock, allow unlink
     linkLocked: players[idx]?.linkLocked || false,
     nameBeforeLink: players[idx]?.name || players[idx]?.nameBeforeLink,
@@ -486,7 +487,7 @@ export async function unlinkAccountInOrganizerSession(
   if (idx === -1) throw new Error("Player not found");
   const before = players[idx] || {};
   if (before.accountUid !== claimerUid) return; // nothing to do or not allowed
-  const { accountUid, ...rest } = before;
+  const { accountUid, accountUsername, ...rest } = before as any;
   // revert name to nameBeforeLink if present
   const revertedName = before.nameBeforeLink || rest.name;
   const { nameBeforeLink, linkLocked, ...restNoMeta } = rest as any;
@@ -529,7 +530,7 @@ export async function organizerUnlinkPlayer(
   const before = players[idx] || {};
   const linkedUid: string | undefined =
     typeof before.accountUid === "string" ? before.accountUid : undefined;
-  const { accountUid, ...rest } = before;
+  const { accountUid, accountUsername, ...rest } = before as any;
   // Revert name to nameBeforeLink if present (same semantics as self-unlink)
   const revertedName = before.nameBeforeLink || rest.name;
   const { nameBeforeLink, linkLocked, ...restNoMeta } = rest as any;

@@ -23,6 +23,7 @@ import { Input } from "@/components/layout";
 import { Label } from "@/components/layout";
 import { downloadSessionJson, getPlayerCourtIndex } from "@/lib/helper";
 import { triggerStatsRecalc, recordStatsRecalcFailure } from "@/lib/stats";
+import { resolveUsernames } from "@/lib/statsClient";
 import {
   saveSession,
   subscribeSessionById,
@@ -158,6 +159,7 @@ function SessionManager({ onBack }: { onBack: () => void }) {
   const [editGameId, setEditGameId] = useState<string | null>(null);
   const [gamesFilter, setGamesFilter] = useState<string>("");
   const [gamesPage, setGamesPage] = useState<number>(1); // 10 per page
+  const [usernameMap, setUsernameMap] = useState<Record<string, string>>({});
 
   // Drag-and-drop removed; assignments are via dropdowns only
 
@@ -169,6 +171,40 @@ function SessionManager({ onBack }: { onBack: () => void }) {
       for (const pid of c.playerIds) set.add(pid);
     }
     return set;
+  }, [session]);
+
+  // Resolve usernames for linked players so we can link to profiles.
+  // Prefer cached accountUsername on the player, and only resolve by UID for those missing.
+  useEffect(() => {
+    if (!session) {
+      setUsernameMap({});
+      return;
+    }
+    // prefill from cached usernames on players
+    const prefilled: Record<string, string> = {};
+    const missingUids: string[] = [];
+    for (const pl of session.players || []) {
+      if (pl && pl.accountUid) {
+        if (pl.accountUsername) {
+          prefilled[pl.accountUid] = pl.accountUsername;
+        } else {
+          missingUids.push(pl.accountUid);
+        }
+      }
+    }
+    if (!missingUids.length) {
+      setUsernameMap(prefilled);
+      setUsernameMap({});
+      return;
+    }
+    (async () => {
+      try {
+        const map = await resolveUsernames(Array.from(new Set(missingUids)));
+        setUsernameMap({ ...prefilled, ...(map || {}) });
+      } catch {
+        setUsernameMap(prefilled);
+      }
+    })();
   }, [session]);
 
   const sortedPlayers = useMemo(() => {
@@ -569,11 +605,14 @@ function SessionManager({ onBack }: { onBack: () => void }) {
                         const sp = session.players.find(
                           (pp) => pp.id === p.playerId
                         );
-                        const isLinked = !!sp?.accountUid;
-                        const uname = toUsernameSlug(sp?.name || p.name || "");
-                        return isLinked ? (
+                        console.log("sp", sp);
+                        const uid = sp?.accountUid;
+                        const uname = uid ? usernameMap[uid] : undefined;
+                        const slug = uname ? toUsernameSlug(uname) : null;
+                        const finalUname = uname || sp?.accountUsername;
+                        return uid && finalUname ? (
                           <Link
-                            href={`/profile/${uname}`}
+                            href={`/profile/${finalUname}`}
                             className="text-sky-700 hover:underline"
                           >
                             {p.name}
@@ -630,7 +669,9 @@ function SessionManager({ onBack }: { onBack: () => void }) {
             {bulkOpen && (
               <form onSubmit={addBulk} className="space-y-2">
                 <div>
-                  <Label>Paste names (one per line, or comma-separated)</Label>
+                  <Label>Paste names (one per line)</Label>
+                  <Label>Add gender M/F with comma (optional)</Label>
+                  <Label>Example: Alice, F</Label>
                   <textarea
                     value={bulkText}
                     onChange={(e) => setBulkText(e.target.value)}

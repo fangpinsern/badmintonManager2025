@@ -4,6 +4,8 @@ type Player = {
   gender?: "M" | "F";
   gamesPlayed?: number;
   accountUid?: string;
+  // cached username for the linked account to avoid re-resolving on every view
+  accountUsername?: string;
   // when linked, capture prior display name to allow revert on unlink
   nameBeforeLink?: string;
   // if true, participant (self) cannot unlink (organizer-added by username)
