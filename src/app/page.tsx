@@ -572,10 +572,16 @@ function SessionList({ onOpen }: { onOpen: (id: string) => void }) {
                       className={`rounded-full px-2 py-0.5 text-[10px] ${
                         isOrganizer
                           ? "bg-blue-50 text-blue-700"
+                          : (ss.coOrganizerUids || []).includes(me || "")
+                          ? "bg-red-50 text-red-700"
                           : "bg-gray-100 text-gray-600"
                       }`}
                     >
-                      {isOrganizer ? "Organizer" : "Participant"}
+                      {isOrganizer
+                        ? "Organizer"
+                        : (ss.coOrganizerUids || []).includes(me || "")
+                        ? "Co-organizer"
+                        : "Participant"}
                     </span>
                   </div>
                 </div>

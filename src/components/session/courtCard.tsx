@@ -107,7 +107,15 @@ function CourtCard({
     if (!ready) return;
     if (aStr === "" || bStr === "") return;
     if (Number.isNaN(a) || Number.isNaN(b)) return;
-    endGame(session.id, idx, a, b);
+    const uid = auth.currentUser?.uid || null;
+    const role = uid
+      ? uid === (window as any).__sessionOwners?.get?.(session.id)
+        ? "organizer"
+        : (session.coOrganizerUids || []).includes(uid)
+        ? "co-organizer"
+        : undefined
+      : undefined;
+    endGame(session.id, idx, a, b, uid, role as any);
     setScoreA("");
     setScoreB("");
     setOpen(false);
@@ -767,7 +775,15 @@ function CourtCard({
         onCancel={() => setOpen(false)}
         onSave={onSave}
         onVoid={() => {
-          voidGame(session.id, idx);
+          const uid = auth.currentUser?.uid || null;
+          const role = uid
+            ? uid === (window as any).__sessionOwners?.get?.(session.id)
+              ? "organizer"
+              : (session.coOrganizerUids || []).includes(uid)
+              ? "co-organizer"
+              : undefined
+            : undefined;
+          voidGame(session.id, idx, uid, role as any);
           setOpen(false);
         }}
         namesA={pairA.map(

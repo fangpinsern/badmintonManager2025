@@ -9,6 +9,7 @@ import { QRCodeSVG } from "qrcode.react";
 import { useRef, useEffect } from "react";
 import { Player } from "@/types/player";
 import { ConfirmModal } from "@/components/session/confirmModal";
+import { useStore } from "@/lib/store";
 import { useRouter } from "next/navigation";
 
 function RowKebabMenu({
@@ -29,10 +30,13 @@ function RowKebabMenu({
   removePlayer: (sid: string, pid: string) => void;
 }) {
   const [showQr, setShowQr] = useState(false);
+  const addCo = useStore((s) => s.addCoOrganizer);
+  const removeCo = useStore((s) => s.removeCoOrganizer);
   const router = useRouter();
   const [unlinkOpen, setUnlinkOpen] = useState(false);
   const unlinkModeRef = useRef<"self" | "organizer" | null>(null);
   const [removeOpen, setRemoveOpen] = useState(false);
+  const [busyCo, setBusyCo] = useState(false);
   const alreadyLinkedToMe =
     !!auth.currentUser?.uid &&
     session.players.some((pp) => pp.accountUid === auth.currentUser!.uid);
@@ -127,6 +131,44 @@ function RowKebabMenu({
                 Unlink
               </button>
             ) : null)}
+          {isOrganizer && player.accountUid && (
+            <>
+              {Array.isArray(session.coOrganizerUids) &&
+              session.coOrganizerUids.includes(player.accountUid) ? (
+                <button
+                  className="w-full rounded px-2 py-1 text-left hover:bg-gray-50 disabled:opacity-50"
+                  disabled={busyCo}
+                  onClick={() => {
+                    setBusyCo(true);
+                    try {
+                      removeCo(session.id, player.accountUid!);
+                    } finally {
+                      setBusyCo(false);
+                      closeMenu();
+                    }
+                  }}
+                >
+                  Remove co-organizer
+                </button>
+              ) : (
+                <button
+                  className="w-full rounded px-2 py-1 text-left hover:bg-gray-50 disabled:opacity-50"
+                  disabled={busyCo}
+                  onClick={() => {
+                    setBusyCo(true);
+                    try {
+                      addCo(session.id, player.accountUid!);
+                    } finally {
+                      setBusyCo(false);
+                      closeMenu();
+                    }
+                  }}
+                >
+                  Assign co-organizer
+                </button>
+              )}
+            </>
+          )}
           <button
             className="w-full rounded px-2 py-1 text-left hover:bg-gray-50 disabled:opacity-50"
             disabled={inGame}

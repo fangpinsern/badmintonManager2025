@@ -43,9 +43,18 @@ interface StoreState {
     sessionId: string,
     courtIndex: number,
     scoreA: number,
-    scoreB: number
+    scoreB: number,
+    endedByUid?: string | null,
+    endedByRole?: "organizer" | "co-organizer"
   ) => void;
-  voidGame: (sessionId: string, courtIndex: number) => void;
+  voidGame: (
+    sessionId: string,
+    courtIndex: number,
+    endedByUid?: string | null,
+    endedByRole?: "organizer" | "co-organizer"
+  ) => void;
+  addCoOrganizer: (sessionId: string, uid: string) => void;
+  removeCoOrganizer: (sessionId: string, uid: string) => void;
   updateGame: (
     sessionId: string,
     gameId: string,
@@ -139,7 +148,12 @@ const useStore = create<StoreState>()((set, _get) => ({
           const { accountUid, ...rest } = p as any;
           return { ...rest } as Player;
         });
-        return { ...ss, players };
+        // If the unlinked player was a co-organizer, remove their uid from coOrganizerUids
+        const removed = ss.players.find((p) => p.id === playerId);
+        const nextCo = removed?.accountUid
+          ? (ss.coOrganizerUids || []).filter((u) => u !== removed!.accountUid)
+          : ss.coOrganizerUids;
+        return { ...ss, players, coOrganizerUids: nextCo };
       }),
     })),
 
@@ -380,7 +394,7 @@ const useStore = create<StoreState>()((set, _get) => ({
       }),
     })),
 
-  endGame: (sessionId, courtIndex, scoreA, scoreB) =>
+  endGame: (sessionId, courtIndex, scoreA, scoreB, endedByUid, endedByRole) =>
     set((s) => ({
       sessions: s.sessions.map((ss) => {
         if (ss.id !== sessionId) return ss;
@@ -426,6 +440,8 @@ const useStore = create<StoreState>()((set, _get) => ({
           scoreB: b,
           winner,
           players: snapshot,
+          endedByUid: endedByUid || undefined,
+          endedByRole: endedByRole || undefined,
         };
         const courts = ss.courts.map((c) => ({ ...c }));
         const c = courts[courtIndex];
@@ -529,7 +545,7 @@ const useStore = create<StoreState>()((set, _get) => ({
       }),
     })),
 
-  voidGame: (sessionId, courtIndex) =>
+  voidGame: (sessionId, courtIndex, endedByUid, endedByRole) =>
     set((s) => ({
       sessions: s.sessions.map((ss) => {
         if (ss.id !== sessionId) return ss;
@@ -568,6 +584,8 @@ const useStore = create<StoreState>()((set, _get) => ({
           winner: "draw",
           players: snapshot,
           voided: true,
+          endedByUid: endedByUid || undefined,
+          endedByRole: endedByRole || undefined,
         };
         const courts = ss.courts.map((c) => ({ ...c }));
         const c = courts[courtIndex];
@@ -1024,6 +1042,29 @@ const useStore = create<StoreState>()((set, _get) => ({
               : undefined,
         };
         return { ...ss, ended: true, endedAt: new Date().toISOString(), stats };
+      }),
+    })),
+
+  addCoOrganizer: (sessionId, uid) =>
+    set((s) => ({
+      sessions: s.sessions.map((ss) => {
+        if (ss.id !== sessionId) return ss;
+        if (!uid) return ss;
+        const isLinked = ss.players.some((p) => p.accountUid === uid);
+        if (!isLinked) return ss; // must be linked
+        const setU = new Set([...(ss.coOrganizerUids || []), uid]);
+        return { ...ss, coOrganizerUids: Array.from(setU) };
+      }),
+    })),
+
+  removeCoOrganizer: (sessionId, uid) =>
+    set((s) => ({
+      sessions: s.sessions.map((ss) => {
+        if (ss.id !== sessionId) return ss;
+        return {
+          ...ss,
+          coOrganizerUids: (ss.coOrganizerUids || []).filter((u) => u !== uid),
+        };
       }),
     })),
 }));

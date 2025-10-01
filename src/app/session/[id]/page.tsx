@@ -26,6 +26,7 @@ import { triggerStatsRecalc, recordStatsRecalcFailure } from "@/lib/stats";
 import { resolveUsernames } from "@/lib/statsClient";
 import {
   saveSession,
+  saveSessionOnBehalf,
   subscribeSessionById,
   subscribeUserProfile,
   claimUsername,
@@ -121,17 +122,29 @@ function SessionManager({ onBack }: { onBack: () => void }) {
     organizerUid &&
     auth.currentUser.uid === organizerUid
   );
+  const isCoOrganizer = useMemo(() => {
+    const uid = auth.currentUser?.uid || null;
+    if (!uid || !session) return false;
+    return Array.isArray(session.coOrganizerUids)
+      ? session.coOrganizerUids.includes(uid)
+      : false;
+  }, [session, auth.currentUser?.uid]);
+  const canManage = isOrganizer || isCoOrganizer;
 
   useEffect(() => {
-    if (!isOrganizer || !storeSession) return;
+    if (!storeSession) return;
     try {
       const serialized = JSON.stringify(storeSession);
       if (lastSavedRef.current !== serialized) {
         lastSavedRef.current = serialized;
-        void saveSession(storeSession.id, storeSession);
+        if (isOrganizer) {
+          void saveSession(storeSession.id, storeSession);
+        } else if (isCoOrganizer && organizerUid) {
+          void saveSessionOnBehalf(organizerUid, storeSession.id, storeSession);
+        }
       }
     } catch {}
-  }, [isOrganizer, storeSession]);
+  }, [isOrganizer, isCoOrganizer, organizerUid, storeSession]);
 
   const [name, setName] = useState("");
   const [bulkOpen, setBulkOpen] = useState(false);
@@ -407,19 +420,21 @@ function SessionManager({ onBack }: { onBack: () => void }) {
               </div>
             )}
           </div>
-          {!session.ended && isOrganizer && (
+          {!session.ended && (
             <div className="flex items-center gap-2">
-              <AutoAssignSettingsButton session={session} />
-              <button
-                onClick={() => {
-                  setEndOpen(true);
-                  setEndShuttles("0");
-                }}
-                disabled={anyInProgress}
-                className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-1.5 text-amber-700 disabled:opacity-50"
-              >
-                End session
-              </button>
+              {canManage && <AutoAssignSettingsButton session={session} />}
+              {isOrganizer && (
+                <button
+                  onClick={() => {
+                    setEndOpen(true);
+                    setEndShuttles("0");
+                  }}
+                  disabled={anyInProgress}
+                  className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-1.5 text-amber-700 disabled:opacity-50"
+                >
+                  End session
+                </button>
+              )}
             </div>
           )}
         </div>
@@ -641,7 +656,7 @@ function SessionManager({ onBack }: { onBack: () => void }) {
         </Card>
       )}
 
-      {isOrganizer && (
+      {canManage && (
         <Card>
           <h3 className="mb-3 text-base font-semibold">Add players</h3>
           <div className="space-y-2">
@@ -710,7 +725,7 @@ function SessionManager({ onBack }: { onBack: () => void }) {
                   )}
                 </form>
               )}
-              {isOrganizer && !session.ended && (
+              {canManage && !session.ended && (
                 <>
                   <button
                     onClick={() => setShowAddByUsername((v) => !v)}
@@ -948,6 +963,24 @@ function SessionManager({ onBack }: { onBack: () => void }) {
               ></span>
               <span>In game</span>
             </span>
+            <span
+              className="inline-flex items-center gap-1"
+              aria-label="Co-organizer"
+            >
+              <svg
+                className="h-3.5 w-3.5 text-red-600"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M12 14.5c-3.59 0-6.5 2.02-6.5 4.5 0 .28.22.5.5.5h12c.28 0 .5-.22.5-.5 0-2.48-2.91-4.5-6.5-4.5z" />
+                <path d="M15.5 8a3.5 3.5 0 11-7 0 3.5 3.5 0 017 0z" />
+              </svg>
+              <span>Co-organizer</span>
+            </span>
           </div>
           {session.players.length === 0 ? (
             <p className="text-gray-500">No players yet. Add some above.</p>
@@ -968,19 +1001,31 @@ function SessionManager({ onBack }: { onBack: () => void }) {
                           <span
                             className="inline-flex items-center"
                             title={
-                              auth.currentUser?.uid === p.accountUid
+                              (session.coOrganizerUids || []).includes(
+                                p.accountUid
+                              )
+                                ? "Co-organizer"
+                                : auth.currentUser?.uid === p.accountUid
                                 ? "Account (Me)"
                                 : "Account"
                             }
                             aria-label={
-                              auth.currentUser?.uid === p.accountUid
+                              (session.coOrganizerUids || []).includes(
+                                p.accountUid
+                              )
+                                ? "Co-organizer"
+                                : auth.currentUser?.uid === p.accountUid
                                 ? "Account (Me)"
                                 : "Account"
                             }
                           >
                             <svg
                               className={`h-4 w-4 ${
-                                auth.currentUser?.uid === p.accountUid
+                                (session.coOrganizerUids || []).includes(
+                                  p.accountUid
+                                )
+                                  ? "text-red-600"
+                                  : auth.currentUser?.uid === p.accountUid
                                   ? "text-emerald-600"
                                   : "text-blue-600"
                               }`}
@@ -1056,7 +1101,7 @@ function SessionManager({ onBack }: { onBack: () => void }) {
                       </span>
                     </div>
                     <div className="col-span-6 flex items-center justify-end gap-2">
-                      {isOrganizer && !session.ended && !inGame ? (
+                      {canManage && !session.ended && !inGame ? (
                         <div className="flex max-w-full flex-wrap items-center gap-1">
                           <button
                             onClick={() => assign(session.id, p.id, null)}
@@ -1114,13 +1159,13 @@ function SessionManager({ onBack }: { onBack: () => void }) {
                         </span>
                       )}
                       {!session.ended &&
-                        (isOrganizer ||
+                        (canManage ||
                           p.accountUid === auth.currentUser?.uid) && (
                           <RowKebabMenu
                             session={session}
                             player={p}
                             inGame={inGame}
-                            isOrganizer={!!isOrganizer}
+                            isOrganizer={!!canManage}
                             organizerUid={
                               organizerUid ||
                               (window as any).__sessionOwners?.get?.(session.id)
@@ -1144,7 +1189,7 @@ function SessionManager({ onBack }: { onBack: () => void }) {
               <span className="text-xs text-gray-500">
                 Unassigned: {unassigned.length}
               </span>
-              {!session.ended && isOrganizer && (
+              {!session.ended && canManage && (
                 <AddCourtButton sessionId={session.id} />
               )}
             </div>
@@ -1156,7 +1201,7 @@ function SessionManager({ onBack }: { onBack: () => void }) {
                 session={session}
                 court={court}
                 idx={idx}
-                isOrganizer={isOrganizer}
+                isOrganizer={canManage}
               />
             ))}
           </div>
@@ -1229,6 +1274,14 @@ function SessionManager({ onBack }: { onBack: () => void }) {
                     ) : (
                       <>
                         Score: {g.scoreA}–{g.scoreB} · Winner: {g.winner}
+                        {g.endedByRole && (
+                          <span className="ml-2 rounded-full bg-gray-100 px-2 py-0.5 text-[10px] text-gray-700">
+                            Ended By{" "}
+                            {g.endedByRole === "organizer"
+                              ? "Organizer"
+                              : "Co-organizer"}
+                          </span>
+                        )}
                         {selected && (playedA || playedB) && !g.voided && (
                           <span
                             className={`ml-2 rounded px-2 py-0.5 text-[10px] ${

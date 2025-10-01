@@ -375,6 +375,66 @@ export async function saveSession(sessionId: string, payload: unknown) {
   } catch {}
 }
 
+// Allow a non-organizer privileged user (e.g., co-organizer) to save into the organizer's session doc.
+export async function saveSessionOnBehalf(
+  organizerUid: string,
+  sessionId: string,
+  payload: unknown
+) {
+  if (!organizerUid) return;
+  const ref = doc(sessionsCollectionForUid(organizerUid), sessionId);
+  // sanitize players to enforce one-link-per-uid
+  let sanitized = payload as any;
+  try {
+    const p: any = payload as any;
+    const arr: any[] = Array.isArray(p?.players) ? [...p.players] : [];
+    const seen = new Set<string>();
+    const updated = arr.map((pl) => ({ ...(pl || {}) }));
+    for (let i = 0; i < updated.length; i++) {
+      const au = updated[i]?.accountUid;
+      if (typeof au === "string" && au) {
+        if (seen.has(au)) {
+          const { accountUid, ...rest } = updated[i];
+          updated[i] = rest;
+        } else {
+          seen.add(au);
+        }
+      }
+    }
+    sanitized = { ...p, players: updated };
+  } catch {}
+  const linkedUids = collectLinkedUids(sanitized);
+  await setDoc(
+    ref,
+    {
+      id: sessionId,
+      payload: stripUndefinedDeep(sanitized),
+      linkedUids,
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
+  // update linkedSessions index for any newly linked users
+  try {
+    const next = new Set(linkedUids || []);
+    // We cannot read prev without extra read; skip cleanup for performance
+    await Promise.all(
+      Array.from(next).map(async (u) => {
+        if (u === organizerUid) return;
+        const idxRef = doc(
+          linkedSessionsIndexCol(u),
+          `${organizerUid}_${sessionId}`
+        );
+        await setDoc(
+          idxRef,
+          { organizerUid, sessionId, updatedAt: serverTimestamp() },
+          { merge: true }
+        );
+      })
+    );
+  } catch {}
+}
+
 export async function createSessionDoc(sessionId: string, payload: unknown) {
   const uid = auth.currentUser?.uid;
   if (!uid) return; // not signed in; skip
@@ -531,7 +591,15 @@ export async function unlinkAccountInOrganizerSession(
   const revertedName = before.nameBeforeLink || rest.name;
   const { nameBeforeLink, linkLocked, ...restNoMeta } = rest as any;
   players[idx] = { ...restNoMeta, name: revertedName };
-  const nextPayload = stripUndefinedDeep({ ...payload, players });
+  // also remove from coOrganizerUids if present
+  let co = Array.isArray(payload.coOrganizerUids)
+    ? (payload.coOrganizerUids as string[]).filter((u) => u !== claimerUid)
+    : undefined;
+  const nextPayload = stripUndefinedDeep({
+    ...payload,
+    players,
+    coOrganizerUids: co,
+  });
   const linkedUids = collectLinkedUids(nextPayload);
   await setDoc(
     ref,
@@ -574,7 +642,15 @@ export async function organizerUnlinkPlayer(
   const revertedName = before.nameBeforeLink || rest.name;
   const { nameBeforeLink, linkLocked, ...restNoMeta } = rest as any;
   players[idx] = { ...restNoMeta, name: revertedName };
-  const nextPayload = stripUndefinedDeep({ ...payload, players });
+  // if linked uid existed, drop from coOrganizerUids
+  let co = Array.isArray(payload.coOrganizerUids)
+    ? (payload.coOrganizerUids as string[]).filter((u) => u !== linkedUid)
+    : undefined;
+  const nextPayload = stripUndefinedDeep({
+    ...payload,
+    players,
+    coOrganizerUids: co,
+  });
   const linkedUids = collectLinkedUids(nextPayload);
   await setDoc(
     ref,

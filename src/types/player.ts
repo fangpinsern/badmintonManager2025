@@ -50,6 +50,9 @@ type Game = {
   winner: "A" | "B" | "draw";
   players: string[]; // snapshot A+B (ids)
   voided?: boolean;
+  // accountability: which user ended (submitted score for) this game
+  endedByUid?: string;
+  endedByRole?: "organizer" | "co-organizer";
 };
 
 type PlayerAggregate = {
@@ -103,6 +106,8 @@ type Session = {
   ended?: boolean;
   endedAt?: string;
   stats?: SessionStats;
+  // co-organizer support: store linked account UIDs with elevated permissions
+  coOrganizerUids?: string[];
   autoAssignBlacklist?: { pairs: { a: string; b: string }[] };
   autoAssignConfig?: {
     // legacy flag retained for backward compatibility (maps to respectGender="soft")
