@@ -857,6 +857,7 @@ export default {
 
       return withCors(new Response("OK"), req);
     } catch (e) {
+      console.log("error", e);
       return withCors(new Response(`Error: ${e?.message || "Internal Error"}`, { status: 500 }), req);
     }
   }
