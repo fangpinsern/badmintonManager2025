@@ -592,7 +592,7 @@ export async function unlinkAccountInOrganizerSession(
   const { nameBeforeLink, linkLocked, ...restNoMeta } = rest as any;
   players[idx] = { ...restNoMeta, name: revertedName };
   // also remove from coOrganizerUids if present
-  let co = Array.isArray(payload.coOrganizerUids)
+  const co = Array.isArray(payload.coOrganizerUids)
     ? (payload.coOrganizerUids as string[]).filter((u) => u !== claimerUid)
     : undefined;
   const nextPayload = stripUndefinedDeep({
@@ -643,7 +643,7 @@ export async function organizerUnlinkPlayer(
   const { nameBeforeLink, linkLocked, ...restNoMeta } = rest as any;
   players[idx] = { ...restNoMeta, name: revertedName };
   // if linked uid existed, drop from coOrganizerUids
-  let co = Array.isArray(payload.coOrganizerUids)
+  const co = Array.isArray(payload.coOrganizerUids)
     ? (payload.coOrganizerUids as string[]).filter((u) => u !== linkedUid)
     : undefined;
   const nextPayload = stripUndefinedDeep({
