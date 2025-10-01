@@ -495,8 +495,6 @@ export default {
         );
       }
 
-      console.log("result", JSON.stringify({ sessionKey, endMonth, users: summary, pairs, opp, eloPreview, chemPreview }, null, 2));
-
       const sessionKey = `${organizerUid}_${sessionId}`;
       const endMonth = monthKey(payload.endedAt || (games[games.length - 1] || {}).endedAt);
       const rootCol = isTest ? "userStats_test" : "userStats";
