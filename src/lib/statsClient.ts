@@ -231,3 +231,65 @@ export async function getOpponentEdgeMonthlySplit(
   doubles.sort((a, b) => (a.month < b.month ? -1 : a.month > b.month ? 1 : 0));
   return { singles, doubles };
 }
+
+// ---- Global leaderboards (user discovery) ----
+
+type LeaderboardMode = "totals" | "singles" | "doubles";
+type LeaderboardMetric = "games" | "wins" | "durationMin";
+
+function fieldPathFor(mode: LeaderboardMode, metric: LeaderboardMetric) {
+  if (mode === "totals") return `totals.${metric}`;
+  return `totals.${mode}.${metric}`;
+}
+
+// Returns top users by the chosen metric, optionally split by mode. Prioritizes doubles by passing mode="doubles".
+export async function getTopUsersBy(
+  metric: LeaderboardMetric,
+  options?: { mode?: LeaderboardMode; limit?: number; test?: boolean }
+) {
+  const root = options?.test ?? isTestMode() ? "userStats_test" : "userStats";
+  const mode: LeaderboardMode = options?.mode || "totals";
+  const limitN = Math.max(1, Math.min(50, options?.limit || 5));
+  const colRef = collection(db as any, root);
+  const path = fieldPathFor(mode, metric);
+  // Single-field orderBy with limit should not require a composite index
+  const q = query(colRef as any, orderBy(path as any, "desc"), limit(limitN));
+  const snap = await getDocs(q);
+  const rows: {
+    uid: string;
+    score: number;
+    totals: any;
+  }[] = [];
+  snap.forEach((d) => {
+    const data = d.data() as any;
+    const totals = data?.totals || {};
+    let score = 0;
+    if (mode === "totals") {
+      score = Number(totals?.[metric] || 0);
+    } else {
+      score = Number(totals?.[mode]?.[metric] || 0);
+    }
+    rows.push({ uid: String(d.id), score, totals });
+  });
+  return rows;
+}
+
+// Convenience helpers for common boards
+export async function getTopDoublesWins(limitN: number = 5) {
+  return getTopUsersBy("wins", { mode: "doubles", limit: limitN });
+}
+export async function getTopDoublesTime(limitN: number = 5) {
+  return getTopUsersBy("durationMin", { mode: "doubles", limit: limitN });
+}
+export async function getTopSinglesWins(limitN: number = 5) {
+  return getTopUsersBy("wins", { mode: "singles", limit: limitN });
+}
+export async function getTopSinglesTime(limitN: number = 5) {
+  return getTopUsersBy("durationMin", { mode: "singles", limit: limitN });
+}
+export async function getTopDoublesGames(limitN: number = 5) {
+  return getTopUsersBy("games", { mode: "doubles", limit: limitN });
+}
+export async function getTopSinglesGames(limitN: number = 5) {
+  return getTopUsersBy("games", { mode: "singles", limit: limitN });
+}

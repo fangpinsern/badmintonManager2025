@@ -33,6 +33,7 @@ import Link from "next/link";
 import LoadingScreen from "@/components/LoadingScreen";
 import UsernameModal from "@/components/UsernameModal";
 import { subscribeUserProfile, claimUsername } from "@/lib/firestoreSessions";
+import Leaderboard from "@/components/Leaderboard";
 
 /**
  * Single-file Next.js page (drop into app/page.tsx)
@@ -328,6 +329,7 @@ function Page() {
               </div>
             </div>
           </Card>
+          <Leaderboard />
           <Card>
             <h2 className="text-base font-semibold">Privacy & data</h2>
             <ul className="mt-2 list-disc pl-5 text-sm text-gray-700">
@@ -357,6 +359,7 @@ function Page() {
         <div className="space-y-6">
           <SessionForm onCreated={(id) => router.push(`/session/${id}`)} />
           <SessionList onOpen={setSelectedSessionId} />
+          <Leaderboard />
         </div>
       )}
 

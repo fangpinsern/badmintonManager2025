@@ -269,6 +269,203 @@ export default {
       const uids = Object.keys(perUser);
       if (!uids.length) return withCors(new Response("No linked players", { status: 200 }), req);
 
+      // ----------------------------
+      // Elo ratings computation (background)
+      // ----------------------------
+      // Notes/assumptions:
+      // - We compute Elo for both modes; current UI does not display, we store under users/{uid}.elo
+      // - Trust weights follow docs/elo.md §2.4 using available links. No confirmation flags in payload, so verification multiplier=1.0.
+      // - MOV multiplier uses Math.log; all math fits raw JS (no special libraries needed).
+      // - Doubles chemistry is stored on friendEdges/{u1__u2}.chemistry.delta and updated with decay; requires reading current value once.
+      // - Idempotency: per-user gate under users/{uid}/gates/elo:session:{organizer_session} to prevent double-apply.
+
+      const allLinkedUids = new Set();
+      for (const g of games) {
+        const aU = (Array.isArray(g.sideA) ? g.sideA : []).map((pid) => pidToUid.get(pid)).filter(Boolean);
+        const bU = (Array.isArray(g.sideB) ? g.sideB : []).map((pid) => pidToUid.get(pid)).filter(Boolean);
+        aU.forEach((u) => allLinkedUids.add(u));
+        bU.forEach((u) => allLinkedUids.add(u));
+      }
+
+      // Read current Elo state for involved users
+      const userElo = new Map(); // uid -> { singles:{R,K,matches}, doubles:{R,K,matches} }
+      {
+        const readPromises = Array.from(allLinkedUids).map(async (uid) => {
+          try {
+            const res = await fetch(`${baseUrl}/${userCol}/${uid}`, { headers: { authorization: `Bearer ${token}` } });
+            if (!res.ok) throw new Error(String(res.status));
+            const doc = await res.json();
+            const f = doc.fields || {};
+            const elo = jsonFromFields(f.elo) || {};
+            const singles = elo.singles || { R: 1500, K: 32, matches: 0 };
+            const doubles = elo.doubles || { R: 1500, K: 32, matches: 0 };
+            userElo.set(uid, {
+              singles: {
+                R: Number(singles.R ?? 1500),
+                K: Number(singles.K ?? 32),
+                matches: Number(singles.matches ?? 0),
+              },
+              doubles: {
+                R: Number(doubles.R ?? 1500),
+                K: Number(doubles.K ?? 32),
+                matches: Number(doubles.matches ?? 0),
+              },
+            });
+          } catch {
+            userElo.set(uid, {
+              singles: { R: 1500, K: 32, matches: 0 },
+              doubles: { R: 1500, K: 32, matches: 0 },
+            });
+          }
+        });
+        await Promise.all(readPromises);
+      }
+
+      // Chemistry cache for linked-linked pairs encountered (friendEdges)
+      const friendEdgeColName = isTest ? "friendEdges_test" : "friendEdges";
+      const chemistryByEdge = new Map(); // edgeKey -> { delta:number, lastPlayedAt?:string }
+      async function getChem(edgeKey) {
+        if (chemistryByEdge.has(edgeKey)) return chemistryByEdge.get(edgeKey);
+        try {
+          const res = await fetch(`${baseUrl}/${friendEdgeColName}/${edgeKey}`, { headers: { authorization: `Bearer ${token}` } });
+          if (!res.ok) throw new Error(String(res.status));
+          const doc = await res.json();
+          const f = doc.fields || {};
+          const chem = jsonFromFields(f.chemistry) || {};
+          const last = jsonFromFields(f.lastPlayedAt) || "";
+          const row = { delta: Number(chem.delta ?? 0), lastPlayedAt: String(last || "") };
+          chemistryByEdge.set(edgeKey, row);
+          return row;
+        } catch {
+          const row = { delta: 0, lastPlayedAt: "" };
+          chemistryByEdge.set(edgeKey, row);
+          return row;
+        }
+      }
+
+      // Elo compute
+      const updatedUsers = new Set();
+      const updatedPairs = new Set(); // edgeKeys whose chemistry changed
+      for (const g of games) {
+        const rawA = Array.isArray(g.sideA) ? g.sideA.length : 0;
+        const rawB = Array.isArray(g.sideB) ? g.sideB.length : 0;
+        const mode = rawA === 1 && rawB === 1 ? "singles" : "doubles";
+
+        // linked account uids per side
+        const sideA = (Array.isArray(g.sideA) ? g.sideA : []).map((pid) => pidToUid.get(pid)).filter(Boolean);
+        const sideB = (Array.isArray(g.sideB) ? g.sideB : []).map((pid) => pidToUid.get(pid)).filter(Boolean);
+        const linkedCount = sideA.length + sideB.length;
+        const teamALinked = sideA.length > 0;
+        const teamBLinked = sideB.length > 0;
+        if (!teamALinked && !teamBLinked) continue; // ignore 0 linked
+
+        // Trust weight (verification multiplier assumed 1.0 due to lack of confirmations in payload)
+        let wTrust;
+        if (teamALinked && teamBLinked && linkedCount === 4) wTrust = 1.0;
+        else if (teamALinked && teamBLinked) wTrust = 0.75;
+        else if (linkedCount === 1) wTrust = 0.25;
+        else wTrust = 0; // should not happen given earlier check
+        if (wTrust === 0) continue;
+
+        // Winner and points
+        const SA = g.winner === "A" ? 1 : g.winner === "B" ? 0 : 0.5; // draw rare; treat as 0.5
+        const pointsA = Number.isFinite(Number(g.scoreA)) ? Number(g.scoreA) : undefined;
+        const pointsB = Number.isFinite(Number(g.scoreB)) ? Number(g.scoreB) : undefined;
+        const fMov = Number.isFinite(pointsA) && Number.isFinite(pointsB) ? Math.min(1.2, Math.log(1 + Math.abs(pointsA - pointsB) / 8)) : 1.0;
+
+        // Build team strengths
+        function sumRatings(uids, ladder) {
+          let sum = 0;
+          for (const u of uids) sum += (userElo.get(u) || {})[ladder]?.R ?? 1500;
+          return sum;
+        }
+        function pairKey(u1, u2) { return u1 < u2 ? `${u1}__${u2}` : `${u2}__${u1}`; }
+
+        let TA = 0, TB = 0;
+        if (mode === "singles") {
+          // If one side has no linked (should not happen here), we would anchor at 1500
+          TA = sumRatings(sideA, "singles");
+          TB = sumRatings(sideB, "singles");
+        } else {
+          // doubles
+          // Each side base strength is sum of linked players' doubles ratings; add chemistry if both linked
+          TA = sumRatings(sideA, "doubles");
+          TB = sumRatings(sideB, "doubles");
+          if (sideA.length >= 2) {
+            const [ua, ub] = sideA.slice(0, 2);
+            const ek = pairKey(ua, ub);
+            const chem = await getChem(ek);
+            TA += chem.delta || 0;
+          } else if (sideA.length === 1) {
+            // Assume a guest teammate at baseline 1500
+            TA += 1500;
+          }
+          if (sideB.length >= 2) {
+            const [va, vb] = sideB.slice(0, 2);
+            const ek = pairKey(va, vb);
+            const chem = await getChem(ek);
+            TB += chem.delta || 0;
+          } else if (sideB.length === 1) {
+            TB += 1500;
+          }
+        }
+
+        // If a side has no linked player, anchor at 1500 to compute E
+        if (teamALinked && !teamBLinked) TB = mode === "singles" ? 1500 : 3000; // two guests 1500+1500
+        if (teamBLinked && !teamALinked) TA = mode === "singles" ? 1500 : 3000;
+
+        const EA = 1 / (1 + Math.pow(10, (TB - TA) / 400));
+        const eventWeight = 1.0;
+
+        // K schedule: average per side, then average both sides
+        function avgK(uids, ladder) {
+          if (!uids.length) return 32;
+          let sum = 0, n = 0;
+          for (const u of uids) { const pr = (userElo.get(u) || {})[ladder]; if (pr) { sum += pr.K || 32; n++; } }
+          return n ? sum / n : 32;
+        }
+        const K_A = avgK(sideA, mode);
+        const K_B = avgK(sideB, mode);
+        const K_eff = (K_A + K_B) / 2;
+
+        const delta = K_eff * wTrust * eventWeight * fMov * (SA - EA);
+
+        // Apply to linked players only
+        function applyDelta(uids, ladder, sgn) {
+          for (const u of uids) {
+            const pr = (userElo.get(u) || {})[ladder];
+            if (!pr) continue;
+            pr.R += sgn * delta;
+            pr.matches = (pr.matches || 0) + 1;
+            if (pr.matches >= 20) pr.K = 20;
+            userElo.set(u, { ...userElo.get(u), [ladder]: pr });
+            updatedUsers.add(u);
+          }
+        }
+        if (teamALinked) applyDelta(sideA, mode, +1);
+        if (teamBLinked) applyDelta(sideB, mode, -1);
+
+        // Chemistry update for doubles: linked-linked pairs that actually partnered
+        if (mode === "doubles") {
+          const endedAt = g.endedAt || payload.endedAt || new Date().toISOString();
+          const residualA = SA - EA;
+          const residualB = -residualA;
+          async function updChem(uids, residual) {
+            if (uids.length < 2) return;
+            const [x, y] = uids.slice(0, 2).sort();
+            const ek = `${x}__${y}`;
+            const cur = await getChem(ek);
+            const months = monthsSince(cur.lastPlayedAt, endedAt) || 0;
+            const decay = 1 - 0.01 * months; // CHEM_DECAY_MONTHLY=0.01
+            const next = Math.max(-70, Math.min(70, (isFinite(decay) ? decay : 1) * (cur.delta || 0) + 6 * residual));
+            chemistryByEdge.set(ek, { delta: next, lastPlayedAt: endedAt });
+            updatedPairs.add(ek);
+          }
+          if (sideA.length >= 2) await updChem(sideA, residualA);
+          if (sideB.length >= 2) await updChem(sideB, residualB);
+        }
+      }
+
       console.log("uids", uids);
       if (dryRun) {
         const sessionKey = `${organizerUid}_${sessionId}`;
@@ -287,14 +484,18 @@ export default {
         );
         const pairs = Array.from(pairAgg.values());
         const opp = Array.from(oppAgg.values())
+        const eloPreview = Object.fromEntries(Array.from(allLinkedUids).map((u) => [u, userElo.get(u)]));
+        const chemPreview = Object.fromEntries(Array.from(chemistryByEdge.entries()));
         return withCors(
-          new Response(JSON.stringify({ sessionKey, endMonth, users: summary, pairs, opp }, null, 2), {
+          new Response(JSON.stringify({ sessionKey, endMonth, users: summary, pairs, opp, eloPreview, chemPreview }, null, 2), {
             status: 200,
             headers: { "content-type": "application/json" },
           }),
           req
         );
       }
+
+      console.log("result", JSON.stringify({ sessionKey, endMonth, users: summary, pairs, opp, eloPreview, chemPreview }, null, 2));
 
       const sessionKey = `${organizerUid}_${sessionId}`;
       const endMonth = monthKey(payload.endedAt || (games[games.length - 1] || {}).endedAt);
@@ -390,6 +591,26 @@ export default {
         }
       }
 
+      // Persist Elo changes per user (idempotent with gate)
+      for (const uid of updatedUsers) {
+        const pr = userElo.get(uid);
+        if (!pr) continue;
+        const writes = [];
+        const eloTaskKey = `elo:session:${organizerUid}_${sessionId}`;
+        writes.push(makeUpdatePrecondCreate(
+          `${userCol}/${uid}/gates/${eloTaskKey}`,
+          { taskKey: eloTaskKey, sessionKey: `${organizerUid}_${sessionId}`, scope: { uid }, workerVersion: WORKER_VERSION, createdAt: { __ts: true } },
+          env
+        ));
+        writes.push(makeUpdateMaskWrite(
+          `${userCol}/${uid}`,
+          { elo: { singles: pr.singles, doubles: pr.doubles, updatedAt: { __ts: true } } },
+          ["elo"],
+          env
+        ));
+        try { await commitWrites(token, env, writes); } catch (e) { if (!isAlreadyApplied(e)) console.log(e); }
+      }
+
       // ----------------------------
       // Friendship graph + Global index (granular gates; one commit per edge)
       // ----------------------------
@@ -433,6 +654,17 @@ export default {
           inc("together.durationMin", durationMin),
           reqTime("updatedAt"),
         ], env));
+
+        // If chemistry was updated for this edge during Elo, persist it here as well
+        if (chemistryByEdge.has(edgeKey)) {
+          const chem = chemistryByEdge.get(edgeKey);
+          writes.push(makeUpdateMaskWrite(
+            `${friendEdgeCol}/${edgeKey}`,
+            { chemistry: { delta: Number(chem.delta || 0), updatedAt: { __ts: true } } },
+            ["chemistry"],
+            env
+          ));
+        }
 
         // Global monthly edge doc
         writes.push(makeUpdateMaskWrite(
