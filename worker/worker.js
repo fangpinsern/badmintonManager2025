@@ -1324,3 +1324,13 @@ async function sendFcmToMany(env, oauthAccessToken, tokens, { title, body, url }
   return { anySucceeded, removable };
 }
 
+function monthsSince(prevISO, currISO) {
+  if (!prevISO) return 0;
+  const prev = new Date(prevISO),
+    curr = new Date(currISO);
+  return Math.max(
+    0,
+    (curr.getUTCFullYear() - prev.getUTCFullYear()) * 12 +
+      (curr.getUTCMonth() - prev.getUTCMonth())
+  );
+}
