@@ -9,7 +9,10 @@ import {
   getUserProfile,
   claimUsername,
   updateUserProfile,
+  changeUsername,
 } from "@/lib/firestoreSessions";
+import { toUsernameSlug } from "@/lib/helper";
+import { ConfirmModal } from "@/components/session/confirmModal";
 import ProfileEditForm, {
   ProfileEditable,
 } from "@/components/profile/ProfileEditForm";
@@ -66,6 +69,11 @@ export default function ProfilePage() {
     { otherUid: string; data: any }[] | null
   >(null);
   const [usernameMap, setUsernameMap] = useState<Record<string, string>>({});
+  const [changingUsername, setChangingUsername] = useState(false);
+  const [newUsername, setNewUsername] = useState("");
+  const [usernameError, setUsernameError] = useState<string>("");
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [changing, setChanging] = useState(false);
 
   useEffect(() => {
     return onAuthStateChanged(auth, (u) => {
@@ -167,7 +175,63 @@ export default function ProfilePage() {
               <div className="text-xs text-gray-500">Username</div>
               <div className="text-base font-semibold">{username || "—"}</div>
             </div>
+            {!!user && (
+              <button
+                onClick={() => {
+                  setChangingUsername((v) => !v);
+                  setNewUsername(username || "");
+                  setUsernameError("");
+                }}
+                className="rounded border px-2 py-1 text-xs"
+              >
+                {changingUsername ? "Cancel" : "Change"}
+              </button>
+            )}
           </div>
+          {changingUsername && (
+            <div className="mt-3">
+              <div className="text-xs text-gray-600 mb-1">
+                Enter a new username
+              </div>
+              <div className="flex items-center gap-2">
+                <input
+                  value={newUsername}
+                  onChange={(e) => setNewUsername(e.target.value)}
+                  placeholder="e.g. shuttlemaster"
+                  className="w-full rounded border px-3 py-2 text-sm outline-none"
+                  disabled={changing}
+                />
+                <button
+                  onClick={() => {
+                    if (!user) return;
+                    const current = (username || "").trim().toLowerCase();
+                    const val = (newUsername || "").trim().toLowerCase();
+                    if (val === current) {
+                      setUsernameError("dont waste my time");
+                      return;
+                    }
+                    if (val.length < 3) {
+                      setUsernameError(
+                        "Username must be at least 3 characters."
+                      );
+                      return;
+                    }
+                    setUsernameError("");
+                    setConfirmOpen(true);
+                  }}
+                  className="rounded bg-black px-3 py-2 text-xs text-white disabled:opacity-50"
+                  disabled={changing}
+                >
+                  Save
+                </button>
+              </div>
+              {usernameError && (
+                <div className="mt-2 text-[11px] text-red-600">
+                  {usernameError}
+                </div>
+              )}
+            </div>
+          )}
         </Card>
       </section>
 
@@ -381,6 +445,31 @@ export default function ProfilePage() {
           </div>
         </Card>
       </section>
+      <ConfirmModal
+        open={confirmOpen}
+        title="Confirm username change"
+        body={`Change your username from "${username}" to "${toUsernameSlug(
+          newUsername
+        )}"?`}
+        confirmText="Change"
+        onCancel={() => setConfirmOpen(false)}
+        onConfirm={async () => {
+          if (!user) return;
+          setConfirmOpen(false);
+          setChanging(true);
+          try {
+            const val = toUsernameSlug(newUsername);
+            await changeUsername(user.uid, val);
+            setUsername(val);
+            setChangingUsername(false);
+            setNewUsername("");
+          } catch (e: any) {
+            setUsernameError(e?.message || "Unable to change username.");
+          } finally {
+            setChanging(false);
+          }
+        }}
+      />
     </main>
   );
 }

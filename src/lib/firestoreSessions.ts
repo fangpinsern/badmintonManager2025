@@ -125,6 +125,58 @@ export async function claimUsername(uid: string, username: string) {
   return normalized;
 }
 
+// Change an existing user's username atomically.
+// - Validates new username with the same rules as claim (slug + min length)
+// - Ensures availability
+// - Prevents no-op changes (same username) with a cheeky error message
+// - Updates users/{uid}.username and usernames/{new} mapping; removes old mapping if owned
+export async function changeUsername(uid: string, newUsername: string) {
+  const next = toUsernameSlug(newUsername);
+  if (!next || next.length < 3) throw new Error("Username too short");
+  const userRef = doc(usersCollection(), uid);
+  const nextRef = doc(usernamesCollection(), next);
+  let curr: string | undefined = undefined;
+  await runTransaction(db, async (tx) => {
+    // Read current user to find the old username
+    const userSnap = await tx.get(userRef);
+    const current = (
+      userSnap.exists() ? (userSnap.data() as any)?.username : undefined
+    ) as string | undefined;
+    curr = (current || "").trim().toLowerCase();
+
+    // Same username? Don't proceed.
+    if (curr === next) throw new Error("dont waste my time");
+
+    // Ensure the new username is available
+    const nextSnap = await tx.get(nextRef);
+    if (nextSnap.exists()) throw new Error("Username is already taken");
+
+    // Create new mapping first
+    tx.set(nextRef, { uid, createdAt: serverTimestamp() });
+
+    // Update user doc
+    tx.set(
+      userRef,
+      { uid, username: next, updatedAt: serverTimestamp() },
+      { merge: true }
+    );
+  });
+
+  // Remove old mapping if it exists and belongs to the same uid
+  await runTransaction(db, async (tx) => {
+    if (curr) {
+      const oldRef = doc(usernamesCollection(), curr);
+      const oldSnap = await tx.get(oldRef);
+      if (oldSnap.exists()) {
+        const oldUid = (oldSnap.data() as any)?.uid;
+        if (oldUid === uid) tx.delete(oldRef);
+      }
+    }
+  });
+
+  return next;
+}
+
 export function subscribeProfileByUsername(
   username: string,
   onChange: (profile: { uid: string; username: string } | null) => void
