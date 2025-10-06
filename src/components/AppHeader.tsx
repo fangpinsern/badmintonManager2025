@@ -31,7 +31,11 @@ export default function AppHeader() {
         typeof Notification !== "undefined"
           ? Notification.permission
           : "default";
-      setCanEnablePush(supported && perm !== "granted");
+      const alreadyEnabled =
+        (window as any).__pushEnabled === true ||
+        (typeof localStorage !== "undefined" &&
+          localStorage.getItem("pushEnabled") === "1");
+      setCanEnablePush(supported && perm !== "granted" && !alreadyEnabled);
       try {
         const ios = detectPlatform() === "ios";
         const installed = detectInstalledPwa();
@@ -91,11 +95,19 @@ export default function AppHeader() {
           </div>
         </div>
         <div className="flex flex-row justify-between items-end gap-2">
-          {showIosInstallHint && (
+          {/* {showIosInstallHint && (
             <div className="block text-[11px] text-gray-500 w-1/2">
               Add to Home Screen to receive iOS push notifications
             </div>
           )}
+          {showIosInstallHint && (
+            <Link
+              href="/guide/ios"
+              className="rounded-full border px-3 py-1 text-xs text-gray-700 hover:bg-gray-100"
+            >
+              Install app (iOS guide)
+            </Link>
+          )} */}
           {!showIosInstallHint && canEnablePush && hasUser && (
             <button
               onClick={() => (window as any).__enablePush?.()}
@@ -104,7 +116,7 @@ export default function AppHeader() {
               Enable notifications
             </button>
           )}
-          {canInstall && (
+          {canInstall ? (
             <button
               onClick={async () => {
                 try {
@@ -119,6 +131,15 @@ export default function AppHeader() {
             >
               Install app
             </button>
+          ) : (
+            showIosInstallHint && (
+              <Link
+                href="/guide/ios"
+                className="rounded-full border px-3 py-1 text-xs text-gray-700 hover:bg-gray-100"
+              >
+                Install app (iOS guide)
+              </Link>
+            )
           )}
         </div>
       </div>

@@ -63,6 +63,12 @@ export function PushProvider({ children }: { children: React.ReactNode }) {
           const installed = detectInstalledPwa();
           const platform = detectPlatform();
           await saveDeviceTokenDoc(user.uid, token, platform, installed);
+          try {
+            if (typeof localStorage !== "undefined") {
+              localStorage.setItem("pushEnabled", "1");
+            }
+            (window as any).__pushEnabled = true;
+          } catch {}
         } catch {}
       })();
 
@@ -98,6 +104,12 @@ export function PushProvider({ children }: { children: React.ReactNode }) {
             if ("setAppBadge" in navigator && installed) {
               (navigator as any).setAppBadge(0).catch(() => {});
             }
+          } catch {}
+          try {
+            if (typeof localStorage !== "undefined") {
+              localStorage.setItem("pushEnabled", "1");
+            }
+            (window as any).__pushEnabled = true;
           } catch {}
         } catch (err) {
           // no-op
