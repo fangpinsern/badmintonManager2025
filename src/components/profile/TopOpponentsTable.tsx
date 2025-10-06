@@ -44,6 +44,16 @@ export default function TopOpponentsTable({
 }) {
   const rows = useMemo(() => {
     return items
+      .filter((it) => {
+        const block = (it?.data?.against || {}) as any;
+        const choose =
+          mode === "singles"
+            ? block.singles || {}
+            : mode === "doubles"
+            ? block.doubles || {}
+            : block.totals || {};
+        return choose?.games > 0;
+      })
       .map((it) => {
         const block = (it?.data?.against || {}) as any;
         const choose =
