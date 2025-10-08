@@ -71,12 +71,12 @@ export default function AppHeader() {
             </p>
           </div>
           <div className="flex items-center gap-2">
-            <Link
+            {/* <Link
               href="/clubs"
               className="rounded-full border px-3 py-1 text-xs text-gray-700 hover:bg-gray-100"
             >
               Clubs
-            </Link>
+            </Link> */}
             {hasUser ? (
               <Link
                 href="/profile"

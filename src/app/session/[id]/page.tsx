@@ -32,6 +32,8 @@ import {
   claimUsername,
   addAndLinkPlayerByUsername,
 } from "@/lib/firestoreSessions";
+import { subscribeMyClubs } from "@/lib/firestoreClubs";
+import { subscribeClubSessions } from "@/lib/firestoreSessions";
 import { useParams, useRouter } from "next/navigation";
 import { GoogleAuthProvider, onAuthStateChanged } from "firebase/auth";
 import { signInWithGoogleSafe } from "@/lib/authClient";
@@ -59,6 +61,11 @@ function SessionManager({ onBack }: { onBack: () => void }) {
   );
   const [authReady, setAuthReady] = useState<boolean>(!!auth.currentUser);
   const [needsUsername, setNeedsUsername] = useState(false);
+  const [myUsername, setMyUsername] = useState<string>("");
+  const [myClubIds, setMyClubIds] = useState<string[]>([]);
+  const [clubIdForViewing, setClubIdForViewing] = useState<string | null>(null);
+  const [joinBusy, setJoinBusy] = useState(false);
+  const [joinError, setJoinError] = useState<string>("");
 
   useEffect(() => {
     return onAuthStateChanged(auth, (u) => {
@@ -74,11 +81,13 @@ function SessionManager({ onBack }: { onBack: () => void }) {
   useEffect(() => {
     if (!user) {
       setNeedsUsername(false);
+      setMyUsername("");
       return;
     }
     const unsub = subscribeUserProfile(user.uid, (p) => {
       const has = p && typeof p.username === "string" && p.username.trim();
       setNeedsUsername(!has);
+      setMyUsername(has ? String(p.username).trim().toLowerCase() : "");
     });
     return () => unsub();
   }, [user?.uid]);
@@ -111,6 +120,71 @@ function SessionManager({ onBack }: { onBack: () => void }) {
     });
     return () => cleanup();
   }, [id, user?.uid]);
+
+  // Fallback: if the session isn't accessible via own/linked sessions,
+  // but the user is a member of a club that sanctioned this session,
+  // allow read-only viewing by resolving via the club sessions index.
+  useEffect(() => {
+    if (!id || !user?.uid) return;
+    // Track club membership
+    const unsubClubs = subscribeMyClubs(user.uid, (clubs) => {
+      setMyClubIds((clubs || []).map((c) => c.id));
+    });
+    return () => {
+      unsubClubs();
+    };
+  }, [id, user?.uid]);
+
+  useEffect(() => {
+    // Only attempt fallback if we don't yet have a session loaded
+    if (!id || !user?.uid) return;
+    if (session) return;
+    if (!myClubIds.length) return;
+    let cancelled = false;
+    const unsubs: (() => void)[] = [];
+    // Subscribe to each club's sessions and look for this session id
+    for (const cid of myClubIds) {
+      const unsub = subscribeClubSessions(cid, (entries) => {
+        if (cancelled) return;
+        const found = (entries || []).find((e) => {
+          try {
+            return (e?.doc as any)?.id === id;
+          } catch {
+            return false;
+          }
+        });
+        if (found && (found as any).doc && (found as any).organizerUid) {
+          try {
+            const payload =
+              (((found as any).doc.payload || {}) as Session) || null;
+            if (!payload) return;
+            const live = { ...payload, storage: "remote" } as Session;
+            setSession(live);
+            setOrganizerUid((found as any).organizerUid as string);
+            setClubIdForViewing(cid);
+            setNotFound(false);
+            try {
+              const w: any = window as any;
+              w.__sessionOwners =
+                w.__sessionOwners || new Map<string, string>();
+              w.__sessionOwners.set(
+                live.id,
+                (found as any).organizerUid as string
+              );
+            } catch {}
+          } catch {}
+        }
+      });
+      unsubs.push(unsub);
+    }
+    return () => {
+      cancelled = true;
+      for (const u of unsubs)
+        try {
+          u();
+        } catch {}
+    };
+  }, [id, user?.uid, myClubIds, session]);
 
   // Save organizer-owned session updates (from store) back to Firestore
   const storeSession = useStore((s) =>
@@ -269,6 +343,29 @@ function SessionManager({ onBack }: { onBack: () => void }) {
       session.players.some((p) => p.accountUid === myUid)
     );
   }, [session, myUid]);
+
+  const isMemberOfSessionClub = useMemo(() => {
+    const cid = (session && (session as any).clubId) || clubIdForViewing;
+    if (!cid) return false;
+    return myClubIds.includes(String(cid));
+  }, [session, clubIdForViewing, myClubIds]);
+
+  const canShowJoin = useMemo(() => {
+    return (
+      !!session &&
+      !session.ended &&
+      !alreadyLinkedToMe &&
+      !canManage &&
+      isMemberOfSessionClub &&
+      !!myUsername
+    );
+  }, [
+    session,
+    alreadyLinkedToMe,
+    canManage,
+    isMemberOfSessionClub,
+    myUsername,
+  ]);
 
   if (notFound) {
     return (
@@ -435,10 +532,51 @@ function SessionManager({ onBack }: { onBack: () => void }) {
                   End session
                 </button>
               )}
+              {canShowJoin && (
+                <button
+                  onClick={async () => {
+                    setJoinError("");
+                    if (!myUsername) {
+                      setJoinError("Please set a username first");
+                      return;
+                    }
+                    const owner =
+                      organizerUid ||
+                      (window as any).__sessionOwners?.get?.(session.id) ||
+                      auth.currentUser?.uid;
+                    if (!owner) {
+                      setJoinError("Organizer not resolved yet");
+                      return;
+                    }
+                    setJoinBusy(true);
+                    try {
+                      await addAndLinkPlayerByUsername(
+                        owner,
+                        session.id,
+                        myUsername
+                      );
+                    } catch (e: any) {
+                      setJoinError(e?.message || "Failed to join session");
+                    } finally {
+                      setJoinBusy(false);
+                    }
+                  }}
+                  disabled={joinBusy}
+                  className="rounded-xl bg-black px-3 py-1.5 text-xs text-white disabled:opacity-50"
+                >
+                  {joinBusy ? "Joining…" : "Join session"}
+                </button>
+              )}
             </div>
           )}
         </div>
       </Card>
+
+      {joinError && (
+        <Card>
+          <div className="text-[11px] text-red-600">{joinError}</div>
+        </Card>
+      )}
 
       {isOrganizer && !!endOpen && (
         <EndSessionModal
@@ -1393,7 +1531,15 @@ function SessionManager({ onBack }: { onBack: () => void }) {
 export default function SessionPage() {
   const router = useRouter();
   const onBack = () => {
-    router.push("/");
+    try {
+      if (typeof window !== "undefined" && window.history.length > 1) {
+        router.back();
+      } else {
+        router.push("/");
+      }
+    } catch {
+      router.push("/");
+    }
   };
 
   return (

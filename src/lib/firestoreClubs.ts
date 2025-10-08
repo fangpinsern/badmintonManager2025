@@ -57,10 +57,16 @@ export type FirestoreClub = {
 
 export type FirestoreClubFeed = {
   id: string;
-  type: "system" | "join" | "leave" | "kick";
+  type: "system" | "join" | "leave" | "kick" | "session";
   message: string;
   actorUid?: string;
+  // For type 'session', link to the created session and record organizer
+  sessionId?: string;
+  organizerUid?: string;
+  // Extension payload for richer details based on type (e.g. session metadata)
+  ext?: any;
   createdAt?: unknown;
+  updatedAt?: unknown;
 };
 
 export function subscribeMyClubs(
@@ -117,6 +123,29 @@ export function subscribeClubFeed(
     snap.forEach((d) => items.push({ id: d.id, ...(d.data() as any) }));
     onChange(items);
   });
+}
+
+// Create a feed message of type 'session' for a club. Returns the new feed doc id.
+export async function createClubSessionFeedMessage(
+  clubId: string,
+  actorUid: string,
+  sessionId: string,
+  opts?: { message?: string; ext?: any }
+): Promise<string> {
+  if (!clubId || !actorUid || !sessionId) throw new Error("invalid args");
+  const feed = clubFeedCollection(clubId);
+  const ref = doc(feed);
+  await setDoc(ref, {
+    type: "session",
+    message: opts?.message || "Session created",
+    actorUid,
+    organizerUid: actorUid,
+    sessionId,
+    ext: opts?.ext,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  } as Omit<FirestoreClubFeed, "id">);
+  return ref.id;
 }
 
 export async function createClubRemote(

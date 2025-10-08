@@ -23,6 +23,7 @@ interface StoreState {
     time: string;
     numCourts: number;
     playersPerCourt?: number;
+    clubId?: string;
   }) => string; // returns new sessionId
   deleteSession: (sessionId: string) => void;
   addPlayer: (sessionId: string, name: string) => void;
@@ -157,7 +158,7 @@ const useStore = create<StoreState>()((set, _get) => ({
       }),
     })),
 
-  createSession: ({ date, time, numCourts, playersPerCourt = 4 }) => {
+  createSession: ({ date, time, numCourts, playersPerCourt = 4, clubId }) => {
     const clampedCourts = Math.max(1, Math.min(10, numCourts));
     const id = nanoid(10);
     const courts: Court[] = Array.from({ length: clampedCourts }, (_, i) => ({
@@ -184,7 +185,9 @@ const useStore = create<StoreState>()((set, _get) => ({
       games: [],
       ended: false,
       storage: "remote",
+      clubId: clubId || undefined,
     };
+    console.log("creating session", clubId, session);
     set((s) => ({ sessions: [session, ...s.sessions] }));
     // Create remote doc for new sessions (no migration of legacy local sessions)
     void createSessionDoc(id, session);

@@ -30,6 +30,7 @@ import { AddCourtButton } from "@/components/session/addCourtButton";
 import { CourtCard } from "@/components/session/courtCard";
 import { GameEditModal } from "@/components/session/gameEditModal";
 import Link from "next/link";
+import { SessionCard as UnifiedSessionCard } from "@/components/session/SessionCard";
 import LoadingScreen from "@/components/LoadingScreen";
 import UsernameModal from "@/components/UsernameModal";
 import { subscribeUserProfile, claimUsername } from "@/lib/firestoreSessions";
@@ -552,75 +553,19 @@ function SessionList({ onOpen }: { onOpen: (id: string) => void }) {
         </button>
       </div>
 
-      {display.map((ss) => {
-        const owner = (window as any).__sessionOwners?.get?.(ss.id) || null;
-        const isOrganizer = owner && me ? owner === me : false;
-        const isToday = ss.date === nowIsoDate;
-        return (
-          <Card key={ss.id}>
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <div className="font-medium flex items-center gap-2">
-                  <span>{formatSessionTitle(ss)}</span>
-                  <div className="flex flex-col items-end gap-1">
-                    {isToday && (
-                      <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] text-emerald-700">
-                        Today
-                      </span>
-                    )}
-                    <span
-                      className={`rounded-full px-2 py-0.5 text-[10px] ${
-                        isOrganizer
-                          ? "bg-blue-50 text-blue-700"
-                          : (ss.coOrganizerUids || []).includes(me || "")
-                          ? "bg-red-50 text-red-700"
-                          : "bg-gray-100 text-gray-600"
-                      }`}
-                    >
-                      {isOrganizer
-                        ? "Organizer"
-                        : (ss.coOrganizerUids || []).includes(me || "")
-                        ? "Co-organizer"
-                        : "Participant"}
-                    </span>
-                  </div>
-                </div>
-                <div className="text-xs text-gray-500">
-                  {ss.numCourts} court{ss.numCourts > 1 ? "s" : ""}
-                  {(() => {
-                    const singles = (ss.courts || []).filter(
-                      (c) => (c.mode || "doubles") === "singles"
-                    ).length;
-                    const doubles = (ss.courts || []).filter(
-                      (c) => (c.mode || "doubles") === "doubles"
-                    ).length;
-                    const parts: string[] = [];
-                    if (doubles) parts.push(`${doubles} doubles`);
-                    if (singles) parts.push(`${singles} singles`);
-                    return parts.length ? ` · ${parts.join(", ")}` : "";
-                  })()}
-                  · {ss.players.length} player
-                  {ss.players.length !== 1 ? "s" : ""}
-                </div>
-                {ss.ended && (
-                  <div className="mt-1 text-[11px] text-emerald-700">
-                    Ended
-                    {ss.endedAt
-                      ? ` · ${new Date(ss.endedAt).toLocaleString()}`
-                      : ""}
-                  </div>
-                )}
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => {
-                    onOpen(ss.id);
-                    router.push(`/session/${ss.id}`);
-                  }}
-                  className="rounded-xl border border-gray-300 px-3 py-1.5"
-                >
-                  Open
-                </button>
+      {display.map((ss) => (
+        <UnifiedSessionCard
+          key={ss.id}
+          session={ss}
+          onOpen={(id) => {
+            onOpen(id);
+            router.push(`/session/${id}`);
+          }}
+          rightActions={(() => {
+            const owner = (window as any).__sessionOwners?.get?.(ss.id) || null;
+            const isOrganizer = owner && me ? owner === me : false;
+            return (
+              <>
                 {!ss.ended && isOrganizer && (
                   <button
                     onClick={() => {
@@ -644,11 +589,11 @@ function SessionList({ onOpen }: { onOpen: (id: string) => void }) {
                     Delete
                   </button>
                 )}
-              </div>
-            </div>
-          </Card>
-        );
-      })}
+              </>
+            );
+          })()}
+        />
+      ))}
 
       {canSeeMore && (
         <div className="flex justify-center">

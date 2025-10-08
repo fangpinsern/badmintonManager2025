@@ -135,6 +135,10 @@ type Session = {
   synergy?: Record<string, Record<string, number>>; // optional team synergy adjustment (symmetric)
   ratingMeta?: Record<string, { gamesInSession?: number }>; // per-player session counters for K-schedule
   storage?: "remote" | "local";
+  // If present, this session is sanctioned by a club with this id
+  clubId?: string;
+  // If club-sanctioned, the initial feed message ID associated with this session
+  clubFeedMessageId?: string;
 };
 
 export type {

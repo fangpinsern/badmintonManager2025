@@ -18,6 +18,13 @@ import {
   resolveUsernamesForUids,
 } from "@/lib/firestoreClubs";
 import type { FirestoreClub, FirestoreClubFeed } from "@/lib/firestoreClubs";
+import { subscribeClubSessions, saveSession } from "@/lib/firestoreSessions";
+import { addAndLinkPlayerByUsername } from "@/lib/firestoreSessions";
+import { useStore } from "@/lib/store";
+import { formatSessionTitle } from "@/lib/helper";
+import type { Session } from "@/types/player";
+import { createClubSessionFeedMessage } from "@/lib/firestoreClubs";
+import { SessionCard as UnifiedSessionCard } from "@/components/session/SessionCard";
 
 export default function ClubDetailPage() {
   const params = useParams<{ id: string }>();
@@ -58,6 +65,26 @@ export default function ClubDetailPage() {
   const [newName, setNewName] = useState("");
   const [confirmKickUid, setConfirmKickUid] = useState<string | null>(null);
   const [usernameMap, setUsernameMap] = useState<Record<string, string>>({});
+  const [clubSessions, setClubSessions] = useState<Session[]>([]);
+  const createSession = useStore((s) => s.createSession);
+  const [creating, setCreating] = useState(false);
+  const [date, setDate] = useState<string>(
+    new Date().toISOString().slice(0, 10)
+  );
+  const [time, setTime] = useState<string>("19:00");
+  const [numCourts, setNumCourts] = useState<string>("3");
+  const [error, setError] = useState<string | null>(null);
+  const [selectedMemberUids, setSelectedMemberUids] = useState<Set<string>>(
+    new Set()
+  );
+  const toggleSelectMember = (uid: string) => {
+    setSelectedMemberUids((prev) => {
+      const next = new Set(prev);
+      if (next.has(uid)) next.delete(uid);
+      else next.add(uid);
+      return next;
+    });
+  };
 
   useEffect(() => {
     if (!id) return;
@@ -66,6 +93,26 @@ export default function ClubDetailPage() {
   useEffect(() => {
     if (!id) return;
     return subscribeClubFeed(id, 50, setFeed);
+  }, [id]);
+  useEffect(() => {
+    if (!id) return;
+    const unsub = subscribeClubSessions(id, (docs) => {
+      const mapped: Session[] = docs.map((d: any) => {
+        const payload = (d.doc as any)?.payload as Session;
+        const sess = { ...payload, storage: "remote" } as Session;
+        try {
+          const w: any = window as any;
+          w.__sessionOwners = w.__sessionOwners || new Map<string, string>();
+          w.__sessionOwners.set(sess.id, d.organizerUid);
+        } catch {}
+        return sess;
+      });
+      // sort newest first by date/time
+      const toTs = (s: Session) =>
+        new Date(`${s.date}T${s.time ?? "00:00"}`).getTime();
+      setClubSessions([...mapped].sort((a, b) => toTs(b) - toTs(a)));
+    });
+    return () => unsub();
   }, [id]);
   useEffect(() => {
     let cancelled = false;
@@ -177,6 +224,28 @@ export default function ClubDetailPage() {
         </Card>
       </section>
 
+      {/* Club sessions */}
+      <section className="mb-4">
+        <Card>
+          <div className="mb-2 flex items-center justify-between">
+            <h2 className="text-base font-semibold">Sessions</h2>
+            {!!user && isMember && (
+              <button
+                className="rounded border px-2 py-1 text-xs"
+                onClick={() => setCreating(true)}
+              >
+                New session +
+              </button>
+            )}
+          </div>
+          {(() => {
+            const upcoming = clubSessions.filter((s) => !s.ended);
+            const closed = clubSessions.filter((s) => !!s.ended);
+            return <ClubSessionTabs upcoming={upcoming} closed={closed} />;
+          })()}
+        </Card>
+      </section>
+
       <section className="mb-4 grid grid-cols-1 gap-4 md:grid-cols-3">
         <Card className="md:col-span-1">
           <div className="flex items-center justify-between">
@@ -271,7 +340,18 @@ export default function ClubDetailPage() {
                       }
                     })()}
                   </div>
-                  <div className="text-sm">{f.message}</div>
+                  <div className="text-sm">
+                    {f.type === "session" && f.sessionId ? (
+                      <Link
+                        href={`/session/${f.sessionId}`}
+                        className="text-blue-600 hover:underline"
+                      >
+                        {f.message}
+                      </Link>
+                    ) : (
+                      f.message
+                    )}
+                  </div>
                 </div>
               ))
             )}
@@ -280,6 +360,175 @@ export default function ClubDetailPage() {
       </section>
 
       {/* Rename modal */}
+      {/* Create session modal */}
+      {creating && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div
+            className="absolute inset-0 bg-black/40"
+            onClick={() => setCreating(false)}
+          ></div>
+          <div className="relative w-full max-w-sm rounded-2xl bg-white p-4 shadow-lg">
+            <div className="mb-2 text-base font-semibold">Create session</div>
+            <div className="grid grid-cols-1 gap-3">
+              <Input
+                type="date"
+                label="Date"
+                value={date}
+                onChange={(e) => setDate(e.target.value)}
+              />
+              <Input
+                type="time"
+                label="Time"
+                value={time}
+                onChange={(e) => setTime(e.target.value)}
+              />
+              <Input
+                type="number"
+                label="# of courts"
+                min={1}
+                inputMode="numeric"
+                value={numCourts}
+                onChange={(e) => setNumCourts(e.target.value)}
+              />
+              <div className="mt-1">
+                <div className="mb-1 text-xs text-gray-600">
+                  Add specific members (optional)
+                </div>
+                <div className="max-h-40 overflow-auto rounded border p-2 text-sm">
+                  {(club?.memberUids || []).map((uid) => (
+                    <label key={uid} className="flex items-center gap-2 py-0.5">
+                      <input
+                        type="checkbox"
+                        checked={selectedMemberUids.has(uid)}
+                        onChange={() => toggleSelectMember(uid)}
+                      />
+                      <span className="truncate">
+                        @{usernameMap[uid] || uid}
+                      </span>
+                    </label>
+                  ))}
+                </div>
+                <div className="mt-1 text-[11px] text-gray-500">
+                  Selected: {selectedMemberUids.size}
+                </div>
+              </div>
+              {error && <div className="text-xs text-red-600">{error}</div>}
+              <div className="mt-1 flex items-center justify-end gap-2">
+                <button
+                  className="rounded-xl border px-3 py-1.5 text-sm"
+                  onClick={() => setCreating(false)}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="rounded-xl bg-black px-3 py-1.5 text-sm text-white"
+                  onClick={async () => {
+                    const desired = Math.max(1, Number(numCourts || 1));
+                    if (desired > 10) {
+                      setError("Courts per session are limited to 10.");
+                      return;
+                    }
+                    setError(null);
+                    const idCreated = createSession({
+                      date,
+                      time,
+                      numCourts: desired,
+                      clubId: id,
+                    });
+                    try {
+                      // Create a feed message and tag the session payload with the message id
+                      if (user?.uid) {
+                        const when = `${date} ${time}`;
+                        const message = `Session created by @${
+                          usernameMap[user.uid] || user.uid
+                        } · ${when}`;
+                        const ext = {
+                          organizerUid: user.uid,
+                          sessionId: idCreated,
+                          date,
+                          time,
+                          numCourts: desired,
+                          selectedMembers: Array.from(selectedMemberUids).map(
+                            (u) => usernameMap[u] || u
+                          ),
+                        };
+                        const msgId = await createClubSessionFeedMessage(
+                          id,
+                          user.uid,
+                          idCreated,
+                          { message, ext }
+                        );
+                        // tag session in Firestore with clubFeedMessageId
+                        const current = (
+                          useStore.getState().sessions || []
+                        ).find((s) => s.id === idCreated);
+                        if (current) {
+                          const withTag = {
+                            ...current,
+                            clubFeedMessageId: msgId,
+                          };
+                          await saveSession(idCreated, withTag);
+                        }
+                        console.log("selectedMemberUids", selectedMemberUids);
+                        // optionally add selected members and link them to accounts
+                        if (selectedMemberUids.size) {
+                          try {
+                            const owner = user.uid;
+                            for (const uidSel of Array.from(
+                              selectedMemberUids
+                            )) {
+                              console.log("uidSel", uidSel, usernameMap);
+                              const uname = (usernameMap[uidSel] || "")
+                                .trim()
+                                .toLowerCase();
+                              if (!uname) {
+                                console.log(
+                                  "No uname",
+                                  uname,
+                                  usernameMap,
+                                  uidSel
+                                );
+                                continue;
+                              }
+                              try {
+                                console.log(
+                                  "Adding user",
+                                  owner,
+                                  idCreated,
+                                  uname
+                                );
+                                await addAndLinkPlayerByUsername(
+                                  owner,
+                                  idCreated,
+                                  uname
+                                );
+                              } catch (e) {
+                                console.error("Error creating user", e);
+                              }
+                            }
+                            // const latest = (
+                            //   useStore.getState().sessions || []
+                            // ).find((s) => s.id === idCreated);
+                            // if (latest) await saveSession(idCreated, latest);
+                          } catch (e) {
+                            console.error("Error creating session", e);
+                          }
+                        }
+                      }
+                    } catch (e) {
+                      console.error("Error creating session", e);
+                    }
+                    setCreating(false);
+                    router.push(`/session/${idCreated}`);
+                  }}
+                >
+                  Create
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
       {renaming && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">
           <div
@@ -331,5 +580,79 @@ export default function ClubDetailPage() {
         }}
       />
     </main>
+  );
+}
+
+function ClubSessionTabs({
+  upcoming,
+  closed,
+}: {
+  upcoming: Session[];
+  closed: Session[];
+}) {
+  const router = useRouter();
+  const [tab, setTab] = useState<"upcoming" | "closed">("upcoming");
+  const [upShown, setUpShown] = useState<number>(10);
+  const [clShown, setClShown] = useState<number>(10);
+  const me = auth.currentUser?.uid || null;
+  const nowIsoDate = new Date().toISOString().slice(0, 10);
+  const list = tab === "upcoming" ? upcoming : closed;
+  const shown = tab === "upcoming" ? upShown : clShown;
+  const canSeeMore = list.length > shown;
+  const display = list.slice(0, shown);
+
+  return (
+    <div>
+      <div className="mb-2 flex items-center gap-2">
+        <button
+          onClick={() => setTab("upcoming")}
+          className={`rounded-xl border px-3 py-1.5 text-xs ${
+            tab === "upcoming"
+              ? "border-blue-300 bg-blue-50 text-blue-700"
+              : "border-gray-300"
+          }`}
+        >
+          Upcoming
+        </button>
+        <button
+          onClick={() => setTab("closed")}
+          className={`rounded-xl border px-3 py-1.5 text-xs ${
+            tab === "closed"
+              ? "border-gray-400 bg-gray-100 text-gray-700"
+              : "border-gray-300"
+          }`}
+        >
+          Closed
+        </button>
+      </div>
+      {display.length === 0 ? (
+        <div className="rounded border bg-gray-50 p-4 text-gray-600">
+          No {tab} sessions.
+        </div>
+      ) : (
+        display.map((ss) => (
+          <div key={ss.id} className="mb-3 last:mb-0">
+            <UnifiedSessionCard
+              session={ss}
+              onOpen={(id) => router.push(`/session/${id}`)}
+            />
+          </div>
+        ))
+      )}
+      {canSeeMore && (
+        <div className="mt-2 flex justify-center">
+          <button
+            className="rounded-xl border px-3 py-1.5 text-xs"
+            onClick={() =>
+              tab === "upcoming"
+                ? setUpShown((n) => n + 10)
+                : setClShown((n) => n + 10)
+            }
+          >
+            See more
+          </button>
+        </div>
+      )}
+    </div>
   );
 }

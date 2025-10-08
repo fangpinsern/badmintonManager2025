@@ -48,6 +48,9 @@ function usersCollectionId(): string {
 function usernamesCollectionId(): string {
   return isTestMode ? "usernames_test" : "usernames";
 }
+function clubsCollectionId(): string {
+  return isTestMode ? "clubs_test" : "clubs";
+}
 function usersCollection() {
   return collection(db, usersCollectionId());
 }
@@ -240,7 +243,7 @@ export async function suggestUsernames(
   return out.slice(0, limitN);
 }
 
-function sessionsCollectionForUid(uid: string) {
+export function sessionsCollectionForUid(uid: string) {
   return collection(db, usersCollectionId(), uid, "sessions");
 }
 
@@ -254,6 +257,7 @@ export async function addAndLinkPlayerByUsername(
   sessionId: string,
   username: string
 ): Promise<{ playerId: string; uid: string } | null> {
+  console.log("addAndLinkPlayerByUsername", organizerUid, sessionId, username);
   const normalized = (username || "").trim().toLowerCase();
   if (!normalized) return null;
   return await runTransaction(db, async (tx) => {
@@ -308,6 +312,7 @@ export async function addAndLinkPlayerByUsername(
         linkLocked: true,
         nameBeforeLink: before.name || before.nameBeforeLink,
       };
+      console.log("iamhere2", players[idxByName]);
     } else {
       // create new player
       playerId = Math.random().toString(36).slice(2, 10);
@@ -321,6 +326,7 @@ export async function addAndLinkPlayerByUsername(
         accountUsername: normalized,
         linkLocked: true,
       });
+      console.log("new player", players);
     }
 
     const nextPayload = stripUndefinedDeep({ ...payload, players });
@@ -340,6 +346,7 @@ export async function addAndLinkPlayerByUsername(
       linkedSessionsIndexCol(uid),
       `${organizerUid}_${sessionId}`
     );
+    console.log("iamhere");
     tx.set(
       idxRef,
       { organizerUid, sessionId, updatedAt: serverTimestamp() },
@@ -394,6 +401,30 @@ export async function saveSession(sessionId: string, payload: unknown) {
     },
     { merge: true }
   );
+  // Index under club if session is sanctioned by a club
+  try {
+    const clubId: string | undefined = (sanitized as any)?.clubId;
+    if (typeof clubId === "string" && clubId) {
+      const idxRef = doc(
+        collection(db, clubsCollectionId(), clubId, "sessions"),
+        `${uid}_${sessionId}`
+      );
+      const ended = !!(sanitized as any)?.ended;
+      const endedAt = (sanitized as any)?.endedAt || undefined;
+      await setDoc(
+        idxRef,
+        {
+          organizerUid: uid,
+          sessionId,
+          clubId,
+          ended,
+          endedAt,
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      );
+    }
+  } catch {}
   // Sync index docs (users/{uid}/linkedSessions/{organizer_session})
   try {
     const next = new Set(linkedUids || []);
@@ -466,6 +497,30 @@ export async function saveSessionOnBehalf(
     },
     { merge: true }
   );
+  // Index under club if session is sanctioned by a club
+  try {
+    const clubId: string | undefined = (sanitized as any)?.clubId;
+    if (typeof clubId === "string" && clubId) {
+      const idxRef = doc(
+        collection(db, clubsCollectionId(), clubId, "sessions"),
+        `${organizerUid}_${sessionId}`
+      );
+      const ended = !!(sanitized as any)?.ended;
+      const endedAt = (sanitized as any)?.endedAt || undefined;
+      await setDoc(
+        idxRef,
+        {
+          organizerUid,
+          sessionId,
+          clubId,
+          ended,
+          endedAt,
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      );
+    }
+  } catch {}
   // update linkedSessions index for any newly linked users
   try {
     const next = new Set(linkedUids || []);
@@ -503,12 +558,85 @@ export async function createSessionDoc(sessionId: string, payload: unknown) {
     },
     { merge: true }
   );
+  // If club-sanctioned, index under the club for discovery on club page
+  try {
+    const clubId: string | undefined = (payload as any)?.clubId;
+    if (typeof clubId === "string" && clubId) {
+      const idxRef = doc(
+        collection(db, clubsCollectionId(), clubId, "sessions"),
+        `${uid}_${sessionId}`
+      );
+      const docInfo = stripUndefinedDeep({
+        organizerUid: uid,
+        sessionId,
+        clubId,
+        ended: !!(payload as any)?.ended,
+        endedAt: (payload as any)?.endedAt || undefined,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+      await setDoc(idxRef, docInfo, { merge: true });
+    }
+  } catch (e) {
+    console.error("Error creating session doc", e);
+  }
 }
 
 export async function deleteSessionDoc(sessionId: string) {
   const uid = auth.currentUser?.uid;
   if (!uid) return; // not signed in; skip
   const ref = doc(sessionsCollectionForUid(uid), sessionId);
+  // best-effort: clean up club index if present
+  try {
+    const snap = await getDoc(ref);
+    if (snap.exists()) {
+      const data = snap.data() as any;
+      const clubId: string | undefined = (data?.payload as any)?.clubId;
+      if (typeof clubId === "string" && clubId) {
+        try {
+          const idxRef = doc(
+            collection(db, clubsCollectionId(), clubId, "sessions"),
+            `${uid}_${sessionId}`
+          );
+          await deleteDoc(idxRef);
+        } catch {}
+        // Update the feed message to indicate session deletion (best-effort)
+        try {
+          const feedMsgId: string | undefined = (data?.payload as any)
+            ?.clubFeedMessageId;
+          if (feedMsgId) {
+            const feedRef = doc(
+              collection(db, clubsCollectionId(), clubId, "feed"),
+              feedMsgId
+            );
+            // resolve username by uid for display
+            let actorName = uid;
+            try {
+              const ucol = usernamesCollection();
+              const qs = await getDocs(query(ucol, where("uid", "==", uid)));
+              const first = qs.docs[0];
+              if (first && first.id) actorName = first.id;
+            } catch {}
+            await setDoc(
+              feedRef,
+              {
+                message: `Session deleted by @${actorName}`,
+                ext: {
+                  ...(typeof (data?.payload || {}) === "object"
+                    ? (data?.payload as any)
+                    : {}),
+                  deletedByUid: uid,
+                  sessionId,
+                },
+                updatedAt: serverTimestamp(),
+              },
+              { merge: true }
+            );
+          }
+        } catch {}
+      }
+    }
+  } catch {}
   await deleteDoc(ref);
 }
 
@@ -773,6 +901,63 @@ export function subscribeLinkedSessions(
       );
       onChange(
         docs.filter(Boolean) as {
+          doc: FirestoreSession;
+          organizerUid: string;
+        }[]
+      );
+    } catch {
+      onChange([]);
+    }
+  });
+  return unsub;
+}
+
+// Subscribe to all sessions sanctioned by a club, using club-level index docs.
+export function subscribeClubSessions(
+  clubId: string,
+  onChange: (
+    sessions: { doc: FirestoreSession; organizerUid: string }[]
+  ) => void
+) {
+  if (!clubId) return () => {};
+  const idxCol = collection(db, clubsCollectionId(), clubId, "sessions");
+  const unsub = onSnapshot(idxCol, async (snap) => {
+    const entries: { organizerUid: string; sessionId: string }[] = [];
+    snap.forEach((d) => {
+      const data = d.data() as any;
+      if (
+        data &&
+        typeof data.organizerUid === "string" &&
+        typeof data.sessionId === "string"
+      ) {
+        entries.push({
+          organizerUid: data.organizerUid,
+          sessionId: data.sessionId,
+        });
+      }
+    });
+    if (!entries.length) {
+      onChange([]);
+      return;
+    }
+    try {
+      const docs = await Promise.all(
+        entries.map(async (e) => {
+          const ref = doc(
+            sessionsCollectionForUid(e.organizerUid),
+            e.sessionId
+          );
+          const s = await getDoc(ref);
+          return s.exists()
+            ? {
+                doc: s.data() as FirestoreSession,
+                organizerUid: e.organizerUid,
+              }
+            : null;
+        })
+      );
+      onChange(
+        docs.filter(Boolean) as any as {
           doc: FirestoreSession;
           organizerUid: string;
         }[]
