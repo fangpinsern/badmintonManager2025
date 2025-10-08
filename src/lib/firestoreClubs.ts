@@ -1,0 +1,396 @@
+import { db } from "@/lib/firebase";
+import {
+  collection,
+  doc,
+  setDoc,
+  getDoc,
+  onSnapshot,
+  query,
+  where,
+  runTransaction,
+  serverTimestamp,
+  getDocs,
+  orderBy,
+  limit as fsLimit,
+  startAfter,
+  writeBatch,
+  type DocumentData,
+  type QueryDocumentSnapshot,
+} from "firebase/firestore";
+import { suggestUsernames } from "@/lib/firestoreSessions";
+
+// Test mode flag mirrors firestoreSessions.ts
+const isTestMode =
+  typeof process !== "undefined" &&
+  typeof process.env !== "undefined" &&
+  (String(process.env.NEXT_PUBLIC_TEST_MODE || "").toLowerCase() === "true" ||
+    String(process.env.NEXT_PUBLIC_TEST_MODE || "") === "1");
+
+function clubsCollectionId(): string {
+  return isTestMode ? "clubs_test" : "clubs";
+}
+
+function usernamesCollectionIdLocal(): string {
+  return isTestMode ? "usernames_test" : "usernames";
+}
+
+function clubsCollection() {
+  return collection(db, clubsCollectionId());
+}
+
+function clubDoc(id: string) {
+  return doc(clubsCollection(), id);
+}
+
+function clubFeedCollection(clubId: string) {
+  return collection(db, clubsCollectionId(), clubId, "feed");
+}
+
+export type FirestoreClub = {
+  id: string;
+  name: string;
+  ownerUid: string;
+  memberUids: string[]; // includes owner
+  createdAt?: unknown;
+  updatedAt?: unknown;
+};
+
+export type FirestoreClubFeed = {
+  id: string;
+  type: "system" | "join" | "leave" | "kick";
+  message: string;
+  actorUid?: string;
+  createdAt?: unknown;
+};
+
+export function subscribeMyClubs(
+  uid: string,
+  onChange: (clubs: FirestoreClub[]) => void
+) {
+  // Query by membership; sort client-side to avoid composite index requirements
+  const qref = query(
+    clubsCollection(),
+    where("memberUids", "array-contains", uid)
+  );
+  return onSnapshot(qref, (snap) => {
+    const result: FirestoreClub[] = [];
+    snap.forEach((d) => {
+      const data = d.data() as any;
+      result.push({ id: d.id, ...(data as any) });
+    });
+    // Sort newest first using createdAt if present, otherwise by id
+    result.sort((a, b) => {
+      const ta = (a.createdAt as any)?.toMillis?.() || 0;
+      const tb = (b.createdAt as any)?.toMillis?.() || 0;
+      if (tb !== ta) return tb - ta;
+      return (b.id || "").localeCompare(a.id || "");
+    });
+    onChange(result);
+  });
+}
+
+export function subscribeClub(
+  clubId: string,
+  onChange: (club: FirestoreClub | null) => void
+) {
+  const ref = clubDoc(clubId);
+  return onSnapshot(ref, (snap) => {
+    if (!snap.exists()) return onChange(null);
+    const data = snap.data() as any;
+    onChange({ id: snap.id, ...(data as any) });
+  });
+}
+
+export function subscribeClubFeed(
+  clubId: string,
+  limitN: number,
+  onChange: (feed: FirestoreClubFeed[]) => void
+) {
+  // Order by createdAt desc; if index is missing, Firestore will surface it
+  const qref = query(
+    clubFeedCollection(clubId),
+    orderBy("createdAt", "desc"),
+    fsLimit(Math.max(1, Math.min(100, limitN)))
+  );
+  return onSnapshot(qref, (snap) => {
+    const items: FirestoreClubFeed[] = [];
+    snap.forEach((d) => items.push({ id: d.id, ...(d.data() as any) }));
+    onChange(items);
+  });
+}
+
+export async function createClubRemote(
+  ownerUid: string,
+  name: string,
+  initialUsernames: string[]
+): Promise<string> {
+  const cleanName = (name || "").trim();
+  if (!ownerUid) throw new Error("Not signed in");
+  if (!cleanName) throw new Error("Club name required");
+  const normalized = Array.from(
+    new Set(
+      (initialUsernames || [])
+        .map((s) =>
+          String(s || "")
+            .trim()
+            .toLowerCase()
+        )
+        .filter(Boolean)
+    )
+  ).slice(0, 29); // owner counts as 1
+
+  // Pre-resolve usernames -> uids outside tx to reduce contention
+  const resolved: { uid: string; username: string }[] = [];
+  if (normalized.length) {
+    const chunks: string[][] = [];
+    for (let i = 0; i < normalized.length; i += 10) {
+      chunks.push(normalized.slice(i, i + 10));
+    }
+    for (const group of chunks) {
+      // fetch each username doc; group queries are not available for document IDs, so do individual reads
+      const reads = await Promise.all(
+        group.map(async (uname) => {
+          const ref = doc(db, usernamesCollectionIdLocal(), uname);
+          const snap = await getDoc(ref);
+          if (snap.exists()) {
+            const uid = (snap.data() as any)?.uid as string | undefined;
+            if (uid) return { uid, username: uname };
+          }
+          return null;
+        })
+      );
+      reads.forEach((r) => {
+        if (r && r.uid) resolved.push(r);
+      });
+    }
+  }
+
+  const id = doc(clubsCollection()).id;
+  await runTransaction(db, async (tx) => {
+    const members = Array.from(
+      new Set([ownerUid, ...resolved.map((r) => r.uid)])
+    ).slice(0, 30);
+    const ref = clubDoc(id);
+    const exists = await tx.get(ref);
+    if (exists.exists()) throw new Error("ID collision; retry");
+    tx.set(ref, {
+      id,
+      name: cleanName,
+      ownerUid,
+      memberUids: members,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    } as FirestoreClub);
+    const feed = clubFeedCollection(id);
+    tx.set(doc(feed), {
+      type: "system",
+      message: "Club created",
+      actorUid: ownerUid,
+      createdAt: serverTimestamp(),
+    } as Omit<FirestoreClubFeed, "id">);
+    const addedUsernames = resolved.map((r) => r.username);
+    if (addedUsernames.length) {
+      tx.set(doc(feed), {
+        type: "join",
+        message: `Members added: ${addedUsernames.join(", ")}`,
+        actorUid: ownerUid,
+        createdAt: serverTimestamp(),
+      } as Omit<FirestoreClubFeed, "id">);
+    }
+  });
+  return id;
+}
+
+export async function joinClubRemote(
+  clubId: string,
+  uid: string
+): Promise<void> {
+  if (!uid) throw new Error("Not signed in");
+  const ref = clubDoc(clubId);
+  await runTransaction(db, async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists()) throw new Error("Club not found");
+    const data = snap.data() as any as FirestoreClub;
+    const set = new Set<string>(
+      Array.isArray(data.memberUids) ? data.memberUids : []
+    );
+    if (set.has(uid)) return; // already a member
+    if (set.size >= 30) throw new Error("Club is full");
+    set.add(uid);
+    tx.set(
+      ref,
+      { memberUids: Array.from(set), updatedAt: serverTimestamp() },
+      { merge: true }
+    );
+    tx.set(doc(clubFeedCollection(clubId)), {
+      type: "join",
+      message: "User joined the club",
+      actorUid: uid,
+      createdAt: serverTimestamp(),
+    } as Omit<FirestoreClubFeed, "id">);
+  });
+}
+
+export async function leaveClubRemote(
+  clubId: string,
+  uid: string
+): Promise<void> {
+  if (!uid) throw new Error("Not signed in");
+  const ref = clubDoc(clubId);
+  await runTransaction(db, async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists()) throw new Error("Club not found");
+    const data = snap.data() as any as FirestoreClub;
+    if (data.ownerUid === uid) throw new Error("Owner cannot leave their club");
+    const list = Array.isArray(data.memberUids) ? [...data.memberUids] : [];
+    const next = list.filter((u) => u !== uid);
+    if (next.length === list.length) return; // not a member
+    tx.set(
+      ref,
+      { memberUids: next, updatedAt: serverTimestamp() },
+      { merge: true }
+    );
+    tx.set(doc(clubFeedCollection(clubId)), {
+      type: "leave",
+      message: "User left the club",
+      actorUid: uid,
+      createdAt: serverTimestamp(),
+    } as Omit<FirestoreClubFeed, "id">);
+  });
+}
+
+export async function addMemberByUsernameRemote(
+  clubId: string,
+  actorUid: string,
+  username: string
+): Promise<void> {
+  const uname = (username || "").trim().toLowerCase();
+  if (!uname) return;
+  const unameRef = doc(db, usernamesCollectionIdLocal(), uname);
+  const unameSnap = await getDoc(unameRef);
+  if (!unameSnap.exists()) throw new Error("Username not found");
+  const targetUid = (unameSnap.data() as any)?.uid as string | undefined;
+  if (!targetUid) throw new Error("Username not linked to any account");
+  const ref = clubDoc(clubId);
+  await runTransaction(db, async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists()) throw new Error("Club not found");
+    const data = snap.data() as any as FirestoreClub;
+    if (data.ownerUid !== actorUid)
+      throw new Error("Only owner can add members");
+    const set = new Set<string>(
+      Array.isArray(data.memberUids) ? data.memberUids : []
+    );
+    if (set.has(targetUid)) return; // already a member
+    if (set.size >= 30) throw new Error("Club is full");
+    set.add(targetUid);
+    tx.set(
+      ref,
+      { memberUids: Array.from(set), updatedAt: serverTimestamp() },
+      { merge: true }
+    );
+    tx.set(doc(clubFeedCollection(clubId)), {
+      type: "join",
+      message: `Member added: ${uname}`,
+      actorUid: actorUid,
+      createdAt: serverTimestamp(),
+    } as Omit<FirestoreClubFeed, "id">);
+  });
+}
+
+export async function kickMemberRemote(
+  clubId: string,
+  actorUid: string,
+  targetUid: string
+): Promise<void> {
+  // best-effort resolve username for feed message
+  let targetUsername: string | "" = "";
+  try {
+    const qref = query(
+      collection(db, usernamesCollectionIdLocal()),
+      where("uid", "==", targetUid)
+    );
+    const snap = await getDocs(qref);
+    const first = snap.docs[0];
+    if (first) targetUsername = (first.id || "").trim().toLowerCase();
+  } catch {}
+  const ref = clubDoc(clubId);
+  await runTransaction(db, async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists()) throw new Error("Club not found");
+    const data = snap.data() as any as FirestoreClub;
+    if (data.ownerUid !== actorUid)
+      throw new Error("Only owner can remove members");
+    const list = Array.isArray(data.memberUids) ? [...data.memberUids] : [];
+    const m = list.find((u) => u === targetUid);
+    if (!m) return;
+    if (targetUid === data.ownerUid) throw new Error("Cannot remove the owner");
+    const next = list.filter((u) => u !== targetUid);
+    tx.set(
+      ref,
+      { memberUids: next, updatedAt: serverTimestamp() },
+      { merge: true }
+    );
+    tx.set(doc(clubFeedCollection(clubId)), {
+      type: "kick",
+      message: `Member removed: ${targetUsername || targetUid}`,
+      actorUid: actorUid,
+      createdAt: serverTimestamp(),
+    } as Omit<FirestoreClubFeed, "id">);
+  });
+}
+
+export async function renameClubRemote(
+  clubId: string,
+  actorUid: string,
+  name: string
+): Promise<void> {
+  const ref = clubDoc(clubId);
+  const clean = (name || "").trim();
+  if (!clean) return;
+  await runTransaction(db, async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists()) throw new Error("Club not found");
+    const data = snap.data() as any as FirestoreClub;
+    if (data.ownerUid !== actorUid) throw new Error("Only owner can rename");
+    const prevName = String((data as any)?.name || "").trim();
+    tx.set(ref, { name: clean, updatedAt: serverTimestamp() }, { merge: true });
+    tx.set(doc(clubFeedCollection(clubId)), {
+      type: "system",
+      message: prevName
+        ? `Club renamed from "${prevName}" to "${clean}"`
+        : `Club renamed to "${clean}"`,
+      actorUid: actorUid,
+      createdAt: serverTimestamp(),
+    } as Omit<FirestoreClubFeed, "id">);
+  });
+}
+
+export async function resolveUsernamesForUids(
+  uids: string[]
+): Promise<Record<string, string>> {
+  const out: Record<string, string> = {};
+  const uniq = Array.from(new Set((uids || []).filter(Boolean)));
+  for (let i = 0; i < uniq.length; i += 10) {
+    const chunk = uniq.slice(i, i + 10);
+    // There is no direct index from uid -> username; query by where('uid','==',uid) per uid because 'in' uses up to 10 values but we need separate queries per uid
+    const reads = await Promise.all(
+      chunk.map(async (uid) => {
+        const qref = query(
+          collection(db, usernamesCollectionIdLocal()),
+          where("uid", "==", uid)
+        );
+        const snap = await getDocs(qref);
+        const first = snap.docs[0];
+        if (first) return { uid, username: first.id };
+        return { uid, username: "" };
+      })
+    );
+    reads.forEach((r) => {
+      if (r && r.username) out[r.uid] = r.username;
+    });
+  }
+  return out;
+}
+
+export { suggestUsernames };

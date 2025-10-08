@@ -71,11 +71,17 @@ export default function AppHeader() {
             </p>
           </div>
           <div className="flex items-center gap-2">
+            <Link
+              href="/clubs"
+              className="rounded-full border px-3 py-1 text-xs text-gray-700 hover:bg-gray-100"
+            >
+              Clubs
+            </Link>
             {hasUser ? (
               <Link
                 href="/profile"
                 aria-label="Go to profile"
-                className="ml-4 rounded-full border p-2 text-gray-600 hover:bg-gray-100"
+                className="ml-1 rounded-full border p-2 text-gray-600 hover:bg-gray-100"
               >
                 <svg
                   xmlns="http://www.w3.org/2000/svg"
