@@ -967,15 +967,46 @@ const useStore = create<StoreState>()((set, _get) => ({
           { ...ss, courts },
           courtIndex
         );
-        if (!result) return ss;
+        if (!result) {
+          (ss as any).__lastAutoAssignError =
+            "Auto-assign could not find a valid assignment for this court.";
+          return ss;
+        }
         const { playerIdsToAdd, pairA, pairB } = result;
         const cap = (court.mode || "doubles") === "singles" ? 2 : 4;
-        for (const pid of playerIdsToAdd) {
-          if (court.playerIds.length >= cap) break;
-          if (!court.playerIds.includes(pid)) court.playerIds.push(pid);
+        if (playerIdsToAdd.length === 0 && court.playerIds.length >= cap) {
+          // Reroll case: replace current players with proposed matchup
+          const proposedIds =
+            (court.mode || "doubles") === "singles"
+              ? [pairA[0], pairB[0]].filter(Boolean)
+              : [...(pairA || []), ...(pairB || [])];
+          if (proposedIds.length === cap) {
+            court.playerIds = proposedIds.slice(0, cap);
+            court.pairA = pairA.slice(0);
+            court.pairB = pairB.slice(0);
+            (ss as any).__lastAutoAssignError = undefined;
+          } else {
+            // Fallback to preserving existing players if proposal invalid
+            court.pairA = pairA.slice(0);
+            court.pairB = pairB.slice(0);
+            (ss as any).__lastAutoAssignError =
+              "Reroll proposed invalid players; kept current players.";
+          }
+        } else {
+          // Gap-fill / initial assignment: only add missing players
+          for (const pid of playerIdsToAdd) {
+            if (court.playerIds.length >= cap) break;
+            if (!court.playerIds.includes(pid)) court.playerIds.push(pid);
+          }
+          court.pairA = pairA.slice(0);
+          court.pairB = pairB.slice(0);
+          if (playerIdsToAdd.length === 0) {
+            (ss as any).__lastAutoAssignError =
+              "Auto-assign found no eligible players to add.";
+          } else {
+            (ss as any).__lastAutoAssignError = undefined;
+          }
         }
-        court.pairA = pairA.slice(0);
-        court.pairB = pairB.slice(0);
         return { ...ss, courts };
       }),
     })),

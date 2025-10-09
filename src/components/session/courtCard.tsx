@@ -163,6 +163,17 @@ function CourtCard({
               Auto-assign
             </button>
           )}
+          {!session.ended &&
+            !court.inProgress &&
+            isOrganizer &&
+            (session as any).__lastAutoAssignError && (
+              <div
+                className="text-[11px] text-red-500"
+                title={(session as any).__lastAutoAssignError}
+              >
+                {(session as any).__lastAutoAssignError}
+              </div>
+            )}
           {/* Remove button moved to top-right icon */}
           {!court.inProgress && isOrganizer && (
             <Select

@@ -18,6 +18,14 @@ type InternalCfg = {
   maxKDoubles: number;
   weights: Weights;
 };
+type DoublesPick = {
+  A: string;
+  B: string;
+  C: string;
+  Dp: string;
+  score: number;
+  key: string;
+};
 
 const DEFAULT_WEIGHTS: Weights = {
   closeW: 5000,
@@ -253,12 +261,217 @@ export function computeCompetitiveAssignmentForCourt(
   const isSingles = (court.mode || "doubles") === "singles";
   const cap = isSingles ? 2 : 4;
   const need = cap - court.playerIds.length;
-  if (need <= 0)
-    return {
-      playerIdsToAdd: [],
-      pairA: court.pairA || [],
-      pairB: court.pairB || [],
-    };
+  if (need <= 0) {
+    // Reroll behavior when the court is already full: propose a different matchup.
+    // Pool for reroll: players not excluded and not assigned to other courts (allow current court players).
+    const excluded = new Set(ss.autoAssignExclude || []);
+    const assignedElsewhere = new Set<string>();
+    ss.courts.forEach((c, i) => {
+      if (i !== courtIndex)
+        c.playerIds.forEach((pid) => assignedElsewhere.add(pid));
+    });
+    const gamesPlayed: Record<string, number> = {};
+    ss.players.forEach((p) => (gamesPlayed[p.id] = p.gamesPlayed ?? 0));
+    const poolBase = ss.players
+      .filter((p) => !excluded.has(p.id) && !assignedElsewhere.has(p.id))
+      .map((p) => ({ id: p.id, name: p.name, games: gamesPlayed[p.id] || 0 }));
+    if (poolBase.length < cap)
+      return {
+        playerIdsToAdd: [],
+        pairA: court.pairA || [],
+        pairB: court.pairB || [],
+      };
+
+    // Sort by fairness baseline
+    poolBase.sort((a, b) => a.games - b.games || a.name.localeCompare(b.name));
+
+    const co = buildCoCounts(ss);
+    const getCo = (a: string, b: string) => co.get(a)?.get(b) || 0;
+    const streak = buildStreaks(ss);
+    const isBL = buildBlacklistCheck(ss);
+    const genders = gendersMap(ss);
+
+    const currentKey = isSingles
+      ? (() => {
+          const ids = [...court.playerIds];
+          return ids.length === 2 ? lexKey([ids[0]], [ids[1]]) : "";
+        })()
+      : (() => {
+          const a = court.pairA || [];
+          const b = court.pairB || [];
+          return a.length + b.length === 4 ? lexKey(a, b) : "";
+        })();
+    const currentSet: Set<string> = (() => {
+      if (isSingles) return new Set(court.playerIds);
+      const a = court.pairA || [];
+      const b = court.pairB || [];
+      if (a.length + b.length === 4) return new Set([...a, ...b]);
+      return new Set(court.playerIds);
+    })();
+
+    let outPairA: string[] = [];
+    let outPairB: string[] = [];
+
+    if (isSingles) {
+      const K = Math.min(poolBase.length, cfg.maxKSingles);
+      let bestAny: {
+        pair: [string, string];
+        score: number;
+        tie: string;
+      } | null = null;
+      let bestAltKey: {
+        pair: [string, string];
+        score: number;
+        tie: string;
+      } | null = null;
+      let bestAltSet: {
+        pair: [string, string];
+        score: number;
+        tie: string;
+      } | null = null;
+      for (let i = 0; i < K; i++) {
+        for (let j = i + 1; j < K; j++) {
+          const a = poolBase[i].id;
+          const b = poolBase[j].id;
+          const score = scoreSingles(
+            ss,
+            a,
+            b,
+            cfg.weights,
+            getCo,
+            streak,
+            gamesPlayed
+          );
+          const tie = lexKey([a], [b]);
+          const cand = { pair: [a, b] as [string, string], score, tie };
+          if (
+            !bestAny ||
+            score < bestAny.score ||
+            (score === bestAny.score && tie < bestAny.tie)
+          )
+            bestAny = cand;
+          const isDifferentSet = !(
+            currentSet.size === 2 &&
+            currentSet.has(a) &&
+            currentSet.has(b)
+          );
+          if (isDifferentSet) {
+            if (
+              !bestAltSet ||
+              score < bestAltSet.score ||
+              (score === bestAltSet.score && tie < bestAltSet.tie)
+            )
+              bestAltSet = cand;
+          }
+          if (tie !== currentKey) {
+            if (
+              !bestAltKey ||
+              score < bestAltKey.score ||
+              (score === bestAltKey.score && tie < bestAltKey.tie)
+            )
+              bestAltKey = cand;
+          }
+        }
+      }
+      const pick = bestAltSet || bestAltKey || bestAny;
+      if (!pick)
+        return {
+          playerIdsToAdd: [],
+          pairA: court.pairA || [],
+          pairB: court.pairB || [],
+        };
+      outPairA = [pick.pair[0]];
+      outPairB = [pick.pair[1]];
+    } else {
+      const K = Math.min(poolBase.length, cfg.maxKDoubles);
+      const idxs: number[] = Array.from({ length: K }, (_, i) => i);
+      let bestAny: DoublesPick | null = null;
+      let bestAltKey: DoublesPick | null = null;
+      let bestAltSet: DoublesPick | null = null;
+      const considerCombo = (ids: string[]) => {
+        const splits: Array<[string, string, string, string]> = [
+          [ids[0], ids[1], ids[2], ids[3]],
+          [ids[0], ids[2], ids[1], ids[3]],
+          [ids[0], ids[3], ids[1], ids[2]],
+        ];
+        const isDifferentSet = !(
+          ids.length === currentSet.size &&
+          ids.every((id) => currentSet.has(id))
+        );
+        for (const [A, B, C, Dp] of splits) {
+          const score = scoreDoublesSplit(
+            ss,
+            A,
+            B,
+            C,
+            Dp,
+            cfg.weights,
+            cfg,
+            getCo,
+            streak,
+            gamesPlayed,
+            isBL,
+            genders
+          );
+          if (!Number.isFinite(score)) continue;
+          const key = lexKey([A, B], [C, Dp]);
+          const cand: DoublesPick = { A, B, C, Dp, score, key };
+          if (
+            !bestAny ||
+            score < bestAny.score ||
+            (score === bestAny.score && key < bestAny.key)
+          )
+            bestAny = cand;
+          if (isDifferentSet) {
+            if (
+              !bestAltSet ||
+              score < bestAltSet.score ||
+              (score === bestAltSet.score && key < bestAltSet.key)
+            )
+              bestAltSet = cand;
+          }
+          if (key !== currentKey) {
+            if (
+              !bestAltKey ||
+              score < bestAltKey.score ||
+              (score === bestAltKey.score && key < bestAltKey.key)
+            )
+              bestAltKey = cand;
+          }
+        }
+      };
+      const choose = (
+        arr: number[],
+        k: number,
+        start: number,
+        acc: number[]
+      ) => {
+        if (acc.length === k) {
+          const ids = acc.map((i) => poolBase[i].id);
+          considerCombo(ids);
+          return;
+        }
+        for (let i = start; i < arr.length; i++) {
+          acc.push(arr[i]);
+          choose(arr, k, i + 1, acc);
+          acc.pop();
+        }
+      };
+      choose(idxs, Math.min(4, K), 0, []);
+      const pick: DoublesPick | null = bestAltSet || bestAltKey || bestAny;
+      if (!pick)
+        return {
+          playerIdsToAdd: [],
+          pairA: court.pairA || [],
+          pairB: court.pairB || [],
+        };
+      const p = pick as DoublesPick;
+      outPairA = [p.A, p.B];
+      outPairB = [p.C, p.Dp];
+    }
+
+    return { playerIdsToAdd: [], pairA: outPairA, pairB: outPairB };
+  }
 
   const assigned = new Set<string>(ss.courts.flatMap((c) => c.playerIds));
   const excluded = new Set(ss.autoAssignExclude || []);
@@ -354,14 +567,7 @@ export function computeCompetitiveAssignmentForCourt(
 
     // Build set of all players that must be included (current court assignments)
     const required = new Set<string>(court.playerIds);
-
     const considerCombo = (ids: string[]) => {
-      // Respect seeded sides: keep initialA members together, same for initialB
-      const hasAllRequired = ids.every(
-        (id) => required.has(id) || !required.size
-      );
-      if (!hasAllRequired) return;
-
       const splits: Array<[string, string, string, string]> = [
         [ids[0], ids[1], ids[2], ids[3]],
         [ids[0], ids[2], ids[1], ids[3]],
@@ -399,28 +605,68 @@ export function computeCompetitiveAssignmentForCourt(
       }
     };
 
-    // Enumerate candidate 4-sets including required seeds
-    const choose = (arr: number[], k: number, start: number, acc: number[]) => {
-      if (acc.length === k) {
-        const ids = acc.map((i) => poolBase[i].id);
-        // Must include all required players
-        const includeAll = [...required].every((r) => ids.includes(r));
-        if (!includeAll) return;
-        considerCombo(ids);
-        return;
-      }
-      for (let i = start; i < arr.length; i++) {
-        acc.push(arr[i]);
-        choose(arr, k, i + 1, acc);
-        acc.pop();
-      }
-    };
-    choose(idxs, Math.min(4, K), 0, []);
+    // Build combos by completing current required players to a 4-set
+    const baseIds = Array.from(required);
+    const slots = Math.max(0, 4 - baseIds.length);
+    if (slots > 0) {
+      const choose = (
+        arr: number[],
+        k: number,
+        start: number,
+        acc: number[]
+      ) => {
+        if (acc.length === k) {
+          const picked = acc.map((i) => poolBase[i].id);
+          const ids = baseIds.concat(picked);
+          if (ids.length === 4) considerCombo(ids);
+          return;
+        }
+        for (let i = start; i < arr.length; i++) {
+          acc.push(arr[i]);
+          choose(arr, k, i + 1, acc);
+          acc.pop();
+        }
+      };
+      if (K >= slots) choose(idxs, slots, 0, []);
+    } else {
+      // No slots to fill (should not happen in this branch), but be safe
+      if (baseIds.length === 4) considerCombo(baseIds);
+    }
     if (bestSplit) {
-      const pick = [bestSplit!.A, bestSplit!.B, bestSplit!.C, bestSplit!.Dp];
-      for (const id of pick) if (!seeded.has(id)) chosen.push(id);
-      outPairA = [bestSplit!.A, bestSplit!.B];
-      outPairB = [bestSplit!.C, bestSplit!.Dp];
+      const pickIds = [bestSplit.A, bestSplit.B, bestSplit.C, bestSplit.Dp];
+      for (const id of pickIds) if (!seeded.has(id)) chosen.push(id);
+      outPairA = [bestSplit.A, bestSplit.B];
+      outPairB = [bestSplit.C, bestSplit.Dp];
+    } else {
+      // Fallback: if one side is seeded and the other is empty, try to fill the empty side greedily
+      const sideAEmpty = initialA.length === 0 && initialB.length > 0;
+      const sideBEmpty = initialB.length === 0 && initialA.length > 0;
+      if (sideAEmpty || sideBEmpty) {
+        const reqTeam = 2;
+        const pick: string[] = [];
+        const canTeammate = (x: string, y: string) => !isBL(x, y);
+        for (let i = 0; i < poolBase.length && pick.length < reqTeam; i++) {
+          const a = poolBase[i].id;
+          if (pick.length === 1 && !canTeammate(pick[0], a)) continue;
+          if (cfg.respectGender === "hard" && pick.length === 1) {
+            const four = sideAEmpty
+              ? [pick[0], a, ...initialB]
+              : [...initialA, pick[0], a];
+            if (!isGenderSplittable(four, genders)) continue;
+          }
+          pick.push(a);
+        }
+        if (pick.length === reqTeam) {
+          if (sideAEmpty) {
+            outPairA = pick.slice(0, reqTeam);
+            outPairB = initialB.slice(0);
+          } else {
+            outPairA = initialA.slice(0);
+            outPairB = pick.slice(0, reqTeam);
+          }
+          for (const id of pick) if (!seeded.has(id)) chosen.push(id);
+        }
+      }
     }
   }
 
@@ -566,9 +812,9 @@ export function computeCompetitiveNextQueue(
     };
     choose(idxs, Math.min(4, K), 0, []);
     if (bestSplit) {
-      selected.push(bestSplit!.A, bestSplit!.B, bestSplit!.C, bestSplit!.Dp);
-      nextA = [bestSplit!.A, bestSplit!.B];
-      nextB = [bestSplit!.C, bestSplit!.Dp];
+      selected.push(bestSplit.A, bestSplit.B, bestSplit.C, bestSplit.Dp);
+      nextA = [bestSplit.A, bestSplit.B];
+      nextB = [bestSplit.C, bestSplit.Dp];
     }
   }
 
