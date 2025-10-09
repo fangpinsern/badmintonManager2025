@@ -265,6 +265,17 @@ export async function leaveClubRemote(
   uid: string
 ): Promise<void> {
   if (!uid) throw new Error("Not signed in");
+  // best-effort resolve username for feed message
+  let leavingUsername: string | "" = "";
+  try {
+    const qref = query(
+      collection(db, usernamesCollectionIdLocal()),
+      where("uid", "==", uid)
+    );
+    const snap = await getDocs(qref);
+    const first = snap.docs[0];
+    if (first) leavingUsername = (first.id || "").trim().toLowerCase();
+  } catch {}
   const ref = clubDoc(clubId);
   await runTransaction(db, async (tx) => {
     const snap = await tx.get(ref);
@@ -281,8 +292,14 @@ export async function leaveClubRemote(
     );
     tx.set(doc(clubFeedCollection(clubId)), {
       type: "leave",
-      message: "User left the club",
+      message: leavingUsername
+        ? `Member left: @${leavingUsername}`
+        : "User left the club",
       actorUid: uid,
+      ext: {
+        userId: uid,
+        username: leavingUsername || "",
+      },
       createdAt: serverTimestamp(),
     } as Omit<FirestoreClubFeed, "id">);
   });
@@ -320,7 +337,11 @@ export async function addMemberByUsernameRemote(
     );
     tx.set(doc(clubFeedCollection(clubId)), {
       type: "join",
-      message: `Member added: ${uname}`,
+      message: `Member added: @${uname}`,
+      ext: {
+        username: uname,
+        userId: targetUid,
+      },
       actorUid: actorUid,
       createdAt: serverTimestamp(),
     } as Omit<FirestoreClubFeed, "id">);
@@ -423,3 +444,31 @@ export async function resolveUsernamesForUids(
 }
 
 export { suggestUsernames };
+
+// Pagination helpers for club feed (20 per page recommended)
+export async function getClubFeedPage(
+  clubId: string,
+  limitN: number,
+  afterCreatedAt?: any
+): Promise<{
+  items: FirestoreClubFeed[];
+  cursor: any | null;
+  hasMore: boolean;
+}> {
+  const constraints: any[] = [
+    orderBy("createdAt", "desc"),
+    fsLimit(Math.max(1, Math.min(100, limitN))),
+  ];
+  if (afterCreatedAt) constraints.push(startAfter(afterCreatedAt));
+  const qref = query(clubFeedCollection(clubId), ...constraints);
+  const snap = await getDocs(qref);
+  const items: FirestoreClubFeed[] = [];
+  snap.forEach((d) => items.push({ id: d.id, ...(d.data() as any) }));
+  const last = items[items.length - 1];
+  const cursor = last ? (last as any)?.createdAt || null : null;
+  return {
+    items,
+    cursor,
+    hasMore: items.length >= Math.max(1, Math.min(100, limitN)),
+  };
+}

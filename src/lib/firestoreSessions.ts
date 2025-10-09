@@ -18,6 +18,7 @@ import {
   endAt,
   limit as fsLimit,
   documentId,
+  deleteField,
 } from "firebase/firestore";
 
 export type FirestoreSession = {
@@ -401,6 +402,12 @@ export async function saveSession(sessionId: string, payload: unknown) {
     },
     { merge: true }
   );
+  // If playerLimit was cleared (undefined), merge doesn't delete nested fields; explicitly delete it.
+  try {
+    if (typeof (sanitized as any)?.playerLimit === "undefined") {
+      await updateDoc(ref, { "payload.playerLimit": deleteField() });
+    }
+  } catch {}
   // Index under club if session is sanctioned by a club
   try {
     const clubId: string | undefined = (sanitized as any)?.clubId;
@@ -497,6 +504,12 @@ export async function saveSessionOnBehalf(
     },
     { merge: true }
   );
+  // If playerLimit was cleared (undefined), merge doesn't delete nested fields; explicitly delete it.
+  try {
+    if (typeof (sanitized as any)?.playerLimit === "undefined") {
+      await updateDoc(ref, { "payload.playerLimit": deleteField() });
+    }
+  } catch {}
   // Index under club if session is sanctioned by a club
   try {
     const clubId: string | undefined = (sanitized as any)?.clubId;

@@ -33,27 +33,43 @@ export function SessionCard({
                 Club
               </span>
             ) : null}
+            {typeof session.playerLimit === "number" &&
+              session.playerLimit > 0 &&
+              (() => {
+                const left = Math.max(
+                  0,
+                  session.playerLimit - session.players.length
+                );
+                return (
+                  <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[10px] text-gray-700">
+                    {left === 0 ? "Session is full" : `${left} slots left`}
+                  </span>
+                );
+              })()}
             <div className="flex flex-col items-end gap-1">
               {isToday && (
                 <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] text-emerald-700">
                   Today
                 </span>
               )}
-              <span
-                className={`rounded-full px-2 py-0.5 text-[10px] ${
-                  isOrganizer
-                    ? "bg-blue-50 text-blue-700"
+              {(session.players || []).filter((p) => p.accountUid === me)
+                .length > 0 && (
+                <span
+                  className={`rounded-full px-2 py-0.5 text-[10px] ${
+                    isOrganizer
+                      ? "bg-blue-50 text-blue-700"
+                      : (session.coOrganizerUids || []).includes(me || "")
+                      ? "bg-red-50 text-red-700"
+                      : "bg-gray-100 text-gray-600"
+                  }`}
+                >
+                  {isOrganizer
+                    ? "Organizer"
                     : (session.coOrganizerUids || []).includes(me || "")
-                    ? "bg-red-50 text-red-700"
-                    : "bg-gray-100 text-gray-600"
-                }`}
-              >
-                {isOrganizer
-                  ? "Organizer"
-                  : (session.coOrganizerUids || []).includes(me || "")
-                  ? "Co-organizer"
-                  : "Participant"}
-              </span>
+                    ? "Co-organizer"
+                    : "Participant"}
+                </span>
+              )}
             </div>
           </div>
           <div className="text-xs text-gray-500">

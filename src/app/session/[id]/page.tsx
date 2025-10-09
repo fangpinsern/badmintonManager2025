@@ -66,6 +66,9 @@ function SessionManager({ onBack }: { onBack: () => void }) {
   const [clubIdForViewing, setClubIdForViewing] = useState<string | null>(null);
   const [joinBusy, setJoinBusy] = useState(false);
   const [joinError, setJoinError] = useState<string>("");
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const updateSessionMeta = useStore((s) => (s as any).updateSessionMeta);
+  const [settingsPlayerLimit, setSettingsPlayerLimit] = useState<string>("");
 
   useEffect(() => {
     return onAuthStateChanged(auth, (u) => {
@@ -520,6 +523,33 @@ function SessionManager({ onBack }: { onBack: () => void }) {
           {!session.ended && (
             <div className="flex items-center gap-2">
               {canManage && <AutoAssignSettingsButton session={session} />}
+              {canManage && (
+                <button
+                  onClick={() => {
+                    setSettingsOpen(true);
+                    const v = session.playerLimit;
+                    setSettingsPlayerLimit(
+                      typeof v === "number" && v > 0 ? String(v) : ""
+                    );
+                  }}
+                  title="Session settings"
+                  aria-label="Session settings"
+                  className="rounded-xl border px-2 py-1.5"
+                >
+                  <svg
+                    className="h-4 w-4"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <circle cx="12" cy="12" r="3"></circle>
+                    <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 01-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09a1.65 1.65 0 00-1-1.51 1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09a1.65 1.65 0 001.51-1 1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06a1.65 1.65 0 001.82.33h0A1.65 1.65 0 0010 4.09V4a2 2 0 014 0v.09a1.65 1.65 0 001 1.51h0a1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82v0A1.65 1.65 0 0019.91 10H20a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z" />
+                  </svg>
+                </button>
+              )}
               {isOrganizer && (
                 <button
                   onClick={() => {
@@ -532,45 +562,119 @@ function SessionManager({ onBack }: { onBack: () => void }) {
                   End session
                 </button>
               )}
-              {canShowJoin && (
-                <button
-                  onClick={async () => {
-                    setJoinError("");
-                    if (!myUsername) {
-                      setJoinError("Please set a username first");
-                      return;
-                    }
-                    const owner =
-                      organizerUid ||
-                      (window as any).__sessionOwners?.get?.(session.id) ||
-                      auth.currentUser?.uid;
-                    if (!owner) {
-                      setJoinError("Organizer not resolved yet");
-                      return;
-                    }
-                    setJoinBusy(true);
-                    try {
-                      await addAndLinkPlayerByUsername(
-                        owner,
-                        session.id,
-                        myUsername
-                      );
-                    } catch (e: any) {
-                      setJoinError(e?.message || "Failed to join session");
-                    } finally {
-                      setJoinBusy(false);
-                    }
-                  }}
-                  disabled={joinBusy}
-                  className="rounded-xl bg-black px-3 py-1.5 text-xs text-white disabled:opacity-50"
-                >
-                  {joinBusy ? "Joining…" : "Join session"}
-                </button>
-              )}
+              {canShowJoin &&
+                (() => {
+                  const isFull =
+                    typeof session.playerLimit === "number" &&
+                    session.playerLimit > 0 &&
+                    session.players.length >= session.playerLimit;
+                  return (
+                    <>
+                      <button
+                        onClick={async () => {
+                          setJoinError("");
+                          if (!myUsername) {
+                            setJoinError("Please set a username first");
+                            return;
+                          }
+                          // Enforce player limit if present
+                          if (
+                            typeof session.playerLimit === "number" &&
+                            session.playerLimit > 0 &&
+                            session.players.length >= session.playerLimit
+                          ) {
+                            setJoinError("Session is full");
+                            return;
+                          }
+                          const owner =
+                            organizerUid ||
+                            (window as any).__sessionOwners?.get?.(
+                              session.id
+                            ) ||
+                            auth.currentUser?.uid;
+                          if (!owner) {
+                            setJoinError("Organizer not resolved yet");
+                            return;
+                          }
+                          setJoinBusy(true);
+                          try {
+                            await addAndLinkPlayerByUsername(
+                              owner,
+                              session.id,
+                              myUsername
+                            );
+                          } catch (e: any) {
+                            setJoinError(
+                              e?.message || "Failed to join session"
+                            );
+                          } finally {
+                            setJoinBusy(false);
+                          }
+                        }}
+                        disabled={joinBusy || isFull}
+                        className="rounded-xl bg-black px-3 py-1.5 text-xs text-white disabled:opacity-50"
+                      >
+                        {joinBusy ? "Joining…" : "Join session"}
+                      </button>
+                      {isFull && (
+                        <span className="text-[11px] text-gray-600">
+                          Session is full
+                        </span>
+                      )}
+                    </>
+                  );
+                })()}
             </div>
           )}
         </div>
       </Card>
+      {settingsOpen && canManage && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div
+            className="absolute inset-0 bg-black/40"
+            onClick={() => setSettingsOpen(false)}
+          ></div>
+          <div className="relative w-full max-w-sm rounded-2xl bg-white p-4 shadow-lg">
+            <div className="mb-2 text-base font-semibold">Session settings</div>
+            <div className="space-y-2">
+              <Input
+                type="number"
+                label="Player limit"
+                placeholder="leave empty for no limit"
+                min={1}
+                inputMode="numeric"
+                value={settingsPlayerLimit}
+                onChange={(e) => setSettingsPlayerLimit(e.target.value)}
+              />
+            </div>
+            <div className="mt-3 flex items-center justify-end gap-2">
+              <button
+                className="rounded-xl border px-3 py-1.5 text-sm"
+                onClick={() => setSettingsOpen(false)}
+              >
+                Cancel
+              </button>
+              <button
+                className="rounded-xl bg-black px-3 py-1.5 text-sm text-white"
+                onClick={() => {
+                  const raw = (settingsPlayerLimit || "").trim();
+                  const num = Number(raw);
+                  const next =
+                    raw && Number.isFinite(num) && num > 0
+                      ? Math.floor(num)
+                      : undefined;
+
+                  console.log(next);
+                  updateSessionMeta(session.id, { playerLimit: next } as any);
+                  setSettingsOpen(false);
+                }}
+              >
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {joinError && (
         <Card>

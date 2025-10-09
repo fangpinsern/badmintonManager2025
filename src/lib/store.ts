@@ -24,6 +24,7 @@ interface StoreState {
     numCourts: number;
     playersPerCourt?: number;
     clubId?: string;
+    playerLimit?: number;
   }) => string; // returns new sessionId
   deleteSession: (sessionId: string) => void;
   addPlayer: (sessionId: string, name: string) => void;
@@ -103,6 +104,7 @@ interface StoreState {
     sessionId: string,
     partial: Partial<NonNullable<Session["autoAssignConfig"]>>
   ) => void;
+  updateSessionMeta: (sessionId: string, partial: Partial<Session>) => void;
 }
 
 const useStore = create<StoreState>()((set, _get) => ({
@@ -158,7 +160,14 @@ const useStore = create<StoreState>()((set, _get) => ({
       }),
     })),
 
-  createSession: ({ date, time, numCourts, playersPerCourt = 4, clubId }) => {
+  createSession: ({
+    date,
+    time,
+    numCourts,
+    playersPerCourt = 4,
+    clubId,
+    playerLimit,
+  }) => {
     const clampedCourts = Math.max(1, Math.min(10, numCourts));
     const id = nanoid(10);
     const courts: Court[] = Array.from({ length: clampedCourts }, (_, i) => ({
@@ -186,6 +195,12 @@ const useStore = create<StoreState>()((set, _get) => ({
       ended: false,
       storage: "remote",
       clubId: clubId || undefined,
+      playerLimit:
+        typeof playerLimit === "number" &&
+        isFinite(playerLimit) &&
+        playerLimit > 0
+          ? Math.floor(playerLimit)
+          : undefined,
     };
     console.log("creating session", clubId, session);
     set((s) => ({ sessions: [session, ...s.sessions] }));
@@ -1026,6 +1041,23 @@ const useStore = create<StoreState>()((set, _get) => ({
         const prev = ss.autoAssignConfig || {};
         const next = { ...prev, ...partial } as Session["autoAssignConfig"];
         return { ...ss, autoAssignConfig: next };
+      }),
+    })),
+
+  updateSessionMeta: (sessionId, partial) =>
+    set((s) => ({
+      sessions: s.sessions.map((ss) => {
+        if (ss.id !== sessionId) return ss;
+        const next: Partial<Session> = {};
+        if (Object.prototype.hasOwnProperty.call(partial, "playerLimit")) {
+          const raw: any = (partial as any).playerLimit;
+          next.playerLimit =
+            typeof raw === "number" && isFinite(raw) && raw > 0
+              ? Math.floor(raw)
+              : undefined;
+        }
+        console.log("here", next);
+        return { ...ss, ...next } as Session;
       }),
     })),
 

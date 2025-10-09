@@ -1,7 +1,7 @@
 "use client";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useRef } from "react";
 import { Card, Input } from "@/components/layout";
 import { auth } from "@/lib/firebase";
 import { onAuthStateChanged } from "firebase/auth";
@@ -16,6 +16,7 @@ import {
   renameClubRemote,
   suggestUsernames,
   resolveUsernamesForUids,
+  getClubFeedPage,
 } from "@/lib/firestoreClubs";
 import type { FirestoreClub, FirestoreClubFeed } from "@/lib/firestoreClubs";
 import { subscribeClubSessions, saveSession } from "@/lib/firestoreSessions";
@@ -32,6 +33,9 @@ export default function ClubDetailPage() {
   const id = String(params?.id || "");
   const [club, setClub] = useState<FirestoreClub | null>(null);
   const [feed, setFeed] = useState<FirestoreClubFeed[]>([]);
+  const [feedBusy, setFeedBusy] = useState(false);
+  const [feedCursor, setFeedCursor] = useState<any | null>(null);
+  const [feedHasMore, setFeedHasMore] = useState(true);
 
   const [user, setUser] = useState<{
     uid: string;
@@ -73,6 +77,7 @@ export default function ClubDetailPage() {
   );
   const [time, setTime] = useState<string>("19:00");
   const [numCourts, setNumCourts] = useState<string>("3");
+  const [playerLimit, setPlayerLimit] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
   const [selectedMemberUids, setSelectedMemberUids] = useState<Set<string>>(
     new Set()
@@ -85,15 +90,86 @@ export default function ClubDetailPage() {
       return next;
     });
   };
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!sentinelRef.current) return;
+    const el = sentinelRef.current;
+    const obs = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) {
+          if (e.isIntersecting) {
+            void loadMoreFeed();
+          }
+        }
+      },
+      { rootMargin: "200px" }
+    );
+    obs.observe(el);
+    return () => {
+      try {
+        obs.disconnect();
+      } catch {}
+    };
+  }, [sentinelRef.current, feedHasMore, feedBusy]);
 
   useEffect(() => {
     if (!id) return;
     return subscribeClub(id, setClub);
   }, [id]);
+  // Realtime head (first page) subscription: keep latest messages fresh
   useEffect(() => {
     if (!id) return;
-    return subscribeClubFeed(id, 50, setFeed);
+    return subscribeClubFeed(id, 20, (items) => {
+      setFeed((prev) => {
+        // merge new items with existing, de-dup by id, keep order by createdAt desc
+        const map = new Map<string, FirestoreClubFeed>();
+        for (const it of items) map.set(it.id, it);
+        for (const it of prev) if (!map.has(it.id)) map.set(it.id, it);
+        return Array.from(map.values());
+      });
+    });
   }, [id]);
+
+  // Initial page load for infinite scroll
+  useEffect(() => {
+    let cancelled = false;
+    async function loadFirst() {
+      if (!id) return;
+      setFeedBusy(true);
+      try {
+        const res = await getClubFeedPage(id, 20);
+        if (cancelled) return;
+        setFeed(res.items);
+        setFeedCursor(res.cursor);
+        setFeedHasMore(res.hasMore);
+      } finally {
+        setFeedBusy(false);
+      }
+    }
+    loadFirst();
+    return () => {
+      cancelled = true;
+    };
+  }, [id]);
+
+  async function loadMoreFeed() {
+    if (!id) return;
+    if (feedBusy || !feedHasMore) return;
+    setFeedBusy(true);
+    try {
+      const res = await getClubFeedPage(id, 20, feedCursor);
+      setFeed((prev) => {
+        const map = new Map<string, FirestoreClubFeed>();
+        for (const it of prev) map.set(it.id, it);
+        for (const it of res.items) map.set(it.id, it);
+        return Array.from(map.values());
+      });
+      setFeedCursor(res.cursor);
+      setFeedHasMore(res.hasMore);
+    } finally {
+      setFeedBusy(false);
+    }
+  }
   useEffect(() => {
     if (!id) return;
     const unsub = subscribeClubSessions(id, (docs) => {
@@ -355,6 +431,7 @@ export default function ClubDetailPage() {
                 </div>
               ))
             )}
+            {feedHasMore && <div ref={sentinelRef} className="h-8" />}
           </div>
         </Card>
       </section>
@@ -389,6 +466,15 @@ export default function ClubDetailPage() {
                 inputMode="numeric"
                 value={numCourts}
                 onChange={(e) => setNumCourts(e.target.value)}
+              />
+              <Input
+                type="number"
+                label="Player limit (optional)"
+                min={1}
+                inputMode="numeric"
+                placeholder="e.g. 24"
+                value={playerLimit}
+                onChange={(e) => setPlayerLimit(e.target.value)}
               />
               <div className="mt-1">
                 <div className="mb-1 text-xs text-gray-600">
@@ -434,6 +520,12 @@ export default function ClubDetailPage() {
                       time,
                       numCourts: desired,
                       clubId: id,
+                      playerLimit: (() => {
+                        const num = Number(playerLimit);
+                        return Number.isFinite(num) && num > 0
+                          ? Math.floor(num)
+                          : undefined;
+                      })(),
                     });
                     try {
                       // Create a feed message and tag the session payload with the message id

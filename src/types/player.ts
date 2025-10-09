@@ -139,6 +139,8 @@ type Session = {
   clubId?: string;
   // If club-sanctioned, the initial feed message ID associated with this session
   clubFeedMessageId?: string;
+  // Optional maximum number of players allowed in the session
+  playerLimit?: number;
 };
 
 export type {
