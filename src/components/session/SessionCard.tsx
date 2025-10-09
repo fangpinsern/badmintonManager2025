@@ -52,8 +52,9 @@ export function SessionCard({
                   Today
                 </span>
               )}
-              {(session.players || []).filter((p) => p.accountUid === me)
-                .length > 0 && (
+              {((session.players || []).filter((p) => p.accountUid === me)
+                .length > 0 ||
+                isOrganizer) && (
                 <span
                   className={`rounded-full px-2 py-0.5 text-[10px] ${
                     isOrganizer
