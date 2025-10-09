@@ -656,3 +656,5 @@ function ClubSessionTabs({
     </div>
   );
 }
+
+export const runtime = "edge";
