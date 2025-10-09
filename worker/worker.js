@@ -1,10 +1,9 @@
 const WORKER_VERSION = "2025-09-22.1";
 
 // --- Push/aggregation policy ---
-const AGG_WINDOW_MS   = 1 * 30 * 1000;   // aggregate events for 3 min
-const MIN_INTERVAL_MS = 1 * 30 * 1000;   // no more than 1 push / 2 min per user
-const DAILY_MAX       = 100;               // cap per user per UTC day
-
+const AGG_WINDOW_MS = 1 * 30 * 1000; // aggregate events for 3 min
+const MIN_INTERVAL_MS = 1 * 30 * 1000; // no more than 1 push / 2 min per user
+const DAILY_MAX = 100; // cap per user per UTC day
 
 export default {
   async fetch(req, env) {
@@ -17,8 +16,8 @@ export default {
 
     // ---- New: event ingestion endpoint ----
     // if (req.method === "POST" && url.pathname === "/push/events") {
-    //   let body; try { body = await req.json(); } catch { 
-    //     return withCors(new Response("Bad JSON", { status: 400 }), req); 
+    //   let body; try { body = await req.json(); } catch {
+    //     return withCors(new Response("Bad JSON", { status: 400 }), req);
     //   }
     //   const userId = body?.userId;
     //   const events = Array.isArray(body?.events) ? body.events : [];
@@ -73,19 +72,30 @@ export default {
       const token = await getAccessToken(env);
       const { url: baseUrl } = fsBases(env.GCP_PROJECT_ID, env.FIRESTORE_DB);
       const userCol = isTest ? "users_test" : "users";
-      const sessionRes = await fetch(`${baseUrl}/${userCol}/${organizerUid}/sessions/${sessionId}`, {
-        headers: { authorization: `Bearer ${token}` },
-      });
+      const sessionRes = await fetch(
+        `${baseUrl}/${userCol}/${organizerUid}/sessions/${sessionId}`,
+        {
+          headers: { authorization: `Bearer ${token}` },
+        }
+      );
       if (!sessionRes.ok) {
-        return withCors(new Response("Session read failed", { status: 502 }), req);
+        return withCors(
+          new Response("Session read failed", { status: 502 }),
+          req
+        );
       }
       const sessionDoc = await sessionRes.json();
 
-      const payload = sessionDoc?.fields?.payload ? jsonFromFields(sessionDoc.fields.payload) : {};
+      const payload = sessionDoc?.fields?.payload
+        ? jsonFromFields(sessionDoc.fields.payload)
+        : {};
       if (!payload?.ended) {
         return withCors(
           new Response(
-            JSON.stringify({ error: "session_not_ended", message: "Session has not ended yet." }),
+            JSON.stringify({
+              error: "session_not_ended",
+              message: "Session has not ended yet.",
+            }),
             { status: 400, headers: { "content-type": "application/json" } }
           ),
           req
@@ -95,179 +105,39 @@ export default {
       const players = Array.isArray(payload.players) ? payload.players : [];
       const gamesAll = Array.isArray(payload.games) ? payload.games : [];
       const games = gamesAll.filter((g) => !g?.voided);
-      if (!games.length) return withCors(new Response("No games", { status: 200 }), req);
+      if (!games.length)
+        return withCors(new Response("No games", { status: 200 }), req);
 
-      // playerId -> accountUid
-      const pidToUid = new Map();
-      for (const p of players) {
-        if (p?.id && p?.accountUid) pidToUid.set(p.id, p.accountUid);
-      }
-
-      // Build per-user aggregates
-      const ensure = (map, uid) => {
-        if (!map[uid]) {
-          map[uid] = {
-            singles: { games: 0, wins: 0, durationMin: 0 },
-            doubles: { games: 0, wins: 0, durationMin: 0 },
-            totals:  { games: 0, wins: 0, durationMin: 0 },
-            recent: []
-          };
-        }
-        return map[uid];
-      };
-      const meanMs = meanDurationMs(games);
-      const perUser = {};
-
-      for (const g of games) {
-        const a = Array.isArray(g.sideA) ? g.sideA : [];
-        const b = Array.isArray(g.sideB) ? g.sideB : [];
-        const mode = a.length === 1 && b.length === 1 ? "singles" : "doubles";
-        const durMs = normalizeDurationMs(g.durationMs, meanMs);
-        const durMin = Math.round(durMs / 60000);
-        const endedAt = g.endedAt || payload.endedAt || new Date().toISOString();
-        const winner = g.winner;
-        const winners = winner === "A" ? new Set(a) : winner === "B" ? new Set(b) : new Set();
-
-        for (const pid of [...a, ...b]) {
-          const uid = pidToUid.get(pid);
-          if (!uid) continue; // only linked accounts
-
-          const agg = ensure(perUser, uid);
-          const bucket = agg[mode];
-
-          bucket.games += 1;
-          agg.totals.games += 1;
-
-          if (winner !== "draw") {
-            if (winners.has(pid)) {
-              bucket.wins += 1;
-              agg.totals.wins += 1;
-              agg.recent.push({ endedAt, result: "W", mode });
-            } else {
-              agg.recent.push({ endedAt, result: "L", mode });
-            }
-          }
-
-          bucket.durationMin += durMin;
-          agg.totals.durationMin += durMin;
-        }
-      }
+      const { pidToUid, perUser, meanMs } = buildPerUserAggregates(
+        players,
+        games,
+        payload
+      );
 
       // --- Friendship (teammate) pair aggregation for this session ---
-      function canonicalPair(a, b) { return a < b ? [a, b] : [b, a]; }
-      function combos2(arr) {
-        const out = [];
-        for (let i = 0; i < arr.length; i++) for (let j = i + 1; j < arr.length; j++) out.push([arr[i], arr[j]]);
-        return out;
-      }
-      const pairAgg = new Map(); // edgeKey -> { u1,u2,games,wins,durationMin,lastEndedAt }
-
-      for (const g of games) {
-        // Use RAW team sizes to understand the game shape/winner; profiles may be missing.
-        const rawA = Array.isArray(g.sideA) ? g.sideA.length : 0;
-        const rawB = Array.isArray(g.sideB) ? g.sideB.length : 0;
-    
-        // We only record teammate pairs for doubles (at least one team had 2+ players).
-        if (rawA < 2 && rawB < 2) continue;
-    
-        // Now map to registered accounts (only linked accounts produce stats).
-        const teamA = (Array.isArray(g.sideA) ? g.sideA : []).map(pid => pidToUid.get(pid)).filter(Boolean);
-        const teamB = (Array.isArray(g.sideB) ? g.sideB : []).map(pid => pidToUid.get(pid)).filter(Boolean);
-    
-        // If neither registered team has ≥2 players, nothing to do.
-        if (teamA.length < 2 && teamB.length < 2) continue;
-    
-        const durMin = Math.round(normalizeDurationMs(g.durationMs, meanMs) / 60000);
-        const endedAt = g.endedAt || payload.endedAt || new Date().toISOString();
-        const winnerTeam = g.winner === "A" ? "A" : g.winner === "B" ? "B" : null;
-    
-        // Tally a side's teammate pairs with the correct win attribution based on RAW winner.
-        const tallySide = (sideKey, linkedTeam) => {
-          if (linkedTeam.length < 2) return;
-          for (const [ua, ub] of combos2(linkedTeam)) {
-            const [u1, u2] = canonicalPair(ua, ub);
-            const key = `${u1}__${u2}`;
-            const agg = pairAgg.get(key) || { u1, u2, games: 0, wins: 0, durationMin: 0, lastEndedAt: "" };
-            agg.games += 1;
-            if (winnerTeam && winnerTeam === sideKey) agg.wins += 1;
-            agg.durationMin += durMin;
-            if (!agg.lastEndedAt || endedAt > agg.lastEndedAt) agg.lastEndedAt = endedAt;
-            pairAgg.set(key, agg);
-          }
-        };
-    
-        // Attribute per original team label so wins/losses aren't flipped by filtering.
-        tallySide("A", teamA);
-        tallySide("B", teamB);
-      }
+      const pairAgg = buildFriendPairAggregates(
+        games,
+        pidToUid,
+        meanMs,
+        payload
+      );
 
       // Opponent (head-to-head) pair aggregation (singles & doubles)
       // For doubles, count cross-team pairs (every A vs every B).
       // function canonicalPair(a, b) { return a < b ? [a, b] : [b, a]; }
-      const oppAgg = new Map(); // pairKey -> { u1,u2, singles:{games,winsU1,winsU2,durationMin}, doubles:{...}, totals:{...}, lastEndedAt }
-
-      for (const g of games) {
-        // Decide mode from RAW sides (before filtering to linked accounts).
-        console.log("game", g)
-        const rawA = Array.isArray(g.sideA) ? g.sideA.length : 0;
-        const rawB = Array.isArray(g.sideB) ? g.sideB.length : 0;
-        console.log("game2", rawA)
-        console.log("game3", rawB)
-
-        // If your data sometimes carries g.mode, prefer it; else derive from raw counts.
-        const mode = (g.mode === "singles" || g.mode === "doubles")
-          ? g.mode
-          : ((rawA === 1 && rawB === 1) ? "singles" : "doubles");
-
-        // Now filter to linked accounts (only write stats for linked users).
-        const sideA = (Array.isArray(g.sideA) ? g.sideA : []).map(pid => pidToUid.get(pid)).filter(Boolean);
-        const sideB = (Array.isArray(g.sideB) ? g.sideB : []).map(pid => pidToUid.get(pid)).filter(Boolean);
-        if (!sideA.length || !sideB.length) continue;
-
-        const durMin = Math.round(normalizeDurationMs(g.durationMs, meanMs) / 60000);
-        const endedAt = g.endedAt || payload.endedAt || new Date().toISOString();
-        const winnerIdx = g.winner === "A" ? 0 : g.winner === "B" ? 1 : -1;
-
-        for (const ua of sideA) {
-          for (const ub of sideB) {
-            const [u1, u2] = canonicalPair(ua, ub);
-            const key = `${u1}__${u2}`;
-            const cur = oppAgg.get(key) || {
-              u1, u2,
-              singles: { games: 0, winsU1: 0, winsU2: 0, durationMin: 0 },
-              doubles: { games: 0, winsU1: 0, winsU2: 0, durationMin: 0 },
-              totals:  { games: 0, winsU1: 0, winsU2: 0, durationMin: 0 },
-              lastEndedAt: ""
-            };
-            const bucket = cur[mode];
-
-            bucket.games += 1;
-            bucket.durationMin += durMin;
-            cur.totals.games += 1;
-            cur.totals.durationMin += durMin;
-
-            if (winnerIdx !== -1) {
-              // who is winner among (ua in A) vs (ub in B)?
-              const winnerIsA = winnerIdx === 0;
-              const winnerUid = winnerIsA ? ua : ub;
-              const winnerIsU1 = winnerUid === u1;
-              if (winnerIsU1) {
-                bucket.winsU1 += 1;
-                cur.totals.winsU1 += 1;
-              } else {
-                bucket.winsU2 += 1;
-                cur.totals.winsU2 += 1;
-              }
-            }
-
-            if (!cur.lastEndedAt || endedAt > cur.lastEndedAt) cur.lastEndedAt = endedAt;
-            oppAgg.set(key, cur);
-          }
-        }
-      }
+      const oppAgg = buildOpponentPairAggregates(
+        games,
+        pidToUid,
+        meanMs,
+        payload
+      );
 
       const uids = Object.keys(perUser);
-      if (!uids.length) return withCors(new Response("No linked players", { status: 200 }), req);
+      if (!uids.length)
+        return withCors(
+          new Response("No linked players", { status: 200 }),
+          req
+        );
 
       // ----------------------------
       // Elo ratings computation (background)
@@ -279,197 +149,29 @@ export default {
       // - Doubles chemistry is stored on friendEdges/{u1__u2}.chemistry.delta and updated with decay; requires reading current value once.
       // - Idempotency: per-user gate under users/{uid}/gates/elo:session:{organizer_session} to prevent double-apply.
 
-      const allLinkedUids = new Set();
-      for (const g of games) {
-        const aU = (Array.isArray(g.sideA) ? g.sideA : []).map((pid) => pidToUid.get(pid)).filter(Boolean);
-        const bU = (Array.isArray(g.sideB) ? g.sideB : []).map((pid) => pidToUid.get(pid)).filter(Boolean);
-        aU.forEach((u) => allLinkedUids.add(u));
-        bU.forEach((u) => allLinkedUids.add(u));
-      }
-
-      // Read current Elo state for involved users
-      const userElo = new Map(); // uid -> { singles:{R,K,matches}, doubles:{R,K,matches} }
-      {
-        const readPromises = Array.from(allLinkedUids).map(async (uid) => {
-          try {
-            const res = await fetch(`${baseUrl}/${userCol}/${uid}`, { headers: { authorization: `Bearer ${token}` } });
-            if (!res.ok) throw new Error(String(res.status));
-            const doc = await res.json();
-            const f = doc.fields || {};
-            const elo = jsonFromFields(f.elo) || {};
-            const singles = elo.singles || { R: 1500, K: 32, matches: 0 };
-            const doubles = elo.doubles || { R: 1500, K: 32, matches: 0 };
-            userElo.set(uid, {
-              singles: {
-                R: Number(singles.R ?? 1500),
-                K: Number(singles.K ?? 32),
-                matches: Number(singles.matches ?? 0),
-              },
-              doubles: {
-                R: Number(doubles.R ?? 1500),
-                K: Number(doubles.K ?? 32),
-                matches: Number(doubles.matches ?? 0),
-              },
-            });
-          } catch {
-            userElo.set(uid, {
-              singles: { R: 1500, K: 32, matches: 0 },
-              doubles: { R: 1500, K: 32, matches: 0 },
-            });
-          }
-        });
-        await Promise.all(readPromises);
-      }
-
-      // Chemistry cache for linked-linked pairs encountered (friendEdges)
-      const friendEdgeColName = isTest ? "friendEdges_test" : "friendEdges";
-      const chemistryByEdge = new Map(); // edgeKey -> { delta:number, lastPlayedAt?:string }
-      async function getChem(edgeKey) {
-        if (chemistryByEdge.has(edgeKey)) return chemistryByEdge.get(edgeKey);
-        try {
-          const res = await fetch(`${baseUrl}/${friendEdgeColName}/${edgeKey}`, { headers: { authorization: `Bearer ${token}` } });
-          if (!res.ok) throw new Error(String(res.status));
-          const doc = await res.json();
-          const f = doc.fields || {};
-          const chem = jsonFromFields(f.chemistry) || {};
-          const last = jsonFromFields(f.lastPlayedAt) || "";
-          const row = { delta: Number(chem.delta ?? 0), lastPlayedAt: String(last || "") };
-          chemistryByEdge.set(edgeKey, row);
-          return row;
-        } catch {
-          const row = { delta: 0, lastPlayedAt: "" };
-          chemistryByEdge.set(edgeKey, row);
-          return row;
-        }
-      }
-
-      // Elo compute
-      const updatedUsers = new Set();
-      const updatedPairs = new Set(); // edgeKeys whose chemistry changed
-      for (const g of games) {
-        const rawA = Array.isArray(g.sideA) ? g.sideA.length : 0;
-        const rawB = Array.isArray(g.sideB) ? g.sideB.length : 0;
-        const mode = rawA === 1 && rawB === 1 ? "singles" : "doubles";
-
-        // linked account uids per side
-        const sideA = (Array.isArray(g.sideA) ? g.sideA : []).map((pid) => pidToUid.get(pid)).filter(Boolean);
-        const sideB = (Array.isArray(g.sideB) ? g.sideB : []).map((pid) => pidToUid.get(pid)).filter(Boolean);
-        const linkedCount = sideA.length + sideB.length;
-        const teamALinked = sideA.length > 0;
-        const teamBLinked = sideB.length > 0;
-        if (!teamALinked && !teamBLinked) continue; // ignore 0 linked
-
-        // Trust weight (verification multiplier assumed 1.0 due to lack of confirmations in payload)
-        let wTrust;
-        if (teamALinked && teamBLinked && linkedCount === 4) wTrust = 1.0;
-        else if (teamALinked && teamBLinked) wTrust = 0.75;
-        else if (linkedCount === 1) wTrust = 0.25;
-        else wTrust = 0; // should not happen given earlier check
-        if (wTrust === 0) continue;
-
-        // Winner and points
-        const SA = g.winner === "A" ? 1 : g.winner === "B" ? 0 : 0.5; // draw rare; treat as 0.5
-        const pointsA = Number.isFinite(Number(g.scoreA)) ? Number(g.scoreA) : undefined;
-        const pointsB = Number.isFinite(Number(g.scoreB)) ? Number(g.scoreB) : undefined;
-        const fMov = Number.isFinite(pointsA) && Number.isFinite(pointsB) ? Math.min(1.2, Math.log(1 + Math.abs(pointsA - pointsB) / 8)) : 1.0;
-
-        // Build team strengths
-        function sumRatings(uids, ladder) {
-          let sum = 0;
-          for (const u of uids) sum += (userElo.get(u) || {})[ladder]?.R ?? 1500;
-          return sum;
-        }
-        function pairKey(u1, u2) { return u1 < u2 ? `${u1}__${u2}` : `${u2}__${u1}`; }
-
-        let TA = 0, TB = 0;
-        if (mode === "singles") {
-          // If one side has no linked (should not happen here), we would anchor at 1500
-          TA = sumRatings(sideA, "singles");
-          TB = sumRatings(sideB, "singles");
-        } else {
-          // doubles
-          // Each side base strength is sum of linked players' doubles ratings; add chemistry if both linked
-          TA = sumRatings(sideA, "doubles");
-          TB = sumRatings(sideB, "doubles");
-          if (sideA.length >= 2) {
-            const [ua, ub] = sideA.slice(0, 2);
-            const ek = pairKey(ua, ub);
-            const chem = await getChem(ek);
-            TA += chem.delta || 0;
-          } else if (sideA.length === 1) {
-            // Assume a guest teammate at baseline 1500
-            TA += 1500;
-          }
-          if (sideB.length >= 2) {
-            const [va, vb] = sideB.slice(0, 2);
-            const ek = pairKey(va, vb);
-            const chem = await getChem(ek);
-            TB += chem.delta || 0;
-          } else if (sideB.length === 1) {
-            TB += 1500;
-          }
-        }
-
-        // If a side has no linked player, anchor at 1500 to compute E
-        if (teamALinked && !teamBLinked) TB = mode === "singles" ? 1500 : 3000; // two guests 1500+1500
-        if (teamBLinked && !teamALinked) TA = mode === "singles" ? 1500 : 3000;
-
-        const EA = 1 / (1 + Math.pow(10, (TB - TA) / 400));
-        const eventWeight = 1.0;
-
-        // K schedule: average per side, then average both sides
-        function avgK(uids, ladder) {
-          if (!uids.length) return 32;
-          let sum = 0, n = 0;
-          for (const u of uids) { const pr = (userElo.get(u) || {})[ladder]; if (pr) { sum += pr.K || 32; n++; } }
-          return n ? sum / n : 32;
-        }
-        const K_A = avgK(sideA, mode);
-        const K_B = avgK(sideB, mode);
-        const K_eff = (K_A + K_B) / 2;
-
-        const delta = K_eff * wTrust * eventWeight * fMov * (SA - EA);
-
-        // Apply to linked players only
-        function applyDelta(uids, ladder, sgn) {
-          for (const u of uids) {
-            const pr = (userElo.get(u) || {})[ladder];
-            if (!pr) continue;
-            pr.R += sgn * delta;
-            pr.matches = (pr.matches || 0) + 1;
-            if (pr.matches >= 20) pr.K = 20;
-            userElo.set(u, { ...userElo.get(u), [ladder]: pr });
-            updatedUsers.add(u);
-          }
-        }
-        if (teamALinked) applyDelta(sideA, mode, +1);
-        if (teamBLinked) applyDelta(sideB, mode, -1);
-
-        // Chemistry update for doubles: linked-linked pairs that actually partnered
-        if (mode === "doubles") {
-          const endedAt = g.endedAt || payload.endedAt || new Date().toISOString();
-          const residualA = SA - EA;
-          const residualB = -residualA;
-          async function updChem(uids, residual) {
-            if (uids.length < 2) return;
-            const [x, y] = uids.slice(0, 2).sort();
-            const ek = `${x}__${y}`;
-            const cur = await getChem(ek);
-            const months = monthsSince(cur.lastPlayedAt, endedAt) || 0;
-            const decay = 1 - 0.01 * months; // CHEM_DECAY_MONTHLY=0.01
-            const next = Math.max(-70, Math.min(70, (isFinite(decay) ? decay : 1) * (cur.delta || 0) + 6 * residual));
-            chemistryByEdge.set(ek, { delta: next, lastPlayedAt: endedAt });
-            updatedPairs.add(ek);
-          }
-          if (sideA.length >= 2) await updChem(sideA, residualA);
-          if (sideB.length >= 2) await updChem(sideB, residualB);
-        }
-      }
+      const {
+        userElo,
+        updatedUsers,
+        chemistryByEdge,
+        updatedPairs,
+        allLinkedUids,
+      } = await computeEloAndChemistry({
+        games,
+        pidToUid,
+        isTest,
+        env,
+        baseUrl,
+        userCol,
+        token,
+        payload,
+      });
 
       console.log("uids", uids);
       if (dryRun) {
         const sessionKey = `${organizerUid}_${sessionId}`;
-        const endMonth = monthKey(payload.endedAt || (games[games.length - 1] || {}).endedAt);
+        const endMonth = monthKey(
+          payload.endedAt || (games[games.length - 1] || {}).endedAt
+        );
         const summary = Object.fromEntries(
           Object.entries(perUser).map(([uid, v]) => [
             uid,
@@ -483,389 +185,175 @@ export default {
           ])
         );
         const pairs = Array.from(pairAgg.values());
-        const opp = Array.from(oppAgg.values())
-        const eloPreview = Object.fromEntries(Array.from(allLinkedUids).map((u) => [u, userElo.get(u)]));
-        const chemPreview = Object.fromEntries(Array.from(chemistryByEdge.entries()));
+        const opp = Array.from(oppAgg.values());
+        const eloPreview = Object.fromEntries(
+          Array.from(allLinkedUids).map((u) => [u, userElo.get(u)])
+        );
+        const chemPreview = Object.fromEntries(
+          Array.from(chemistryByEdge.entries())
+        );
         return withCors(
-          new Response(JSON.stringify({ sessionKey, endMonth, users: summary, pairs, opp, eloPreview, chemPreview }, null, 2), {
-            status: 200,
-            headers: { "content-type": "application/json" },
-          }),
+          new Response(
+            JSON.stringify(
+              {
+                sessionKey,
+                endMonth,
+                users: summary,
+                pairs,
+                opp,
+                eloPreview,
+                chemPreview,
+              },
+              null,
+              2
+            ),
+            {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            }
+          ),
           req
         );
       }
 
       const sessionKey = `${organizerUid}_${sessionId}`;
-      const endMonth = monthKey(payload.endedAt || (games[games.length - 1] || {}).endedAt);
+      const endMonth = monthKey(
+        payload.endedAt || (games[games.length - 1] || {}).endedAt
+      );
       const rootCol = isTest ? "userStats_test" : "userStats";
 
       // ----------------------------
       // Per-user writes (granular gates; split into two commits per user)
       // ----------------------------
-      for (const uid of uids) {
-        const agg       = perUser[uid];
-        const monthPath = `${rootCol}/${uid}/monthly/${endMonth}`;
-        const sumPath   = `${rootCol}/${uid}`;
+      await commitPerUserStats({
+        uids,
+        perUser,
+        sessionKey,
+        endMonth,
+        rootCol,
+        env,
+        token,
+      });
 
-        // A) MONTHLY task (gate + monthly upserts + increments)
-        {
-          const monthlyTaskKey = `stats:monthly:${endMonth}:${uid}:${sessionKey}`;
-          const writes = [];
-
-          // granular idempotency gate
-          writes.push(makeUpdatePrecondCreate(
-            `${rootCol}/${uid}/gates/${monthlyTaskKey}`,
-            { taskKey: monthlyTaskKey, sessionKey, scope: { uid, month: endMonth }, workerVersion: WORKER_VERSION, createdAt: { __ts: true } },
-            env
-          ));
-
-          // mark appliedSessions.{sessionKey} = true and ensure doc exists
-          writes.push(makeUpdateMaskWrite(
-            monthPath,
-            { month: endMonth, appliedSessions: { [sessionKey]: true } },
-            ["month", maskPath(`appliedSessions.${sessionKey}`)],
-            env
-          ));
-
-          // increment monthly counters
-          writes.push(makeTransformWrite(monthPath, [
-            inc("singles.games",       agg.singles.games),
-            inc("singles.wins",        agg.singles.wins),
-            inc("singles.durationMin", agg.singles.durationMin),
-            inc("doubles.games",       agg.doubles.games),
-            inc("doubles.wins",        agg.doubles.wins),
-            inc("doubles.durationMin", agg.doubles.durationMin),
-            inc("totals.games",        agg.totals.games),
-            inc("totals.wins",         agg.totals.wins),
-            inc("totals.durationMin",  agg.totals.durationMin),
-            reqTime("updatedAt"),
-          ], env));
-
-          try { await commitWrites(token, env, writes); }
-          catch (e) { if (!isAlreadyApplied(e)) console.log(e); }
-        }
-
-        // B) SUMMARY task (gate + summary upserts + increments + recentForm append)
-        {
-          const summaryTaskKey = `stats:summary:${uid}:${sessionKey}`;
-          const writes = [];
-
-          // granular idempotency gate
-          writes.push(makeUpdatePrecondCreate(
-            `${rootCol}/${uid}/gates/${summaryTaskKey}`,
-            { taskKey: summaryTaskKey, sessionKey, scope: { uid }, workerVersion: WORKER_VERSION, createdAt: { __ts: true } },
-            env
-          ));
-
-          // ensure summary doc exists (uid field)
-          writes.push(makeUpdateMaskWrite(
-            sumPath,
-            { uid },
-            ["uid"],
-            env
-          ));
-
-          // increment summary counters & append recent slice
-          writes.push(makeTransformWrite(sumPath, [
-            // overall totals under totals.*
-            inc("totals.games",        agg.totals.games),
-            inc("totals.wins",         agg.totals.wins),
-            inc("totals.durationMin",  agg.totals.durationMin),
-
-            // nest singles/doubles under totals.*
-            inc("totals.singles.games",       agg.singles.games),
-            inc("totals.singles.wins",        agg.singles.wins),
-            inc("totals.singles.durationMin", agg.singles.durationMin),
-            inc("totals.doubles.games",       agg.doubles.games),
-            inc("totals.doubles.wins",        agg.doubles.wins),
-            inc("totals.doubles.durationMin", agg.doubles.durationMin),
-
-            arrayUnion("recentForm",   agg.recent.slice().reverse()), // sort on read; or migrate to feed later
-            reqTime("updatedAt"),
-          ], env));
-
-          try { await commitWrites(token, env, writes); }
-          catch (e) { if (!isAlreadyApplied(e)) console.log(e); }
-        }
-      }
-
-      // Persist Elo changes per user (idempotent with gate)
-      for (const uid of updatedUsers) {
-        const pr = userElo.get(uid);
-        if (!pr) continue;
-        const writes = [];
-        const eloTaskKey = `elo:session:${organizerUid}_${sessionId}`;
-        writes.push(makeUpdatePrecondCreate(
-          `${userCol}/${uid}/gates/${eloTaskKey}`,
-          { taskKey: eloTaskKey, sessionKey: `${organizerUid}_${sessionId}`, scope: { uid }, workerVersion: WORKER_VERSION, createdAt: { __ts: true } },
-          env
-        ));
-        writes.push(makeUpdateMaskWrite(
-          `${userCol}/${uid}`,
-          { elo: { singles: pr.singles, doubles: pr.doubles, updatedAt: { __ts: true } } },
-          ["elo"],
-          env
-        ));
-        try { await commitWrites(token, env, writes); } catch (e) { if (!isAlreadyApplied(e)) console.log(e); }
-      }
+      await commitEloWrites({
+        updatedUsers,
+        userElo,
+        userCol,
+        organizerUid,
+        sessionId,
+        env,
+        token,
+      });
 
       // ----------------------------
       // Friendship graph + Global index (granular gates; one commit per edge)
       // ----------------------------
-      const friendEdgeCol = isTest ? "friendEdges_test" : "friendEdges";
-      for (const [edgeKey, agg] of pairAgg) {
-        const { u1, u2, games, wins, durationMin, lastEndedAt } = agg;
+      await commitFriendEdgesAndMirrors({
+        pairAgg,
+        endMonth,
+        rootCol,
+        isTest,
+        sessionKey,
+        env,
+        token,
+        chemistryByEdge,
+      });
 
-        const writes = [];
+      // Opponent edges and mirrors
+      await commitOpponentEdgesAndMirrors({
+        oppAgg,
+        endMonth,
+        rootCol,
+        isTest,
+        sessionKey,
+        env,
+        token,
+      });
 
-        // global edge task gates (you can rely on these to protect mirrors too)
-        // const globalTaskKey  = `friends:global:${edgeKey}`;
-        // const monthlyTaskKey = `friends:monthly:${endMonth}:${edgeKey}`;
-
-        // writes.push(makeUpdatePrecondCreate(
-        //   `${friendEdgeCol}/${edgeKey}/gates/${globalTaskKey}`,
-        //   { taskKey: globalTaskKey, sessionKey, scope: { edgeKey }, workerVersion: WORKER_VERSION, createdAt: { __ts: true } },
-        //   env
-        // ));
-        // writes.push(makeUpdatePrecondCreate(
-        //   `${friendEdgeCol}/${edgeKey}/gates/${monthlyTaskKey}`,
-        //   { taskKey: monthlyTaskKey, sessionKey, scope: { edgeKey, month: endMonth }, workerVersion: WORKER_VERSION, createdAt: { __ts: true } },
-        //   env
-        // ));
-
-        writes.push(makeUpdatePrecondCreate(
-          `${friendEdgeCol}/${edgeKey}/bySession/${sessionKey}`,
-          { sessionKey, month: endMonth, createdAt: { __ts: true } },
-          env
-        ));
-
-        // Authoritative global edge doc
-        writes.push(makeUpdateMaskWrite(
-          `${friendEdgeCol}/${edgeKey}`,
-          { edgeKey, participants: [u1, u2], lastPlayedAt: { timestampValue: lastEndedAt } },
-          ["edgeKey", "participants", "lastPlayedAt"],
-          env
-        ));
-        writes.push(makeTransformWrite(`${friendEdgeCol}/${edgeKey}`, [
-          inc("together.games",       games),
-          inc("together.wins",        wins),
-          inc("together.durationMin", durationMin),
-          reqTime("updatedAt"),
-        ], env));
-
-        // If chemistry was updated for this edge during Elo, persist it here as well
-        if (chemistryByEdge.has(edgeKey)) {
-          const chem = chemistryByEdge.get(edgeKey);
-          writes.push(makeUpdateMaskWrite(
-            `${friendEdgeCol}/${edgeKey}`,
-            { chemistry: { delta: Number(chem.delta || 0), updatedAt: { __ts: true } } },
-            ["chemistry"],
-            env
-          ));
-        }
-
-        // Global monthly edge doc
-        writes.push(makeUpdateMaskWrite(
-          `${friendEdgeCol}/${edgeKey}/monthly/${endMonth}`,
-          { month: endMonth, appliedSessions: { [sessionKey]: true }, lastPlayedAt: { timestampValue: lastEndedAt } },
-          ["month", maskPath(`appliedSessions.${sessionKey}`), "lastPlayedAt"],
-          env
-        ));
-        writes.push(makeTransformWrite(`${friendEdgeCol}/${edgeKey}/monthly/${endMonth}`, [
-          inc("together.games",       games),
-          inc("together.wins",        wins),
-          inc("together.durationMin", durationMin),
-          reqTime("updatedAt"),
-        ], env));
-
-        // Per-user adjacency mirrors (fast reads by path)
-        writes.push(makeUpdateMaskWrite(
-          `${rootCol}/${u1}/friends/${u2}`,
-          { otherUid: u2, edgeKey, lastPlayedAt: { timestampValue: lastEndedAt } },
-          ["otherUid", "edgeKey", "lastPlayedAt"],
-          env
-        ));
-        writes.push(makeUpdateMaskWrite(
-          `${rootCol}/${u2}/friends/${u1}`,
-          { otherUid: u1, edgeKey, lastPlayedAt: { timestampValue: lastEndedAt } },
-          ["otherUid", "edgeKey", "lastPlayedAt"],
-          env
-        ));
-        writes.push(makeTransformWrite(`${rootCol}/${u1}/friends/${u2}`, [
-          inc("together.games",       games),
-          inc("together.wins",        wins),
-          inc("together.durationMin", durationMin),
-          reqTime("updatedAt"),
-        ], env));
-        writes.push(makeTransformWrite(`${rootCol}/${u2}/friends/${u1}`, [
-          inc("together.games",       games),
-          inc("together.wins",        wins),
-          inc("together.durationMin", durationMin),
-          reqTime("updatedAt"),
-        ], env));
-
-        try { await commitWrites(token, env, writes); }
-        catch (e) { if (!isAlreadyApplied(e)) continue; else console.log(e); }
-      }
-
-      const opponentEdgeCol = isTest ? "opponentEdges_test" : "opponentEdges";
-      for (const [pairKey, agg] of oppAgg) {
-        const { u1, u2, singles, doubles, totals, lastEndedAt } = agg;
-
-        const writes = [];
-
-        // Per-session gate (create-only). Using bySession prevents blocking later sessions.
-        writes.push(makeUpdatePrecondCreate(
-          `${opponentEdgeCol}/${pairKey}/bySession/${sessionKey}`,
-          { sessionKey, month: endMonth, createdAt: { __ts: true } },
-          env
-        ));
-
-        // 1) Global opponent edge doc (authoritative)
-        writes.push(makeUpdateMaskWrite(
-          `${opponentEdgeCol}/${pairKey}`,
-          { edgeKey: pairKey, participants: [u1, u2], lastPlayedAt: { timestampValue: lastEndedAt } },
-          ["edgeKey", "participants", "lastPlayedAt"],
-          env
-        ));
-        writes.push(makeTransformWrite(`${opponentEdgeCol}/${pairKey}`, [
-          // singles
-          inc("head.singles.games",        singles.games),
-          inc("head.singles.winsU1",       singles.winsU1),
-          inc("head.singles.winsU2",       singles.winsU2),
-          inc("head.singles.durationMin",  singles.durationMin),
-          // doubles
-          inc("head.doubles.games",        doubles.games),
-          inc("head.doubles.winsU1",       doubles.winsU1),
-          inc("head.doubles.winsU2",       doubles.winsU2),
-          inc("head.doubles.durationMin",  doubles.durationMin),
-          // totals
-          inc("head.totals.games",         totals.games),
-          inc("head.totals.winsU1",        totals.winsU1),
-          inc("head.totals.winsU2",        totals.winsU2),
-          inc("head.totals.durationMin",   totals.durationMin),
-          reqTime("updatedAt"),
-        ], env));
-
-        // 2) Global monthly opponent edge doc
-        writes.push(makeUpdateMaskWrite(
-          `${opponentEdgeCol}/${pairKey}/monthly/${endMonth}`,
-          { month: endMonth, lastPlayedAt: { timestampValue: lastEndedAt }, appliedSessions: { [sessionKey]: true } },
-          ["month", "lastPlayedAt", maskPath(`appliedSessions.${sessionKey}`)],
-          env
-        ));
-        writes.push(makeTransformWrite(`${opponentEdgeCol}/${pairKey}/monthly/${endMonth}`, [
-          // singles
-          inc("head.singles.games",        singles.games),
-          inc("head.singles.winsU1",       singles.winsU1),
-          inc("head.singles.winsU2",       singles.winsU2),
-          inc("head.singles.durationMin",  singles.durationMin),
-          // doubles
-          inc("head.doubles.games",        doubles.games),
-          inc("head.doubles.winsU1",       doubles.winsU1),
-          inc("head.doubles.winsU2",       doubles.winsU2),
-          inc("head.doubles.durationMin",  doubles.durationMin),
-          // totals
-          inc("head.totals.games",         totals.games),
-          inc("head.totals.winsU1",        totals.winsU1),
-          inc("head.totals.winsU2",        totals.winsU2),
-          inc("head.totals.durationMin",   totals.durationMin),
-          reqTime("updatedAt"),
-        ], env));
-
-        // 3) Per-user opponent mirrors (fast profile reads by path)
-        // u1's doc vs u2
-        writes.push(makeUpdateMaskWrite(
-          `${rootCol}/${u1}/opponents/${u2}`,
-          { otherUid: u2, edgeKey: pairKey, lastPlayedAt: { timestampValue: lastEndedAt } },
-          ["otherUid", "edgeKey", "lastPlayedAt"],
-          env
-        ));
-        writes.push(makeTransformWrite(`${rootCol}/${u1}/opponents/${u2}`, [
-          // singles
-          inc("against.singles.games",       singles.games),
-          inc("against.singles.wins",        singles.winsU1),
-          inc("against.singles.losses",      singles.winsU2),
-          inc("against.singles.durationMin", singles.durationMin),
-          // doubles
-          inc("against.doubles.games",       doubles.games),
-          inc("against.doubles.wins",        doubles.winsU1),
-          inc("against.doubles.losses",      doubles.winsU2),
-          inc("against.doubles.durationMin", doubles.durationMin),
-          // totals
-          inc("against.totals.games",        totals.games),
-          inc("against.totals.wins",         totals.winsU1),
-          inc("against.totals.losses",       totals.winsU2),
-          inc("against.totals.durationMin",  totals.durationMin),
-          reqTime("updatedAt"),
-        ], env));
-
-        // u2's doc vs u1 (flip wins/losses)
-        writes.push(makeUpdateMaskWrite(
-          `${rootCol}/${u2}/opponents/${u1}`,
-          { otherUid: u1, edgeKey: pairKey, lastPlayedAt: { timestampValue: lastEndedAt } },
-          ["otherUid", "edgeKey", "lastPlayedAt"],
-          env
-        ));
-        writes.push(makeTransformWrite(`${rootCol}/${u2}/opponents/${u1}`, [
-          // singles
-          inc("against.singles.games",       singles.games),
-          inc("against.singles.wins",        singles.winsU2),
-          inc("against.singles.losses",      singles.winsU1),
-          inc("against.singles.durationMin", singles.durationMin),
-          // doubles
-          inc("against.doubles.games",       doubles.games),
-          inc("against.doubles.wins",        doubles.winsU2),
-          inc("against.doubles.losses",      doubles.winsU1),
-          inc("against.doubles.durationMin", doubles.durationMin),
-          // totals
-          inc("against.totals.games",        totals.games),
-          inc("against.totals.wins",         totals.winsU2),
-          inc("against.totals.losses",       totals.winsU1),
-          inc("against.totals.durationMin",  totals.durationMin),
-          reqTime("updatedAt"),
-        ], env));
-
+      // ----------------------------
+      // Club-scoped stats (in addition to global)
+      // ----------------------------
+      const clubId =
+        typeof payload?.clubId === "string" && payload.clubId
+          ? String(payload.clubId)
+          : "";
+      if (clubId) {
         try {
-          await commitWrites(token, env, writes);
+          const clubsCol = isTest ? "clubs_test" : "clubs";
+          const members = await fetchClubMembers({
+            clubId,
+            isTest,
+            baseUrl,
+            token,
+          });
+          if (members && members.size) {
+            // Per-user writes for club members only
+            await commitClubPerUserStats({
+              uids,
+              perUser,
+              memberSet: members,
+              clubsCol,
+              clubId,
+              sessionKey,
+              endMonth,
+              env,
+              token,
+            });
+
+            // Club friend edges and mirrors: only if both users are members
+            await commitClubFriendEdgesAndMirrors({
+              pairAgg,
+              memberSet: members,
+              clubsCol,
+              clubId,
+              endMonth,
+              sessionKey,
+              env,
+              token,
+              chemistryByEdge,
+            });
+
+            // Club opponent edges and mirrors: only if both users are members
+            await commitClubOpponentEdgesAndMirrors({
+              oppAgg,
+              memberSet: members,
+              clubsCol,
+              clubId,
+              endMonth,
+              sessionKey,
+              env,
+              token,
+            });
+          }
         } catch (e) {
-          // If the bySession gate exists, this session already applied for this pair; skip.
-          if (isAlreadyApplied(e)) continue;
-          console.log(e)
+          try {
+            console.log("club-stats error", e);
+          } catch {}
         }
       }
 
-      console.log("notifying uids", uids);
-      for (const uid of uids) {
-        const ev = {
-          idempotencyKey: `stats:${organizerUid}:${sessionId}:${uid}`,
-          type: "stats_update",
-          title: "Session Ended. View your stats now",
-          url: `/session/${sessionId}?u=${uid}`,     // deep link your PWA handles
-          occurredAt: new Date().toISOString()
-        };
-        // Fire-and-forget; DO alarm will aggregate and send
-        try {
-          const res = await enqueueEvent(env, uid, ev)
-          console.log("enqueueEvent res", res);
-        } catch (e) {
-          console.log("enqueueEvent error", e);
-        }
-      }
+      await notifyStatsUpdate({ uids, organizerUid, sessionId, env });
 
       return withCors(new Response("OK"), req);
     } catch (e) {
       console.log("error", e);
-      return withCors(new Response(`Error: ${e?.message || "Internal Error"}`, { status: 500 }), req);
+      return withCors(
+        new Response(`Error: ${e?.message || "Internal Error"}`, {
+          status: 500,
+        }),
+        req
+      );
     }
-  }
+  },
 };
 
 // ---------- Helpers (unchanged unless noted) ----------
 
 function fsBases(projectId, db) {
   return {
-    url: `https://firestore.googleapis.com/v1/projects/${projectId}/databases/${encodeURIComponent(db)}/documents`,
+    url: `https://firestore.googleapis.com/v1/projects/${projectId}/databases/${encodeURIComponent(
+      db
+    )}/documents`,
     name: `projects/${projectId}/databases/${db}/documents`,
   };
 }
@@ -886,15 +374,25 @@ async function getAccessToken(env) {
   const encPayload = b64urlFromJSON(claim);
   const data = `${encHeader}.${encPayload}`;
   const key = await importPkcs8(env.GOOGLE_SA_PRIVATE_KEY, "RSASSA-PKCS1-v1_5");
-  const sigBuf = await crypto.subtle.sign({ name: "RSASSA-PKCS1-v1_5" }, key, new TextEncoder().encode(data));
-  const signature = b64urlFromString(String.fromCharCode(...new Uint8Array(sigBuf)));
+  const sigBuf = await crypto.subtle.sign(
+    { name: "RSASSA-PKCS1-v1_5" },
+    key,
+    new TextEncoder().encode(data)
+  );
+  const signature = b64urlFromString(
+    String.fromCharCode(...new Uint8Array(sigBuf))
+  );
   const jwt = `${data}.${signature}`;
   const res = await fetch(G_AUTH, {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer", assertion: jwt }),
+    body: new URLSearchParams({
+      grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
+      assertion: jwt,
+    }),
   });
-  if (!res.ok) throw new Error(`token error: ${res.status} ${await res.text()}`);
+  if (!res.ok)
+    throw new Error(`token error: ${res.status} ${await res.text()}`);
   const t = await res.json();
   return t.access_token;
 }
@@ -910,17 +408,27 @@ function b64urlFromJSON(obj) {
 function normalizePem(pemMaybeEscaped) {
   const pem = pemMaybeEscaped.replace(/\\n/g, "\n").trim();
   if (/-----BEGIN RSA PRIVATE KEY-----/.test(pem)) {
-    throw new Error("Got PKCS#1 (BEGIN RSA PRIVATE KEY). Use PKCS#8 (BEGIN PRIVATE KEY). Convert or rotate key.");
+    throw new Error(
+      "Got PKCS#1 (BEGIN RSA PRIVATE KEY). Use PKCS#8 (BEGIN PRIVATE KEY). Convert or rotate key."
+    );
   }
   if (!/-----BEGIN PRIVATE KEY-----/.test(pem)) {
-    throw new Error("Missing 'BEGIN PRIVATE KEY' header; check the secret value.");
+    throw new Error(
+      "Missing 'BEGIN PRIVATE KEY' header; check the secret value."
+    );
   }
   return pem;
 }
 
 async function importPkcs8(pem, algName) {
   const keyData = pemToArrayBuffer(normalizePem(pem));
-  return crypto.subtle.importKey("pkcs8", keyData, { name: algName, hash: "SHA-256" }, false, ["sign"]);
+  return crypto.subtle.importKey(
+    "pkcs8",
+    keyData,
+    { name: algName, hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
 }
 function pemToArrayBuffer(pem) {
   const b64 = pem.replace(/-----[^-]+-----/g, "").replace(/\s+/g, "");
@@ -937,7 +445,9 @@ function monthKey(iso) {
   return `${y}-${m}`;
 }
 function meanDurationMs(games) {
-  const durs = games.map(g => (g?.durationMs && g.durationMs > 0 ? g.durationMs : NaN)).filter(Number.isFinite);
+  const durs = games
+    .map((g) => (g?.durationMs && g.durationMs > 0 ? g.durationMs : NaN))
+    .filter(Number.isFinite);
   if (!durs.length) return 10 * 60 * 1000;
   return durs.reduce((a, b) => a + b, 0) / durs.length;
 }
@@ -971,21 +481,30 @@ function expandTimestamps(obj) {
   if (obj && obj.__ts) return { timestampValue: new Date().toISOString() };
   if (Array.isArray(obj)) return obj.map(expandTimestamps);
   if (obj && typeof obj === "object") {
-    const out = {}; for (const k in obj) out[k] = expandTimestamps(obj[k]); return out;
+    const out = {};
+    for (const k in obj) out[k] = expandTimestamps(obj[k]);
+    return out;
   }
   return obj;
 }
 function fieldsFromJson(obj) {
   if (obj === null || obj === undefined) return { nullValue: null };
   const t = typeof obj;
-  if (t === "string")  return { stringValue: obj };
-  if (t === "number")  return Number.isInteger(obj) ? { integerValue: String(obj) } : { doubleValue: obj };
+  if (t === "string") return { stringValue: obj };
+  if (t === "number")
+    return Number.isInteger(obj)
+      ? { integerValue: String(obj) }
+      : { doubleValue: obj };
   if (t === "boolean") return { booleanValue: obj };
-  if (Array.isArray(obj)) return { arrayValue: { values: obj.map(fieldsFromJson) } };
+  if (Array.isArray(obj))
+    return { arrayValue: { values: obj.map(fieldsFromJson) } };
   if (obj && typeof obj === "object") {
     if ("timestampValue" in obj) return obj;
     const fields = {};
-    for (const k in obj) { const v = obj[k]; if (v !== undefined) fields[k] = fieldsFromJson(v); }
+    for (const k in obj) {
+      const v = obj[k];
+      if (v !== undefined) fields[k] = fieldsFromJson(v);
+    }
     return { mapValue: { fields } };
   }
   return { stringValue: String(obj) };
@@ -1003,12 +522,18 @@ function maskPath(p) {
 function makeUpdatePrecondCreate(path, data, env) {
   const { name: nameBase } = fsBases(env.GCP_PROJECT_ID, env.FIRESTORE_DB);
   const fields = fieldsFromJson(expandTimestamps(data)).mapValue.fields;
-  return { update: { name: `${nameBase}/${path}`, fields }, currentDocument: { exists: false } };
+  return {
+    update: { name: `${nameBase}/${path}`, fields },
+    currentDocument: { exists: false },
+  };
 }
 function makeUpdateMaskWrite(path, data, fieldPaths, env) {
   const { name: nameBase } = fsBases(env.GCP_PROJECT_ID, env.FIRESTORE_DB);
   const fields = fieldsFromJson(expandTimestamps(data)).mapValue.fields;
-  return { update: { name: `${nameBase}/${path}`, fields }, updateMask: { fieldPaths } };
+  return {
+    update: { name: `${nameBase}/${path}`, fields },
+    updateMask: { fieldPaths },
+  };
 }
 function makeTransformWrite(path, fieldTransforms, env) {
   const { name: nameBase } = fsBases(env.GCP_PROJECT_ID, env.FIRESTORE_DB);
@@ -1021,19 +546,31 @@ function reqTime(fieldPath) {
   return { fieldPath, setToServerValue: "REQUEST_TIME" };
 }
 function arrayUnion(fieldPath, jsValues) {
-  return { fieldPath, appendMissingElements: { values: jsValues.map(fieldsFromJson) } };
+  return {
+    fieldPath,
+    appendMissingElements: { values: jsValues.map(fieldsFromJson) },
+  };
 }
 async function commitWrites(token, env, writes) {
   const { url: baseUrl } = fsBases(env.GCP_PROJECT_ID, env.FIRESTORE_DB);
   const res = await fetch(`${baseUrl}:commit`, {
     method: "POST",
-    headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+    headers: {
+      authorization: `Bearer ${token}`,
+      "content-type": "application/json",
+    },
     body: JSON.stringify({ writes }),
   });
   if (!res.ok) {
     const text = await res.text();
     let msg = text;
-    try { const j = JSON.parse(text); if (j?.error) msg = `${j.error.status||""} ${j.error.code||""} — ${j.error.message||""}`; } catch {}
+    try {
+      const j = JSON.parse(text);
+      if (j?.error)
+        msg = `${j.error.status || ""} ${j.error.code || ""} — ${
+          j.error.message || ""
+        }`;
+    } catch {}
     throw new Error(`commit failed: ${res.status} ${msg}`);
   }
 }
@@ -1042,7 +579,10 @@ function isAlreadyApplied(e) {
 }
 
 // CORS
-const ALLOW_ORIGINS = new Set(["http://localhost:3000","https://bm25r.codingcrayons.com"]);
+const ALLOW_ORIGINS = new Set([
+  "http://localhost:3000",
+  "https://bm25r.codingcrayons.com",
+]);
 function corsHeaders(req, { credentials = false } = {}) {
   const origin = req.headers.get("Origin") || "";
   const allowOrigin = ALLOW_ORIGINS.has(origin) ? origin : "";
@@ -1050,7 +590,8 @@ function corsHeaders(req, { credentials = false } = {}) {
   const acrm = req.headers.get("Access-Control-Request-Method") || "";
   const h = new Headers();
   if (allowOrigin) h.set("Access-Control-Allow-Origin", allowOrigin);
-  if (credentials && allowOrigin) h.set("Access-Control-Allow-Credentials", "true");
+  if (credentials && allowOrigin)
+    h.set("Access-Control-Allow-Credentials", "true");
   h.set("Access-Control-Allow-Methods", acrm || "GET,POST,OPTIONS");
   h.set("Access-Control-Allow-Headers", acrh || "Content-Type, Authorization");
   h.set("Access-Control-Max-Age", "86400");
@@ -1067,15 +608,15 @@ function withCors(resp, req, opts) {
 }
 
 async function enqueueEvent(env, userId, ev) {
-  const id   = env.MAILBOX.idFromName(userId);
+  const id = env.MAILBOX.idFromName(userId);
   const stub = env.MAILBOX.get(id);
   console.log("enqueueEvent", userId, ev);
   const res = await stub.fetch("https://do/push/enqueue", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ userId, events: [ev] })
+    body: JSON.stringify({ userId, events: [ev] }),
   });
-  return res
+  return res;
 }
 
 export class NotificationMailbox {
@@ -1089,7 +630,8 @@ export class NotificationMailbox {
     if (req.method === "POST" && url.pathname.endsWith("/push/enqueue")) {
       const { userId, events } = await req.json();
 
-      if (!userId || !Array.isArray(events) || !events.length) return new Response("bad", { status: 400 });
+      if (!userId || !Array.isArray(events) || !events.length)
+        return new Response("bad", { status: 400 });
 
       // Persist the app userId so alarm() can look up FCM tokens correctly
       try {
@@ -1099,7 +641,7 @@ export class NotificationMailbox {
 
       // Load existing queue
       const queue = (await this.state.storage.get("q")) || [];
-      const seen  = new Set(queue.map((e) => e.idempotencyKey));
+      const seen = new Set(queue.map((e) => e.idempotencyKey));
       for (const e of events) {
         if (!e?.idempotencyKey) continue;
         if (seen.has(e.idempotencyKey)) continue;
@@ -1108,7 +650,7 @@ export class NotificationMailbox {
           type: e.type || "event",
           title: e.title || "Update",
           url: e.url || "/",
-          occurredAt: e.occurredAt || new Date().toISOString()
+          occurredAt: e.occurredAt || new Date().toISOString(),
         });
       }
       await this.state.storage.put("q", queue);
@@ -1134,7 +676,11 @@ export class NotificationMailbox {
     if (!queue.length) return;
 
     // Rate limiting state
-    let rate = (await this.state.storage.get("rate")) || { lastSentAt: 0, day: dayKey(), count: 0 };
+    let rate = (await this.state.storage.get("rate")) || {
+      lastSentAt: 0,
+      day: dayKey(),
+      count: 0,
+    };
     const now = Date.now();
     const today = dayKey();
     if (rate.day !== today) rate = { lastSentAt: 0, day: today, count: 0 };
@@ -1170,11 +716,11 @@ export class NotificationMailbox {
     let title, body, url;
     if (coalesced.length === 1) {
       title = coalesced[0].title || "Update";
-      body  = "Tap to view";
-      url   = coalesced[0].url || "/";
+      body = "Tap to view";
+      url = coalesced[0].url || "/";
     } else {
       title = "You have updates";
-      body  = `${coalesced.length} new items • Tap to review`;
+      body = `${coalesced.length} new items • Tap to review`;
       // Route to an inbox page that shows items since the oldest occurredAt
       const since = encodeURIComponent(coalesced[0].occurredAt);
       url = `/inbox?since=${since}`;
@@ -1188,13 +734,32 @@ export class NotificationMailbox {
       await this.state.storage.put("alarmAt", when);
       return;
     }
-    const fsToken = await getAccessTokenScoped(this.env, "https://www.googleapis.com/auth/datastore");
+    const fsToken = await getAccessTokenScoped(
+      this.env,
+      "https://www.googleapis.com/auth/datastore"
+    );
     const tokens = await listUserFcmTokens(fsToken, this.env, userId, true);
-    try { console.log("[DO alarm] uid=", userId, "items=", coalesced.length, "tokens=", tokens.length); } catch {}
+    try {
+      console.log(
+        "[DO alarm] uid=",
+        userId,
+        "items=",
+        coalesced.length,
+        "tokens=",
+        tokens.length
+      );
+    } catch {}
 
     if (tokens.length) {
-      const fcmToken = await getAccessTokenScoped(this.env, "https://www.googleapis.com/auth/firebase.messaging");
-      const sendResults = await sendFcmToMany(this.env, fcmToken, tokens, { title, body, url });
+      const fcmToken = await getAccessTokenScoped(
+        this.env,
+        "https://www.googleapis.com/auth/firebase.messaging"
+      );
+      const sendResults = await sendFcmToMany(this.env, fcmToken, tokens, {
+        title,
+        body,
+        url,
+      });
 
       // (Optional) remove invalid tokens from Firestore using fsToken + document paths from sendResults.removable
       // keep minimal for now
@@ -1205,8 +770,8 @@ export class NotificationMailbox {
         await this.state.storage.put("alarmAt", when);
         return;
       }
-    } 
-    
+    }
+
     // else {
     //   // No devices registered; keep queue and retry later
     //   const when = Date.now() + MIN_INTERVAL_MS;
@@ -1244,7 +809,7 @@ async function listUserFcmTokens(accessToken, env, uid, isTest) {
   const { url: baseUrl } = fsBases(env.GCP_PROJECT_ID, env.FIRESTORE_DB);
   const col = isTest ? "usersNoti_test" : "usersNoti";
   const res = await fetch(`${baseUrl}/${col}/${uid}/devices`, {
-    headers: { authorization: `Bearer ${accessToken}` }
+    headers: { authorization: `Bearer ${accessToken}` },
   });
   if (!res.ok) return [];
   const j = await res.json();
@@ -1252,8 +817,8 @@ async function listUserFcmTokens(accessToken, env, uid, isTest) {
   const tokens = [];
   for (const d of docs) {
     const f = d.fields || {};
-    const token  = jsonFromFields(f.token);
-    const pwa    = !!jsonFromFields(f.installedPwa);
+    const token = jsonFromFields(f.token);
+    const pwa = !!jsonFromFields(f.installedPwa);
     if (token && pwa !== false) tokens.push(token); // keep all; optionally require pwa===true
   }
   return tokens;
@@ -1269,27 +834,41 @@ async function getAccessTokenScoped(env, scope) {
     aud: G_AUTH,
     iat: now,
     exp: now + 3600,
-    scope
+    scope,
   };
   const encHeader = b64urlFromJSON(header);
   const encPayload = b64urlFromJSON(claim);
   const data = `${encHeader}.${encPayload}`;
   const key = await importPkcs8(env.GOOGLE_SA_PRIVATE_KEY, "RSASSA-PKCS1-v1_5");
-  const sigBuf = await crypto.subtle.sign({ name: "RSASSA-PKCS1-v1_5" }, key, new TextEncoder().encode(data));
-  const signature = b64urlFromString(String.fromCharCode(...new Uint8Array(sigBuf)));
+  const sigBuf = await crypto.subtle.sign(
+    { name: "RSASSA-PKCS1-v1_5" },
+    key,
+    new TextEncoder().encode(data)
+  );
+  const signature = b64urlFromString(
+    String.fromCharCode(...new Uint8Array(sigBuf))
+  );
   const jwt = `${data}.${signature}`;
   const res = await fetch(G_AUTH, {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer", assertion: jwt }),
+    body: new URLSearchParams({
+      grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
+      assertion: jwt,
+    }),
   });
-  if (!res.ok) throw new Error(`token error: ${res.status} ${await res.text()}`);
+  if (!res.ok)
+    throw new Error(`token error: ${res.status} ${await res.text()}`);
   const t = await res.json();
   return t.access_token;
 }
 
-
-async function sendFcmToMany(env, oauthAccessToken, tokens, { title, body, url }) {
+async function sendFcmToMany(
+  env,
+  oauthAccessToken,
+  tokens,
+  { title, body, url }
+) {
   const endpoint = `https://fcm.googleapis.com/v1/projects/${env.FCM_PROJECT_ID}/messages:send`;
   let anySucceeded = false;
   const removable = [];
@@ -1299,23 +878,30 @@ async function sendFcmToMany(env, oauthAccessToken, tokens, { title, body, url }
       message: {
         token,
         notification: { title, body },
-        data: url ? { url } : undefined
-      }
+        data: url ? { url } : undefined,
+      },
     };
     const res = await fetch(endpoint, {
       method: "POST",
       headers: {
         authorization: `Bearer ${oauthAccessToken}`,
-        "content-type": "application/json"
+        "content-type": "application/json",
       },
-      body: JSON.stringify(payload)
+      body: JSON.stringify(payload),
     });
 
-    if (res.ok) { anySucceeded = true; continue; }
+    if (res.ok) {
+      anySucceeded = true;
+      continue;
+    }
 
     // Try to detect "bad token" to allow cleanup later (optional)
     const txt = await res.text();
-    if (/UNREGISTERED|NotRegistered|invalid-argument|registration token|requested entity was not found/i.test(txt)) {
+    if (
+      /UNREGISTERED|NotRegistered|invalid-argument|registration token|requested entity was not found/i.test(
+        txt
+      )
+    ) {
       removable.push(token);
     }
   }
@@ -1331,4 +917,1391 @@ function monthsSince(prevISO, currISO) {
     (curr.getUTCFullYear() - prev.getUTCFullYear()) * 12 +
       (curr.getUTCMonth() - prev.getUTCMonth())
   );
+}
+
+// -------------------- Extracted helpers (behavior-preserving) --------------------
+
+function buildPerUserAggregates(players, games, payload) {
+  const pidToUid = new Map();
+  for (const p of players) {
+    if (p?.id && p?.accountUid) pidToUid.set(p.id, p.accountUid);
+  }
+
+  const ensure = (map, uid) => {
+    if (!map[uid]) {
+      map[uid] = {
+        singles: { games: 0, wins: 0, durationMin: 0 },
+        doubles: { games: 0, wins: 0, durationMin: 0 },
+        totals: { games: 0, wins: 0, durationMin: 0 },
+        recent: [],
+      };
+    }
+    return map[uid];
+  };
+
+  const meanMs = meanDurationMs(games);
+  const perUser = {};
+
+  for (const g of games) {
+    const a = Array.isArray(g.sideA) ? g.sideA : [];
+    const b = Array.isArray(g.sideB) ? g.sideB : [];
+    const mode = a.length === 1 && b.length === 1 ? "singles" : "doubles";
+    const durMs = normalizeDurationMs(g.durationMs, meanMs);
+    const durMin = Math.round(durMs / 60000);
+    const endedAt = g.endedAt || payload.endedAt || new Date().toISOString();
+    const winner = g.winner;
+    const winners =
+      winner === "A" ? new Set(a) : winner === "B" ? new Set(b) : new Set();
+
+    for (const pid of [...a, ...b]) {
+      const uid = pidToUid.get(pid);
+      if (!uid) continue; // only linked accounts
+
+      const agg = ensure(perUser, uid);
+      const bucket = agg[mode];
+
+      bucket.games += 1;
+      agg.totals.games += 1;
+
+      if (winner !== "draw") {
+        if (winners.has(pid)) {
+          bucket.wins += 1;
+          agg.totals.wins += 1;
+          agg.recent.push({ endedAt, result: "W", mode });
+        } else {
+          agg.recent.push({ endedAt, result: "L", mode });
+        }
+      }
+
+      bucket.durationMin += durMin;
+      agg.totals.durationMin += durMin;
+    }
+  }
+
+  return { pidToUid, perUser, meanMs };
+}
+
+function buildFriendPairAggregates(games, pidToUid, meanMs, payload) {
+  function canonicalPair(a, b) {
+    return a < b ? [a, b] : [b, a];
+  }
+  function combos2(arr) {
+    const out = [];
+    for (let i = 0; i < arr.length; i++)
+      for (let j = i + 1; j < arr.length; j++) out.push([arr[i], arr[j]]);
+    return out;
+  }
+  const pairAgg = new Map();
+
+  for (const g of games) {
+    const rawA = Array.isArray(g.sideA) ? g.sideA.length : 0;
+    const rawB = Array.isArray(g.sideB) ? g.sideB.length : 0;
+    if (rawA < 2 && rawB < 2) continue;
+
+    const teamA = (Array.isArray(g.sideA) ? g.sideA : [])
+      .map((pid) => pidToUid.get(pid))
+      .filter(Boolean);
+    const teamB = (Array.isArray(g.sideB) ? g.sideB : [])
+      .map((pid) => pidToUid.get(pid))
+      .filter(Boolean);
+    if (teamA.length < 2 && teamB.length < 2) continue;
+
+    const durMin = Math.round(
+      normalizeDurationMs(g.durationMs, meanMs) / 60000
+    );
+    const endedAt = g.endedAt || payload.endedAt || new Date().toISOString();
+    const winnerTeam = g.winner === "A" ? "A" : g.winner === "B" ? "B" : null;
+
+    const tallySide = (sideKey, linkedTeam) => {
+      if (linkedTeam.length < 2) return;
+      for (const [ua, ub] of combos2(linkedTeam)) {
+        const [u1, u2] = canonicalPair(ua, ub);
+        const key = `${u1}__${u2}`;
+        const agg = pairAgg.get(key) || {
+          u1,
+          u2,
+          games: 0,
+          wins: 0,
+          durationMin: 0,
+          lastEndedAt: "",
+        };
+        agg.games += 1;
+        if (winnerTeam && winnerTeam === sideKey) agg.wins += 1;
+        agg.durationMin += durMin;
+        if (!agg.lastEndedAt || endedAt > agg.lastEndedAt)
+          agg.lastEndedAt = endedAt;
+        pairAgg.set(key, agg);
+      }
+    };
+
+    tallySide("A", teamA);
+    tallySide("B", teamB);
+  }
+
+  return pairAgg;
+}
+
+function buildOpponentPairAggregates(games, pidToUid, meanMs, payload) {
+  function canonicalPair(a, b) {
+    return a < b ? [a, b] : [b, a];
+  }
+  const oppAgg = new Map();
+
+  for (const g of games) {
+    // Decide mode from RAW sides (before filtering to linked accounts).
+    console.log("game", g);
+    const rawA = Array.isArray(g.sideA) ? g.sideA.length : 0;
+    const rawB = Array.isArray(g.sideB) ? g.sideB.length : 0;
+    console.log("game2", rawA);
+    console.log("game3", rawB);
+
+    const mode =
+      g.mode === "singles" || g.mode === "doubles"
+        ? g.mode
+        : rawA === 1 && rawB === 1
+        ? "singles"
+        : "doubles";
+
+    const sideA = (Array.isArray(g.sideA) ? g.sideA : [])
+      .map((pid) => pidToUid.get(pid))
+      .filter(Boolean);
+    const sideB = (Array.isArray(g.sideB) ? g.sideB : [])
+      .map((pid) => pidToUid.get(pid))
+      .filter(Boolean);
+    if (!sideA.length || !sideB.length) continue;
+
+    const durMin = Math.round(
+      normalizeDurationMs(g.durationMs, meanMs) / 60000
+    );
+    const endedAt = g.endedAt || payload.endedAt || new Date().toISOString();
+    const winnerIdx = g.winner === "A" ? 0 : g.winner === "B" ? 1 : -1;
+
+    for (const ua of sideA) {
+      for (const ub of sideB) {
+        const [u1, u2] = canonicalPair(ua, ub);
+        const key = `${u1}__${u2}`;
+        const cur = oppAgg.get(key) || {
+          u1,
+          u2,
+          singles: { games: 0, winsU1: 0, winsU2: 0, durationMin: 0 },
+          doubles: { games: 0, winsU1: 0, winsU2: 0, durationMin: 0 },
+          totals: { games: 0, winsU1: 0, winsU2: 0, durationMin: 0 },
+          lastEndedAt: "",
+        };
+        const bucket = cur[mode];
+
+        bucket.games += 1;
+        bucket.durationMin += durMin;
+        cur.totals.games += 1;
+        cur.totals.durationMin += durMin;
+
+        if (winnerIdx !== -1) {
+          const winnerIsA = winnerIdx === 0;
+          const winnerUid = winnerIsA ? ua : ub;
+          const winnerIsU1 = winnerUid === u1;
+          if (winnerIsU1) {
+            bucket.winsU1 += 1;
+            cur.totals.winsU1 += 1;
+          } else {
+            bucket.winsU2 += 1;
+            cur.totals.winsU2 += 1;
+          }
+        }
+
+        if (!cur.lastEndedAt || endedAt > cur.lastEndedAt)
+          cur.lastEndedAt = endedAt;
+        oppAgg.set(key, cur);
+      }
+    }
+  }
+
+  return oppAgg;
+}
+
+async function computeEloAndChemistry({
+  games,
+  pidToUid,
+  isTest,
+  env,
+  baseUrl,
+  userCol,
+  token,
+  payload,
+}) {
+  const allLinkedUids = new Set();
+  for (const g of games) {
+    const aU = (Array.isArray(g.sideA) ? g.sideA : [])
+      .map((pid) => pidToUid.get(pid))
+      .filter(Boolean);
+    const bU = (Array.isArray(g.sideB) ? g.sideB : [])
+      .map((pid) => pidToUid.get(pid))
+      .filter(Boolean);
+    aU.forEach((u) => allLinkedUids.add(u));
+    bU.forEach((u) => allLinkedUids.add(u));
+  }
+
+  const userElo = new Map();
+  {
+    const readPromises = Array.from(allLinkedUids).map(async (uid) => {
+      try {
+        const res = await fetch(`${baseUrl}/${userCol}/${uid}`, {
+          headers: { authorization: `Bearer ${token}` },
+        });
+        if (!res.ok) throw new Error(String(res.status));
+        const doc = await res.json();
+        const f = doc.fields || {};
+        const elo = jsonFromFields(f.elo) || {};
+        const singles = elo.singles || { R: 1500, K: 32, matches: 0 };
+        const doubles = elo.doubles || { R: 1500, K: 32, matches: 0 };
+        userElo.set(uid, {
+          singles: {
+            R: Number(singles.R ?? 1500),
+            K: Number(singles.K ?? 32),
+            matches: Number(singles.matches ?? 0),
+          },
+          doubles: {
+            R: Number(doubles.R ?? 1500),
+            K: Number(doubles.K ?? 32),
+            matches: Number(doubles.matches ?? 0),
+          },
+        });
+      } catch (e) {
+        try {
+          console.log("readUserElo error", uid, e);
+        } catch {}
+        userElo.set(uid, {
+          singles: { R: 1500, K: 32, matches: 0 },
+          doubles: { R: 1500, K: 32, matches: 0 },
+        });
+      }
+    });
+    await Promise.all(readPromises);
+  }
+
+  const friendEdgeColName = isTest ? "friendEdges_test" : "friendEdges";
+  const chemistryByEdge = new Map();
+  async function getChem(edgeKey) {
+    if (chemistryByEdge.has(edgeKey)) return chemistryByEdge.get(edgeKey);
+    try {
+      const res = await fetch(`${baseUrl}/${friendEdgeColName}/${edgeKey}`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error(String(res.status));
+      const doc = await res.json();
+      const f = doc.fields || {};
+      const chem = jsonFromFields(f.chemistry) || {};
+      const last = jsonFromFields(f.lastPlayedAt) || "";
+      const row = {
+        delta: Number(chem.delta ?? 0),
+        lastPlayedAt: String(last || ""),
+      };
+      chemistryByEdge.set(edgeKey, row);
+      return row;
+    } catch (e) {
+      try {
+        console.log("getChem error", edgeKey, e);
+      } catch {}
+      const row = { delta: 0, lastPlayedAt: "" };
+      chemistryByEdge.set(edgeKey, row);
+      return row;
+    }
+  }
+
+  const updatedUsers = new Set();
+  const updatedPairs = new Set();
+  for (const g of games) {
+    const rawA = Array.isArray(g.sideA) ? g.sideA.length : 0;
+    const rawB = Array.isArray(g.sideB) ? g.sideB.length : 0;
+    const mode = rawA === 1 && rawB === 1 ? "singles" : "doubles";
+
+    const sideA = (Array.isArray(g.sideA) ? g.sideA : [])
+      .map((pid) => pidToUid.get(pid))
+      .filter(Boolean);
+    const sideB = (Array.isArray(g.sideB) ? g.sideB : [])
+      .map((pid) => pidToUid.get(pid))
+      .filter(Boolean);
+    const linkedCount = sideA.length + sideB.length;
+    const teamALinked = sideA.length > 0;
+    const teamBLinked = sideB.length > 0;
+    if (!teamALinked && !teamBLinked) continue;
+
+    let wTrust;
+    if (teamALinked && teamBLinked && linkedCount === 4) wTrust = 1.0;
+    else if (teamALinked && teamBLinked) wTrust = 0.75;
+    else if (linkedCount === 1) wTrust = 0.25;
+    else wTrust = 0;
+    if (wTrust === 0) continue;
+
+    const SA = g.winner === "A" ? 1 : g.winner === "B" ? 0 : 0.5;
+    const pointsA = Number.isFinite(Number(g.scoreA))
+      ? Number(g.scoreA)
+      : undefined;
+    const pointsB = Number.isFinite(Number(g.scoreB))
+      ? Number(g.scoreB)
+      : undefined;
+    const fMov =
+      Number.isFinite(pointsA) && Number.isFinite(pointsB)
+        ? Math.min(1.2, Math.log(1 + Math.abs(pointsA - pointsB) / 8))
+        : 1.0;
+
+    function sumRatings(uids, ladder) {
+      let sum = 0;
+      for (const u of uids) sum += (userElo.get(u) || {})[ladder]?.R ?? 1500;
+      return sum;
+    }
+    function pairKey(u1, u2) {
+      return u1 < u2 ? `${u1}__${u2}` : `${u2}__${u1}`;
+    }
+
+    let TA = 0,
+      TB = 0;
+    if (mode === "singles") {
+      TA = sumRatings(sideA, "singles");
+      TB = sumRatings(sideB, "singles");
+    } else {
+      TA = sumRatings(sideA, "doubles");
+      TB = sumRatings(sideB, "doubles");
+      if (sideA.length >= 2) {
+        const [ua, ub] = sideA.slice(0, 2);
+        const ek = pairKey(ua, ub);
+        const chem = await getChem(ek);
+        TA += chem.delta || 0;
+      } else if (sideA.length === 1) {
+        TA += 1500;
+      }
+      if (sideB.length >= 2) {
+        const [va, vb] = sideB.slice(0, 2);
+        const ek = pairKey(va, vb);
+        const chem = await getChem(ek);
+        TB += chem.delta || 0;
+      } else if (sideB.length === 1) {
+        TB += 1500;
+      }
+    }
+
+    if (teamALinked && !teamBLinked) TB = mode === "singles" ? 1500 : 3000;
+    if (teamBLinked && !teamALinked) TA = mode === "singles" ? 1500 : 3000;
+
+    const EA = 1 / (1 + Math.pow(10, (TB - TA) / 400));
+    const eventWeight = 1.0;
+
+    function avgK(uids, ladder) {
+      if (!uids.length) return 32;
+      let sum = 0,
+        n = 0;
+      for (const u of uids) {
+        const pr = (userElo.get(u) || {})[ladder];
+        if (pr) {
+          sum += pr.K || 32;
+          n++;
+        }
+      }
+      return n ? sum / n : 32;
+    }
+    const K_A = avgK(sideA, mode);
+    const K_B = avgK(sideB, mode);
+    const K_eff = (K_A + K_B) / 2;
+
+    const delta = K_eff * wTrust * eventWeight * fMov * (SA - EA);
+
+    function applyDelta(uids, ladder, sgn) {
+      for (const u of uids) {
+        const pr = (userElo.get(u) || {})[ladder];
+        if (!pr) continue;
+        pr.R += sgn * delta;
+        pr.matches = (pr.matches || 0) + 1;
+        if (pr.matches >= 20) pr.K = 20;
+        userElo.set(u, { ...userElo.get(u), [ladder]: pr });
+        updatedUsers.add(u);
+      }
+    }
+    if (teamALinked) applyDelta(sideA, mode, +1);
+    if (teamBLinked) applyDelta(sideB, mode, -1);
+
+    if (mode === "doubles") {
+      const endedAt = g.endedAt || payload.endedAt || new Date().toISOString();
+      const residualA = SA - EA;
+      const residualB = -residualA;
+      async function updChem(uids, residual) {
+        if (uids.length < 2) return;
+        const [x, y] = uids.slice(0, 2).sort();
+        const ek = `${x}__${y}`;
+        const cur = await getChem(ek);
+        const months = monthsSince(cur.lastPlayedAt, endedAt) || 0;
+        const decay = 1 - 0.01 * months;
+        const next = Math.max(
+          -70,
+          Math.min(
+            70,
+            (isFinite(decay) ? decay : 1) * (cur.delta || 0) + 6 * residual
+          )
+        );
+        chemistryByEdge.set(ek, { delta: next, lastPlayedAt: endedAt });
+        updatedPairs.add(ek);
+      }
+      if (sideA.length >= 2) await updChem(sideA, residualA);
+      if (sideB.length >= 2) await updChem(sideB, residualB);
+    }
+  }
+
+  return {
+    userElo,
+    updatedUsers,
+    chemistryByEdge,
+    updatedPairs,
+    allLinkedUids,
+  };
+}
+
+async function commitPerUserStats({
+  uids,
+  perUser,
+  sessionKey,
+  endMonth,
+  rootCol,
+  env,
+  token,
+}) {
+  for (const uid of uids) {
+    const agg = perUser[uid];
+    const monthPath = `${rootCol}/${uid}/monthly/${endMonth}`;
+    const sumPath = `${rootCol}/${uid}`;
+
+    {
+      const monthlyTaskKey = `stats:monthly:${endMonth}:${uid}:${sessionKey}`;
+      const writes = [];
+      writes.push(
+        makeUpdatePrecondCreate(
+          `${rootCol}/${uid}/gates/${monthlyTaskKey}`,
+          {
+            taskKey: monthlyTaskKey,
+            sessionKey,
+            scope: { uid, month: endMonth },
+            workerVersion: WORKER_VERSION,
+            createdAt: { __ts: true },
+          },
+          env
+        )
+      );
+      writes.push(
+        makeUpdateMaskWrite(
+          monthPath,
+          { month: endMonth, appliedSessions: { [sessionKey]: true } },
+          ["month", maskPath(`appliedSessions.${sessionKey}`)],
+          env
+        )
+      );
+      writes.push(
+        makeTransformWrite(
+          monthPath,
+          [
+            inc("singles.games", agg.singles.games),
+            inc("singles.wins", agg.singles.wins),
+            inc("singles.durationMin", agg.singles.durationMin),
+            inc("doubles.games", agg.doubles.games),
+            inc("doubles.wins", agg.doubles.wins),
+            inc("doubles.durationMin", agg.doubles.durationMin),
+            inc("totals.games", agg.totals.games),
+            inc("totals.wins", agg.totals.wins),
+            inc("totals.durationMin", agg.totals.durationMin),
+            reqTime("updatedAt"),
+          ],
+          env
+        )
+      );
+
+      try {
+        await commitWrites(token, env, writes);
+      } catch (e) {
+        if (!isAlreadyApplied(e)) console.log(e);
+      }
+    }
+
+    {
+      const summaryTaskKey = `stats:summary:${uid}:${sessionKey}`;
+      const writes = [];
+      writes.push(
+        makeUpdatePrecondCreate(
+          `${rootCol}/${uid}/gates/${summaryTaskKey}`,
+          {
+            taskKey: summaryTaskKey,
+            sessionKey,
+            scope: { uid },
+            workerVersion: WORKER_VERSION,
+            createdAt: { __ts: true },
+          },
+          env
+        )
+      );
+      writes.push(makeUpdateMaskWrite(sumPath, { uid }, ["uid"], env));
+      writes.push(
+        makeTransformWrite(
+          sumPath,
+          [
+            inc("totals.games", agg.totals.games),
+            inc("totals.wins", agg.totals.wins),
+            inc("totals.durationMin", agg.totals.durationMin),
+            inc("totals.singles.games", agg.singles.games),
+            inc("totals.singles.wins", agg.singles.wins),
+            inc("totals.singles.durationMin", agg.singles.durationMin),
+            inc("totals.doubles.games", agg.doubles.games),
+            inc("totals.doubles.wins", agg.doubles.wins),
+            inc("totals.doubles.durationMin", agg.doubles.durationMin),
+            arrayUnion("recentForm", agg.recent.slice().reverse()),
+            reqTime("updatedAt"),
+          ],
+          env
+        )
+      );
+
+      try {
+        await commitWrites(token, env, writes);
+      } catch (e) {
+        if (!isAlreadyApplied(e)) console.log(e);
+      }
+    }
+  }
+}
+
+async function commitEloWrites({
+  updatedUsers,
+  userElo,
+  userCol,
+  organizerUid,
+  sessionId,
+  env,
+  token,
+}) {
+  for (const uid of updatedUsers) {
+    const pr = userElo.get(uid);
+    if (!pr) continue;
+    const writes = [];
+    const eloTaskKey = `elo:session:${organizerUid}_${sessionId}`;
+    writes.push(
+      makeUpdatePrecondCreate(
+        `${userCol}/${uid}/gates/${eloTaskKey}`,
+        {
+          taskKey: eloTaskKey,
+          sessionKey: `${organizerUid}_${sessionId}`,
+          scope: { uid },
+          workerVersion: WORKER_VERSION,
+          createdAt: { __ts: true },
+        },
+        env
+      )
+    );
+    writes.push(
+      makeUpdateMaskWrite(
+        `${userCol}/${uid}`,
+        {
+          elo: {
+            singles: pr.singles,
+            doubles: pr.doubles,
+            updatedAt: { __ts: true },
+          },
+        },
+        ["elo"],
+        env
+      )
+    );
+    try {
+      await commitWrites(token, env, writes);
+    } catch (e) {
+      if (!isAlreadyApplied(e)) console.log(e);
+    }
+  }
+}
+
+async function commitFriendEdgesAndMirrors({
+  pairAgg,
+  endMonth,
+  rootCol,
+  isTest,
+  sessionKey,
+  env,
+  token,
+  chemistryByEdge,
+}) {
+  const friendEdgeCol = isTest ? "friendEdges_test" : "friendEdges";
+  for (const [edgeKey, agg] of pairAgg) {
+    const { u1, u2, games, wins, durationMin, lastEndedAt } = agg;
+
+    const writes = [];
+    writes.push(
+      makeUpdatePrecondCreate(
+        `${friendEdgeCol}/${edgeKey}/bySession/${sessionKey}`,
+        { sessionKey, month: endMonth, createdAt: { __ts: true } },
+        env
+      )
+    );
+    writes.push(
+      makeUpdateMaskWrite(
+        `${friendEdgeCol}/${edgeKey}`,
+        {
+          edgeKey,
+          participants: [u1, u2],
+          lastPlayedAt: { timestampValue: lastEndedAt },
+        },
+        ["edgeKey", "participants", "lastPlayedAt"],
+        env
+      )
+    );
+    writes.push(
+      makeTransformWrite(
+        `${friendEdgeCol}/${edgeKey}`,
+        [
+          inc("together.games", games),
+          inc("together.wins", wins),
+          inc("together.durationMin", durationMin),
+          reqTime("updatedAt"),
+        ],
+        env
+      )
+    );
+
+    if (chemistryByEdge.has(edgeKey)) {
+      const chem = chemistryByEdge.get(edgeKey);
+      writes.push(
+        makeUpdateMaskWrite(
+          `${friendEdgeCol}/${edgeKey}`,
+          {
+            chemistry: {
+              delta: Number(chem.delta || 0),
+              updatedAt: { __ts: true },
+            },
+          },
+          ["chemistry"],
+          env
+        )
+      );
+    }
+
+    writes.push(
+      makeUpdateMaskWrite(
+        `${friendEdgeCol}/${edgeKey}/monthly/${endMonth}`,
+        {
+          month: endMonth,
+          appliedSessions: { [sessionKey]: true },
+          lastPlayedAt: { timestampValue: lastEndedAt },
+        },
+        ["month", maskPath(`appliedSessions.${sessionKey}`), "lastPlayedAt"],
+        env
+      )
+    );
+    writes.push(
+      makeTransformWrite(
+        `${friendEdgeCol}/${edgeKey}/monthly/${endMonth}`,
+        [
+          inc("together.games", games),
+          inc("together.wins", wins),
+          inc("together.durationMin", durationMin),
+          reqTime("updatedAt"),
+        ],
+        env
+      )
+    );
+
+    writes.push(
+      makeUpdateMaskWrite(
+        `${rootCol}/${u1}/friends/${u2}`,
+        {
+          otherUid: u2,
+          edgeKey,
+          lastPlayedAt: { timestampValue: lastEndedAt },
+        },
+        ["otherUid", "edgeKey", "lastPlayedAt"],
+        env
+      )
+    );
+    writes.push(
+      makeUpdateMaskWrite(
+        `${rootCol}/${u2}/friends/${u1}`,
+        {
+          otherUid: u1,
+          edgeKey,
+          lastPlayedAt: { timestampValue: lastEndedAt },
+        },
+        ["otherUid", "edgeKey", "lastPlayedAt"],
+        env
+      )
+    );
+    writes.push(
+      makeTransformWrite(
+        `${rootCol}/${u1}/friends/${u2}`,
+        [
+          inc("together.games", games),
+          inc("together.wins", wins),
+          inc("together.durationMin", durationMin),
+          reqTime("updatedAt"),
+        ],
+        env
+      )
+    );
+    writes.push(
+      makeTransformWrite(
+        `${rootCol}/${u2}/friends/${u1}`,
+        [
+          inc("together.games", games),
+          inc("together.wins", wins),
+          inc("together.durationMin", durationMin),
+          reqTime("updatedAt"),
+        ],
+        env
+      )
+    );
+
+    try {
+      await commitWrites(token, env, writes);
+    } catch (e) {
+      if (!isAlreadyApplied(e)) continue;
+      else console.log(e);
+    }
+  }
+}
+
+async function commitOpponentEdgesAndMirrors({
+  oppAgg,
+  endMonth,
+  rootCol,
+  isTest,
+  sessionKey,
+  env,
+  token,
+}) {
+  const opponentEdgeCol = isTest ? "opponentEdges_test" : "opponentEdges";
+  for (const [pairKey, agg] of oppAgg) {
+    const { u1, u2, singles, doubles, totals, lastEndedAt } = agg;
+    const writes = [];
+    writes.push(
+      makeUpdatePrecondCreate(
+        `${opponentEdgeCol}/${pairKey}/bySession/${sessionKey}`,
+        { sessionKey, month: endMonth, createdAt: { __ts: true } },
+        env
+      )
+    );
+    writes.push(
+      makeUpdateMaskWrite(
+        `${opponentEdgeCol}/${pairKey}`,
+        {
+          edgeKey: pairKey,
+          participants: [u1, u2],
+          lastPlayedAt: { timestampValue: lastEndedAt },
+        },
+        ["edgeKey", "participants", "lastPlayedAt"],
+        env
+      )
+    );
+    writes.push(
+      makeTransformWrite(
+        `${opponentEdgeCol}/${pairKey}`,
+        [
+          inc("head.singles.games", singles.games),
+          inc("head.singles.winsU1", singles.winsU1),
+          inc("head.singles.winsU2", singles.winsU2),
+          inc("head.singles.durationMin", singles.durationMin),
+          inc("head.doubles.games", doubles.games),
+          inc("head.doubles.winsU1", doubles.winsU1),
+          inc("head.doubles.winsU2", doubles.winsU2),
+          inc("head.doubles.durationMin", doubles.durationMin),
+          inc("head.totals.games", totals.games),
+          inc("head.totals.winsU1", totals.winsU1),
+          inc("head.totals.winsU2", totals.winsU2),
+          inc("head.totals.durationMin", totals.durationMin),
+          reqTime("updatedAt"),
+        ],
+        env
+      )
+    );
+    writes.push(
+      makeUpdateMaskWrite(
+        `${opponentEdgeCol}/${pairKey}/monthly/${endMonth}`,
+        {
+          month: endMonth,
+          lastPlayedAt: { timestampValue: lastEndedAt },
+          appliedSessions: { [sessionKey]: true },
+        },
+        ["month", "lastPlayedAt", maskPath(`appliedSessions.${sessionKey}`)],
+        env
+      )
+    );
+    writes.push(
+      makeTransformWrite(
+        `${opponentEdgeCol}/${pairKey}/monthly/${endMonth}`,
+        [
+          inc("head.singles.games", singles.games),
+          inc("head.singles.winsU1", singles.winsU1),
+          inc("head.singles.winsU2", singles.winsU2),
+          inc("head.singles.durationMin", singles.durationMin),
+          inc("head.doubles.games", doubles.games),
+          inc("head.doubles.winsU1", doubles.winsU1),
+          inc("head.doubles.winsU2", doubles.winsU2),
+          inc("head.doubles.durationMin", doubles.durationMin),
+          inc("head.totals.games", totals.games),
+          inc("head.totals.winsU1", totals.winsU1),
+          inc("head.totals.winsU2", totals.winsU2),
+          inc("head.totals.durationMin", totals.durationMin),
+          reqTime("updatedAt"),
+        ],
+        env
+      )
+    );
+    writes.push(
+      makeUpdateMaskWrite(
+        `${rootCol}/${u1}/opponents/${u2}`,
+        {
+          otherUid: u2,
+          edgeKey: pairKey,
+          lastPlayedAt: { timestampValue: lastEndedAt },
+        },
+        ["otherUid", "edgeKey", "lastPlayedAt"],
+        env
+      )
+    );
+    writes.push(
+      makeTransformWrite(
+        `${rootCol}/${u1}/opponents/${u2}`,
+        [
+          inc("against.singles.games", singles.games),
+          inc("against.singles.wins", singles.winsU1),
+          inc("against.singles.losses", singles.winsU2),
+          inc("against.singles.durationMin", singles.durationMin),
+          inc("against.doubles.games", doubles.games),
+          inc("against.doubles.wins", doubles.winsU1),
+          inc("against.doubles.losses", doubles.winsU2),
+          inc("against.doubles.durationMin", doubles.durationMin),
+          inc("against.totals.games", totals.games),
+          inc("against.totals.wins", totals.winsU1),
+          inc("against.totals.losses", totals.winsU2),
+          inc("against.totals.durationMin", totals.durationMin),
+          reqTime("updatedAt"),
+        ],
+        env
+      )
+    );
+    writes.push(
+      makeUpdateMaskWrite(
+        `${rootCol}/${u2}/opponents/${u1}`,
+        {
+          otherUid: u1,
+          edgeKey: pairKey,
+          lastPlayedAt: { timestampValue: lastEndedAt },
+        },
+        ["otherUid", "edgeKey", "lastPlayedAt"],
+        env
+      )
+    );
+    writes.push(
+      makeTransformWrite(
+        `${rootCol}/${u2}/opponents/${u1}`,
+        [
+          inc("against.singles.games", singles.games),
+          inc(
+            "against.singles.wins",
+            doubles.winsU2 ? singles.winsU2 : singles.winsU2
+          ),
+          inc("against.singles.losses", singles.winsU1),
+          inc("against.singles.durationMin", singles.durationMin),
+          inc("against.doubles.games", doubles.games),
+          inc("against.doubles.wins", doubles.winsU2),
+          inc("against.doubles.losses", doubles.winsU1),
+          inc("against.doubles.durationMin", doubles.durationMin),
+          inc("against.totals.games", totals.games),
+          inc("against.totals.wins", totals.winsU2),
+          inc("against.totals.losses", totals.winsU1),
+          inc("against.totals.durationMin", totals.durationMin),
+          reqTime("updatedAt"),
+        ],
+        env
+      )
+    );
+
+    try {
+      await commitWrites(token, env, writes);
+    } catch (e) {
+      if (isAlreadyApplied(e)) continue;
+      console.log(e);
+    }
+  }
+}
+
+async function notifyStatsUpdate({ uids, organizerUid, sessionId, env }) {
+  console.log("notifying uids", uids);
+  for (const uid of uids) {
+    const ev = {
+      idempotencyKey: `stats:${organizerUid}:${sessionId}:${uid}`,
+      type: "stats_update",
+      title: "Session Ended. View your stats now",
+      url: `/session/${sessionId}?u=${uid}`,
+      occurredAt: new Date().toISOString(),
+    };
+    try {
+      const res = await enqueueEvent(env, uid, ev);
+      console.log("enqueueEvent res", res);
+    } catch (e) {
+      console.log("enqueueEvent error", e);
+    }
+  }
+}
+
+// -------------------- Club-scoped helpers --------------------
+
+async function fetchClubMembers({ clubId, isTest, baseUrl, token }) {
+  try {
+    const clubsCol = isTest ? "clubs_test" : "clubs";
+    const res = await fetch(`${baseUrl}/${clubsCol}/${clubId}`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) throw new Error(String(res.status));
+    const doc = await res.json();
+    const f = doc.fields || {};
+    const memberUids = jsonFromFields(f.memberUids) || [];
+    const set = new Set();
+    for (const u of Array.isArray(memberUids) ? memberUids : []) {
+      if (typeof u === "string" && u) set.add(u);
+    }
+    return set;
+  } catch (e) {
+    try {
+      console.log("fetchClubMembers error", clubId, e);
+    } catch {}
+    return new Set();
+  }
+}
+
+async function commitClubPerUserStats({
+  uids,
+  perUser,
+  memberSet,
+  clubsCol,
+  clubId,
+  sessionKey,
+  endMonth,
+  env,
+  token,
+}) {
+  for (const uid of uids) {
+    if (!memberSet.has(uid)) continue;
+    const agg = perUser[uid];
+    const basePath = `${clubsCol}/${clubId}/userStats/${uid}`;
+    const monthPath = `${basePath}/monthly/${endMonth}`;
+
+    // A) MONTHLY task (gate + monthly upserts + increments)
+    {
+      const monthlyTaskKey = `stats:monthly:${endMonth}:${uid}:${sessionKey}`;
+      const writes = [];
+      writes.push(
+        makeUpdatePrecondCreate(
+          `${basePath}/gates/${monthlyTaskKey}`,
+          {
+            taskKey: monthlyTaskKey,
+            sessionKey,
+            scope: { uid, month: endMonth, clubId },
+            workerVersion: WORKER_VERSION,
+            createdAt: { __ts: true },
+          },
+          env
+        )
+      );
+      writes.push(
+        makeUpdateMaskWrite(
+          monthPath,
+          { month: endMonth, appliedSessions: { [sessionKey]: true } },
+          ["month", maskPath(`appliedSessions.${sessionKey}`)],
+          env
+        )
+      );
+      writes.push(
+        makeTransformWrite(
+          monthPath,
+          [
+            inc("singles.games", agg.singles.games),
+            inc("singles.wins", agg.singles.wins),
+            inc("singles.durationMin", agg.singles.durationMin),
+            inc("doubles.games", agg.doubles.games),
+            inc("doubles.wins", agg.doubles.wins),
+            inc("doubles.durationMin", agg.doubles.durationMin),
+            inc("totals.games", agg.totals.games),
+            inc("totals.wins", agg.totals.wins),
+            inc("totals.durationMin", agg.totals.durationMin),
+            reqTime("updatedAt"),
+          ],
+          env
+        )
+      );
+      try {
+        await commitWrites(token, env, writes);
+      } catch (e) {
+        if (!isAlreadyApplied(e)) console.log(e);
+      }
+    }
+
+    // B) SUMMARY task (gate + ensure + increments + recentForm append)
+    {
+      const summaryTaskKey = `stats:summary:${uid}:${sessionKey}`;
+      const writes = [];
+      writes.push(
+        makeUpdatePrecondCreate(
+          `${basePath}/gates/${summaryTaskKey}`,
+          {
+            taskKey: summaryTaskKey,
+            sessionKey,
+            scope: { uid, clubId },
+            workerVersion: WORKER_VERSION,
+            createdAt: { __ts: true },
+          },
+          env
+        )
+      );
+      // ensure summary doc exists (uid, clubId fields)
+      writes.push(
+        makeUpdateMaskWrite(basePath, { uid, clubId }, ["uid", "clubId"], env)
+      );
+      // increment summary counters & append recent slice (club summary uses top-level singles/doubles)
+      writes.push(
+        makeTransformWrite(
+          basePath,
+          [
+            inc("totals.games", agg.totals.games),
+            inc("totals.wins", agg.totals.wins),
+            inc("totals.durationMin", agg.totals.durationMin),
+            inc("singles.games", agg.singles.games),
+            inc("singles.wins", agg.singles.wins),
+            inc("singles.durationMin", agg.singles.durationMin),
+            inc("doubles.games", agg.doubles.games),
+            inc("doubles.wins", agg.doubles.wins),
+            inc("doubles.durationMin", agg.doubles.durationMin),
+            arrayUnion("recentForm", agg.recent.slice().reverse()),
+            reqTime("updatedAt"),
+          ],
+          env
+        )
+      );
+      try {
+        await commitWrites(token, env, writes);
+      } catch (e) {
+        if (!isAlreadyApplied(e)) console.log(e);
+      }
+    }
+  }
+}
+
+async function commitClubFriendEdgesAndMirrors({
+  pairAgg,
+  memberSet,
+  clubsCol,
+  clubId,
+  endMonth,
+  sessionKey,
+  env,
+  token,
+  chemistryByEdge,
+}) {
+  for (const [edgeKey, agg] of pairAgg) {
+    const { u1, u2, games, wins, durationMin, lastEndedAt } = agg;
+    if (!memberSet.has(u1) || !memberSet.has(u2)) continue;
+
+    const edgePath = `${clubsCol}/${clubId}/friendEdges/${edgeKey}`;
+    const writes = [];
+    writes.push(
+      makeUpdatePrecondCreate(
+        `${edgePath}/bySession/${sessionKey}`,
+        { sessionKey, month: endMonth, createdAt: { __ts: true } },
+        env
+      )
+    );
+    writes.push(
+      makeUpdateMaskWrite(
+        edgePath,
+        {
+          edgeKey,
+          participants: [u1, u2],
+          lastPlayedAt: { timestampValue: lastEndedAt },
+        },
+        ["edgeKey", "participants", "lastPlayedAt"],
+        env
+      )
+    );
+    writes.push(
+      makeTransformWrite(
+        edgePath,
+        [
+          inc("together.games", games),
+          inc("together.wins", wins),
+          inc("together.durationMin", durationMin),
+          reqTime("updatedAt"),
+        ],
+        env
+      )
+    );
+    if (chemistryByEdge && chemistryByEdge.has(edgeKey)) {
+      const chem = chemistryByEdge.get(edgeKey);
+      writes.push(
+        makeUpdateMaskWrite(
+          edgePath,
+          {
+            chemistry: {
+              delta: Number(chem.delta || 0),
+              updatedAt: { __ts: true },
+            },
+          },
+          ["chemistry"],
+          env
+        )
+      );
+    }
+    const monthlyPath = `${edgePath}/monthly/${endMonth}`;
+    writes.push(
+      makeUpdateMaskWrite(
+        monthlyPath,
+        {
+          month: endMonth,
+          appliedSessions: { [sessionKey]: true },
+          lastPlayedAt: { timestampValue: lastEndedAt },
+        },
+        ["month", maskPath(`appliedSessions.${sessionKey}`), "lastPlayedAt"],
+        env
+      )
+    );
+    writes.push(
+      makeTransformWrite(
+        monthlyPath,
+        [
+          inc("together.games", games),
+          inc("together.wins", wins),
+          inc("together.durationMin", durationMin),
+          reqTime("updatedAt"),
+        ],
+        env
+      )
+    );
+
+    // Per-user mirrors under club scope
+    const mirrorA = `${clubsCol}/${clubId}/userStats/${u1}/friends/${u2}`;
+    const mirrorB = `${clubsCol}/${clubId}/userStats/${u2}/friends/${u1}`;
+    writes.push(
+      makeUpdateMaskWrite(
+        mirrorA,
+        {
+          otherUid: u2,
+          edgeKey,
+          lastPlayedAt: { timestampValue: lastEndedAt },
+        },
+        ["otherUid", "edgeKey", "lastPlayedAt"],
+        env
+      )
+    );
+    writes.push(
+      makeUpdateMaskWrite(
+        mirrorB,
+        {
+          otherUid: u1,
+          edgeKey,
+          lastPlayedAt: { timestampValue: lastEndedAt },
+        },
+        ["otherUid", "edgeKey", "lastPlayedAt"],
+        env
+      )
+    );
+    writes.push(
+      makeTransformWrite(
+        mirrorA,
+        [
+          inc("together.games", games),
+          inc("together.wins", wins),
+          inc("together.durationMin", durationMin),
+          reqTime("updatedAt"),
+        ],
+        env
+      )
+    );
+    writes.push(
+      makeTransformWrite(
+        mirrorB,
+        [
+          inc("together.games", games),
+          inc("together.wins", wins),
+          inc("together.durationMin", durationMin),
+          reqTime("updatedAt"),
+        ],
+        env
+      )
+    );
+
+    try {
+      await commitWrites(token, env, writes);
+    } catch (e) {
+      if (!isAlreadyApplied(e)) continue;
+      else console.log(e);
+    }
+  }
+}
+
+async function commitClubOpponentEdgesAndMirrors({
+  oppAgg,
+  memberSet,
+  clubsCol,
+  clubId,
+  endMonth,
+  sessionKey,
+  env,
+  token,
+}) {
+  for (const [pairKey, agg] of oppAgg) {
+    const { u1, u2, singles, doubles, totals, lastEndedAt } = agg;
+    if (!memberSet.has(u1) || !memberSet.has(u2)) continue;
+
+    const edgePath = `${clubsCol}/${clubId}/opponentEdges/${pairKey}`;
+    const writes = [];
+    writes.push(
+      makeUpdatePrecondCreate(
+        `${edgePath}/bySession/${sessionKey}`,
+        { sessionKey, month: endMonth, createdAt: { __ts: true } },
+        env
+      )
+    );
+    writes.push(
+      makeUpdateMaskWrite(
+        edgePath,
+        {
+          edgeKey: pairKey,
+          participants: [u1, u2],
+          lastPlayedAt: { timestampValue: lastEndedAt },
+        },
+        ["edgeKey", "participants", "lastPlayedAt"],
+        env
+      )
+    );
+    writes.push(
+      makeTransformWrite(
+        edgePath,
+        [
+          inc("head.singles.games", singles.games),
+          inc("head.singles.winsU1", singles.winsU1),
+          inc("head.singles.winsU2", singles.winsU2),
+          inc("head.singles.durationMin", singles.durationMin),
+          inc("head.doubles.games", doubles.games),
+          inc("head.doubles.winsU1", doubles.winsU1),
+          inc("head.doubles.winsU2", doubles.winsU2),
+          inc("head.doubles.durationMin", doubles.durationMin),
+          inc("head.totals.games", totals.games),
+          inc("head.totals.winsU1", totals.winsU1),
+          inc("head.totals.winsU2", totals.winsU2),
+          inc("head.totals.durationMin", totals.durationMin),
+          reqTime("updatedAt"),
+        ],
+        env
+      )
+    );
+    const monthlyPath = `${edgePath}/monthly/${endMonth}`;
+    writes.push(
+      makeUpdateMaskWrite(
+        monthlyPath,
+        {
+          month: endMonth,
+          lastPlayedAt: { timestampValue: lastEndedAt },
+          appliedSessions: { [sessionKey]: true },
+        },
+        ["month", "lastPlayedAt", maskPath(`appliedSessions.${sessionKey}`)],
+        env
+      )
+    );
+    writes.push(
+      makeTransformWrite(
+        monthlyPath,
+        [
+          inc("head.singles.games", singles.games),
+          inc("head.singles.winsU1", singles.winsU1),
+          inc("head.singles.winsU2", singles.winsU2),
+          inc("head.singles.durationMin", singles.durationMin),
+          inc("head.doubles.games", doubles.games),
+          inc("head.doubles.winsU1", doubles.winsU1),
+          inc("head.doubles.winsU2", doubles.winsU2),
+          inc("head.doubles.durationMin", doubles.durationMin),
+          inc("head.totals.games", totals.games),
+          inc("head.totals.winsU1", totals.winsU1),
+          inc("head.totals.winsU2", totals.winsU2),
+          inc("head.totals.durationMin", totals.durationMin),
+          reqTime("updatedAt"),
+        ],
+        env
+      )
+    );
+
+    // Per-user mirrors under club scope
+    const mirrorA = `${clubsCol}/${clubId}/userStats/${u1}/opponents/${u2}`;
+    const mirrorB = `${clubsCol}/${clubId}/userStats/${u2}/opponents/${u1}`;
+    writes.push(
+      makeUpdateMaskWrite(
+        mirrorA,
+        {
+          otherUid: u2,
+          edgeKey: pairKey,
+          lastPlayedAt: { timestampValue: lastEndedAt },
+        },
+        ["otherUid", "edgeKey", "lastPlayedAt"],
+        env
+      )
+    );
+    writes.push(
+      makeTransformWrite(
+        mirrorA,
+        [
+          inc("against.singles.games", singles.games),
+          inc("against.singles.wins", singles.winsU1),
+          inc("against.singles.losses", singles.winsU2),
+          inc("against.singles.durationMin", singles.durationMin),
+          inc("against.doubles.games", doubles.games),
+          inc("against.doubles.wins", doubles.winsU1),
+          inc("against.doubles.losses", doubles.winsU2),
+          inc("against.doubles.durationMin", doubles.durationMin),
+          inc("against.totals.games", totals.games),
+          inc("against.totals.wins", totals.winsU1),
+          inc("against.totals.losses", totals.winsU2),
+          inc("against.totals.durationMin", totals.durationMin),
+          reqTime("updatedAt"),
+        ],
+        env
+      )
+    );
+    writes.push(
+      makeUpdateMaskWrite(
+        mirrorB,
+        {
+          otherUid: u1,
+          edgeKey: pairKey,
+          lastPlayedAt: { timestampValue: lastEndedAt },
+        },
+        ["otherUid", "edgeKey", "lastPlayedAt"],
+        env
+      )
+    );
+    writes.push(
+      makeTransformWrite(
+        mirrorB,
+        [
+          inc("against.singles.games", singles.games),
+          inc("against.singles.wins", singles.winsU2),
+          inc("against.singles.losses", singles.winsU1),
+          inc("against.singles.durationMin", singles.durationMin),
+          inc("against.doubles.games", doubles.games),
+          inc("against.doubles.wins", doubles.winsU2),
+          inc("against.doubles.losses", doubles.winsU1),
+          inc("against.doubles.durationMin", doubles.durationMin),
+          inc("against.totals.games", totals.games),
+          inc("against.totals.wins", totals.winsU2),
+          inc("against.totals.losses", totals.winsU1),
+          inc("against.totals.durationMin", totals.durationMin),
+          reqTime("updatedAt"),
+        ],
+        env
+      )
+    );
+
+    try {
+      await commitWrites(token, env, writes);
+    } catch (e) {
+      if (isAlreadyApplied(e)) continue;
+      console.log(e);
+    }
+  }
 }

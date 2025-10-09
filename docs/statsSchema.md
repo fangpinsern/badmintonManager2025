@@ -426,3 +426,305 @@ Authoritative H2H counters across all users, split by mode.
 ---
 
 If you want, I can generate a small **TypeScript typings file** for these shapes so your frontend/services get autocomplete & type safety.
+
+---
+
+## 9) Club-scoped Stats (New)
+
+This section defines statistics computed for sessions that are linked to a club (`session.clubId`). These stats are computed in addition to the existing global stats. They are stored under a club-specific root to keep data separated per club and to make per-club reads simple and index-light.
+
+Key principles:
+
+- Only users who are members of the club receive club-level stats. Guests (players without linked accounts) and linked users who are not club members do not receive any club-level stats documents.
+- Club-level stats are computed for club sessions only (sessions with a `clubId`).
+- Elo remains global-only. Club sessions may carry a slightly higher Elo weight; see `docs/elo.md`. No club-specific Elo is stored.
+- Idempotency mirrors the global model with create-only gates scoped by `clubId`.
+
+Throughout this section, the club root collection is `{clubRoot}` where:
+
+- `{clubRoot}` is `clubs` (or `clubs_test` in test mode)
+- The club container document is `{clubRoot}/{clubId}`
+
+Paths below are written relative to that.
+
+---
+
+### 9.1) Per-user Summary (Club)
+
+**Path**
+`{clubRoot}/{clubId}/userStats/{uid}`
+
+**Purpose**
+Club-scoped rollup across all time for a specific user who is a member of the club. Includes all of that member's games played in club sessions (regardless of whether opponents/partners were members), but mirrors/edges (see below) only consider pairs where both users are club members.
+
+**Fields**
+
+- `uid` _(string)_ – the user id.
+- `clubId` _(string)_ – club this summary belongs to.
+- `totals` _(object)_ – same structure as global:
+  - `games`, `wins`, `durationMin` _(ints)_ – overall counts within this club.
+  - `singles`, `doubles` _(objects)_ – mode split with `games`, `wins`, `durationMin`.
+- `recentForm` _(array)_ – last N results within this club, same shape as global.
+- `updatedAt` _(ISO8601)_ – last mutation.
+
+**Example**
+
+```json
+{
+  "uid": "uA",
+  "clubId": "club123",
+  "totals": {
+    "games": 52,
+    "wins": 31,
+    "durationMin": 520,
+    "singles": { "games": 12, "wins": 7, "durationMin": 120 },
+    "doubles": { "games": 40, "wins": 24, "durationMin": 400 }
+  },
+  "recentForm": [
+    { "endedAt": "2025-09-22T12:34:56Z", "result": "W", "mode": "doubles" },
+    { "endedAt": "2025-09-22T12:10:03Z", "result": "L", "mode": "singles" }
+  ],
+  "updatedAt": "2025-09-22T12:35:00Z"
+}
+```
+
+---
+
+### 9.2) Per-user Monthly Rollup (Club)
+
+**Path**
+`{clubRoot}/{clubId}/userStats/{uid}/monthly/{YYYY-MM}`
+
+**Purpose**
+Per-user totals for a calendar month within a club. Idempotency is protected via `appliedSessions` as in global stats.
+
+**Fields**
+
+- `month` _(string)_ – `YYYY-MM`.
+- `singles`, `doubles`, `totals` _(objects)_ – `games`, `wins`, `durationMin`.
+- `appliedSessions` _(map<string,bool>)_ – session keys processed for this month.
+- `updatedAt` _(ISO8601)_.
+
+**Example**
+
+```json
+{
+  "month": "2025-09",
+  "singles": { "games": 5, "wins": 3, "durationMin": 50 },
+  "doubles": { "games": 10, "wins": 6, "durationMin": 100 },
+  "totals": { "games": 15, "wins": 9, "durationMin": 150 },
+  "appliedSessions": { "org1_sess100": true },
+  "updatedAt": "2025-09-22T12:35:00Z"
+}
+```
+
+---
+
+### 9.3) Per-user Session Audit (Club)
+
+**Path**
+`{clubRoot}/{clubId}/userStats/{uid}/bySession/{sessionKey}`
+
+**Purpose**
+Immutable audit of what a single club session contributed to this member.
+
+**Fields**
+
+- `organizerUid`, `sessionId`, `clubId`, `month` _(strings)_.
+- `singles`, `doubles`, `totals` _(objects)_ – `games`, `wins`, `durationMin`.
+- `recentFormSlice` _(array)_ – entries applied from this session only.
+- `computedAt` _(ISO8601)_.
+
+**Example**
+
+```json
+{
+  "organizerUid": "org1",
+  "sessionId": "sess100",
+  "clubId": "club123",
+  "month": "2025-09",
+  "singles": { "games": 1, "wins": 1, "durationMin": 10 },
+  "doubles": { "games": 2, "wins": 1, "durationMin": 24 },
+  "totals": { "games": 3, "wins": 2, "durationMin": 34 },
+  "recentFormSlice": [
+    { "endedAt": "2025-09-22T12:34:56Z", "result": "W", "mode": "doubles" },
+    { "endedAt": "2025-09-22T12:10:03Z", "result": "W", "mode": "singles" }
+  ],
+  "computedAt": "2025-09-22T12:36:02Z"
+}
+```
+
+---
+
+### 9.4) Per-user Friends Mirror (Club)
+
+**Path**
+`{clubRoot}/{clubId}/userStats/{uid}/friends/{otherUid}`
+
+**Purpose**
+Fast read of teammate history within this club. Only written when both `uid` and `otherUid` are club members. Authoritative counters live under club `friendEdges` (see §9.6).
+
+**Fields**
+
+- `otherUid` _(string)_.
+- `edgeKey` _(string)_ – canonical `min(uid,other) + "__" + max(...)`.
+- `together` _(object)_ – `games`, `wins`, `durationMin`.
+- `lastPlayedAt`, `updatedAt` _(ISO8601)_.
+
+**Example**
+
+```json
+{
+  "otherUid": "uB",
+  "edgeKey": "uA__uB",
+  "together": { "games": 20, "wins": 12, "durationMin": 220 },
+  "lastPlayedAt": "2025-09-22T12:34:56Z",
+  "updatedAt": "2025-09-22T12:35:00Z"
+}
+```
+
+---
+
+### 9.5) Per-user Opponents Mirror (Club)
+
+**Path**
+`{clubRoot}/{clubId}/userStats/{uid}/opponents/{otherUid}`
+
+**Purpose**
+Fast read of head-to-head history within this club. Only written when both `uid` and `otherUid` are club members. Authoritative counters live under club `opponentEdges` (see §9.7).
+
+**Fields**
+
+- `otherUid`, `edgeKey` _(strings)_.
+- `against` _(object)_ – `singles`, `doubles`, `totals` with `games`, `wins`, `losses`, `durationMin`.
+- `lastPlayedAt`, `updatedAt` _(ISO8601)_.
+
+**Example**
+
+```json
+{
+  "otherUid": "uB",
+  "edgeKey": "uA__uB",
+  "against": {
+    "singles": { "games": 3, "wins": 1, "losses": 2, "durationMin": 30 },
+    "doubles": { "games": 8, "wins": 5, "losses": 3, "durationMin": 80 },
+    "totals": { "games": 11, "wins": 6, "losses": 5, "durationMin": 110 }
+  },
+  "lastPlayedAt": "2025-09-22T12:34:56Z",
+  "updatedAt": "2025-09-22T12:35:00Z"
+}
+```
+
+---
+
+### 9.6) Club Friend Edges (Authoritative Teammates)
+
+**Path**
+`{clubRoot}/{clubId}/friendEdges/{edgeKey}`
+
+**Purpose**
+Authoritative teammate counters within a club. Only pairs where both users are club members are tracked.
+
+**Fields**
+
+- `participants` _(array<string>)_ – `[u1, u2]` canonical order.
+- `together` _(object)_ – `games`, `wins`, `durationMin`.
+- `lastPlayedAt`, `updatedAt` _(ISO8601)_.
+
+**Subcollections**
+
+- `monthly/{YYYY-MM}` – same fields as global monthly, plus `appliedSessions` and `lastPlayedAt`.
+- `bySession/{sessionKey}` – create-only idempotency gate per session.
+
+**Example (root)**
+
+```json
+{
+  "participants": ["uA", "uB"],
+  "together": { "games": 45, "wins": 28, "durationMin": 480 },
+  "lastPlayedAt": "2025-09-22T12:34:56Z",
+  "updatedAt": "2025-09-22T12:35:00Z"
+}
+```
+
+---
+
+### 9.7) Club Opponent Edges (Authoritative H2H)
+
+**Path**
+`{clubRoot}/{clubId}/opponentEdges/{pairKey}`
+
+**Purpose**
+Authoritative head-to-head counters within a club, split by mode. Only pairs where both users are club members are tracked.
+
+**Fields**
+
+- `participants` _(array<string>)_ – `[u1, u2]`.
+- `head` _(object)_ – `singles`, `doubles`, `totals` each with `games`, `winsU1`, `winsU2`, `durationMin`.
+- `lastPlayedAt`, `updatedAt` _(ISO8601)_.
+
+**Subcollections**
+
+- `monthly/{YYYY-MM}` – same fields as global edge monthly, plus `appliedSessions` and `lastPlayedAt`.
+- `bySession/{sessionKey}` – create-only idempotency gate per session.
+
+**Example (root)**
+
+```json
+{
+  "participants": ["uA", "uB"],
+  "head": {
+    "singles": { "games": 4, "winsU1": 2, "winsU2": 2, "durationMin": 44 },
+    "doubles": { "games": 16, "winsU1": 9, "winsU2": 7, "durationMin": 160 },
+    "totals": { "games": 20, "winsU1": 11, "winsU2": 9, "durationMin": 204 }
+  },
+  "lastPlayedAt": "2025-09-22T12:34:56Z",
+  "updatedAt": "2025-09-22T12:35:00Z"
+}
+```
+
+---
+
+### 9.8) Idempotency Gates (Club)
+
+Create-only gates to avoid double counting within a club, mirroring §8 but scoped by `clubId`.
+
+**Per-user tasks** _(recommended per-session keys)_
+
+- Path: `{clubRoot}/{clubId}/userStats/{uid}/gates/stats:monthly:{YYYY-MM}:{uid}:{sessionKey}`
+  - Fields: `{ taskKey, sessionKey, scope:{uid,month,clubId}, workerVersion, createdAt }`
+- Path: `{clubRoot}/{clubId}/userStats/{uid}/gates/stats:summary:{uid}:{sessionKey}`
+  - Fields: `{ taskKey, sessionKey, scope:{uid,clubId}, workerVersion, createdAt }`
+
+**Per-edge tasks**
+
+- Friends: `{clubRoot}/{clubId}/friendEdges/{edgeKey}/bySession/{sessionKey}`
+- Opponents: `{clubRoot}/{clubId}/opponentEdges/{pairKey}/bySession/{sessionKey}`
+
+**Example (user monthly gate)**
+
+```json
+{
+  "taskKey": "stats:monthly:2025-09:uA:org1_sess100",
+  "sessionKey": "org1_sess100",
+  "scope": { "uid": "uA", "month": "2025-09", "clubId": "club123" },
+  "workerVersion": "2025-09-22.1",
+  "createdAt": "2025-09-22T12:36:02Z"
+}
+```
+
+---
+
+### 9.9) Membership Filter Rules (Club)
+
+- Subjects: Only users who are members of `{clubId}` receive club-level stats. Guests and non-members are ignored as subjects.
+- Per-user totals: Count all games the member played in that club's sessions, regardless of whether partners/opponents were members or guests.
+- Mirrors and edges: Only written for pairs where both users are members of `{clubId}`. Games against guests or non-members contribute to the member's per-user totals but do not create/update mirrors or edges.
+- Guests (no `uid`): Never stored in club-scoped stats.
+
+---
+
+### 9.10) Elo Note (Club)
+
+- Elo remains a single global rating per user. No club-level Elo documents are created.
+- Club sessions may apply a slightly higher Elo K-factor/weight as described in `docs/elo.md`. This does not change any of the schemas above.
