@@ -7,6 +7,8 @@ import {
   onSnapshot,
   query,
   where,
+  and as fsAnd,
+  or as fsOr,
   runTransaction,
   serverTimestamp,
   getDocs,
@@ -51,6 +53,9 @@ export type FirestoreClub = {
   name: string;
   ownerUid: string;
   memberUids: string[]; // includes owner
+  // visibility controls whether non-members can view the club details
+  // default unspecified/"public" for backwards compatibility
+  visibility?: "public" | "private";
   createdAt?: unknown;
   updatedAt?: unknown;
 };
@@ -78,33 +83,76 @@ export function subscribeMyClubs(
     clubsCollection(),
     where("memberUids", "array-contains", uid)
   );
-  return onSnapshot(qref, (snap) => {
-    const result: FirestoreClub[] = [];
-    snap.forEach((d) => {
-      const data = d.data() as any;
-      result.push({ id: d.id, ...(data as any) });
-    });
-    // Sort newest first using createdAt if present, otherwise by id
-    result.sort((a, b) => {
-      const ta = (a.createdAt as any)?.toMillis?.() || 0;
-      const tb = (b.createdAt as any)?.toMillis?.() || 0;
-      if (tb !== ta) return tb - ta;
-      return (b.id || "").localeCompare(a.id || "");
-    });
-    onChange(result);
-  });
+  return onSnapshot(
+    qref,
+    (snap) => {
+      const result: FirestoreClub[] = [];
+      snap.forEach((d) => {
+        const data = d.data() as any;
+        result.push({ id: d.id, ...(data as any) });
+      });
+      // Sort newest first using createdAt if present, otherwise by id
+      result.sort((a, b) => {
+        const ta = (a.createdAt as any)?.toMillis?.() || 0;
+        const tb = (b.createdAt as any)?.toMillis?.() || 0;
+        if (tb !== ta) return tb - ta;
+        return (b.id || "").localeCompare(a.id || "");
+      });
+      onChange(result);
+    },
+    (err) => {
+      console.error(err);
+    }
+  );
 }
 
 export function subscribeClub(
   clubId: string,
-  onChange: (club: FirestoreClub | null) => void
+  onChange: (club: FirestoreClub | null) => void,
+  onError?: (error: any) => void,
+  viewerUid?: string
 ) {
-  const ref = clubDoc(clubId);
-  return onSnapshot(ref, (snap) => {
-    if (!snap.exists()) return onChange(null);
-    const data = snap.data() as any;
-    onChange({ id: snap.id, ...(data as any) });
-  });
+  // If a viewer uid is provided, apply a visibility/membership filter:
+  // (id == clubId AND visibility == "public") OR (id == clubId AND memberUids array-contains viewerUid)
+  console.log("viewerUid", viewerUid);
+  if (viewerUid) {
+    const qref = query(
+      clubsCollection(),
+      fsOr(
+        fsAnd(where("id", "==", clubId), where("visibility", "==", "public")),
+        fsAnd(
+          where("id", "==", clubId),
+          where("memberUids", "array-contains", viewerUid)
+        )
+      )
+    );
+    return onSnapshot(
+      qref,
+      (snap) => {
+        const first = snap.docs[0];
+        if (!first) return onChange(null);
+        const data = first.data() as any;
+        onChange({ id: first.id, ...(data as any) });
+      },
+      (err) => {
+        if (onError) onError(err);
+      }
+    );
+  }
+  // Fallback: original behavior (no filtering)
+  // const ref = clubDoc(clubId);
+  // return onSnapshot(
+  //   ref,
+  //   (snap) => {
+  //     if (!snap.exists()) return onChange(null);
+  //     const data = snap.data() as any;
+  //     onChange({ id: snap.id, ...(data as any) });
+  //   },
+  //   (err) => {
+  //     if (onError) onError(err);
+  //   }
+  // );
+  if (onError) onError(new Error("no permission"));
 }
 
 export function subscribeClubFeed(
@@ -151,7 +199,8 @@ export async function createClubSessionFeedMessage(
 export async function createClubRemote(
   ownerUid: string,
   name: string,
-  initialUsernames: string[]
+  initialUsernames: string[],
+  visibility?: "public" | "private"
 ): Promise<string> {
   const cleanName = (name || "").trim();
   if (!ownerUid) throw new Error("Not signed in");
@@ -207,6 +256,7 @@ export async function createClubRemote(
       name: cleanName,
       ownerUid,
       memberUids: members,
+      visibility: visibility === "private" ? "private" : "public",
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     } as FirestoreClub);
@@ -240,6 +290,10 @@ export async function joinClubRemote(
     const snap = await tx.get(ref);
     if (!snap.exists()) throw new Error("Club not found");
     const data = snap.data() as any as FirestoreClub;
+    // prevent joining private clubs by non-members
+    if ((data.visibility || "public") === "private") {
+      throw new Error("Club is private");
+    }
     const set = new Set<string>(
       Array.isArray(data.memberUids) ? data.memberUids : []
     );
@@ -348,6 +402,88 @@ export async function addMemberByUsernameRemote(
   });
 }
 
+// Batch add multiple usernames as members in a single transaction.
+// Ensures only new users are added (no duplicates) and posts a single feed message.
+export async function addMembersByUsernamesRemote(
+  clubId: string,
+  actorUid: string,
+  usernames: string[]
+): Promise<{ added: string[]; skipped: string[] }> {
+  const normalized = Array.from(
+    new Set(
+      (usernames || [])
+        .map((s) =>
+          String(s || "")
+            .trim()
+            .toLowerCase()
+        )
+        .filter(Boolean)
+    )
+  ).slice(0, 50);
+  if (!normalized.length) return { added: [], skipped: [] };
+
+  // Resolve usernames -> uids (best-effort; skip those not found)
+  const resolved: { username: string; uid: string }[] = [];
+  for (let i = 0; i < normalized.length; i += 10) {
+    const chunk = normalized.slice(i, i + 10);
+    const reads = await Promise.all(
+      chunk.map(async (uname) => {
+        const ref = doc(db, usernamesCollectionIdLocal(), uname);
+        const snap = await getDoc(ref);
+        if (snap.exists()) {
+          const uid = (snap.data() as any)?.uid as string | undefined;
+          if (uid) return { username: uname, uid };
+        }
+        return null;
+      })
+    );
+    reads.forEach((r) => {
+      if (r && r.uid) resolved.push(r);
+    });
+  }
+  if (!resolved.length) return { added: [], skipped: normalized };
+
+  const ref = clubDoc(clubId);
+  let addedUsernames: string[] = [];
+  let skipped: string[] = [];
+  await runTransaction(db, async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists()) throw new Error("Club not found");
+    const data = snap.data() as any as FirestoreClub;
+    if (data.ownerUid !== actorUid)
+      throw new Error("Only owner can add members");
+    const existing = new Set<string>(
+      Array.isArray(data.memberUids) ? data.memberUids : []
+    );
+    const capacityLeft = Math.max(0, 30 - existing.size);
+    const toAdd = resolved
+      .filter((r) => !existing.has(r.uid))
+      .slice(0, capacityLeft);
+    addedUsernames = toAdd.map((r) => r.username);
+    skipped = normalized.filter((u) => !addedUsernames.includes(u));
+    if (toAdd.length) {
+      const next = Array.from(
+        new Set([...existing, ...toAdd.map((r) => r.uid)])
+      );
+      tx.set(
+        ref,
+        { memberUids: next, updatedAt: serverTimestamp() },
+        { merge: true }
+      );
+      tx.set(doc(clubFeedCollection(clubId)), {
+        type: "join",
+        message:
+          addedUsernames.length === 1
+            ? `Member added: @${addedUsernames[0]}`
+            : `Members added: ${addedUsernames.map((u) => `@${u}`).join(", ")}`,
+        actorUid: actorUid,
+        createdAt: serverTimestamp(),
+      } as Omit<FirestoreClubFeed, "id">);
+    }
+  });
+  return { added: addedUsernames, skipped };
+}
+
 export async function kickMemberRemote(
   clubId: string,
   actorUid: string,
@@ -410,6 +546,33 @@ export async function renameClubRemote(
       message: prevName
         ? `Club renamed from "${prevName}" to "${clean}"`
         : `Club renamed to "${clean}"`,
+      actorUid: actorUid,
+      createdAt: serverTimestamp(),
+    } as Omit<FirestoreClubFeed, "id">);
+  });
+}
+
+export async function updateClubVisibilityRemote(
+  clubId: string,
+  actorUid: string,
+  visibility: "public" | "private"
+): Promise<void> {
+  const ref = clubDoc(clubId);
+  await runTransaction(db, async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists()) throw new Error("Club not found");
+    const data = snap.data() as any as FirestoreClub;
+    if (data.ownerUid !== actorUid)
+      throw new Error("Only owner can change visibility");
+    const prev = (data.visibility || "public") as "public" | "private";
+    if (prev === visibility) return;
+    tx.set(ref, { visibility, updatedAt: serverTimestamp() }, { merge: true });
+    tx.set(doc(clubFeedCollection(clubId)), {
+      type: "system",
+      message:
+        visibility === "private"
+          ? "Club visibility changed to private"
+          : "Club visibility changed to public",
       actorUid: actorUid,
       createdAt: serverTimestamp(),
     } as Omit<FirestoreClubFeed, "id">);

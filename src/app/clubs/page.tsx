@@ -2,6 +2,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { Card, Input } from "@/components/layout";
+import LoadingScreen from "@/components/LoadingScreen";
 import { auth } from "@/lib/firebase";
 import { onAuthStateChanged } from "firebase/auth";
 import {
@@ -20,21 +21,33 @@ export default function ClubsListPage() {
       ? { uid: auth.currentUser.uid, displayName: auth.currentUser.displayName }
       : null
   );
+  const [authReady, setAuthReady] = useState(false);
   useEffect(
     () =>
-      onAuthStateChanged(auth, (u) =>
-        setUser(u ? { uid: u.uid, displayName: u.displayName } : null)
-      ),
+      onAuthStateChanged(auth, (u) => {
+        setUser(u ? { uid: u.uid, displayName: u.displayName } : null);
+        setAuthReady(true);
+      }),
     []
   );
 
   const [myClubs, setMyClubs] = useState<FirestoreClub[]>([]);
+  const [clubsReady, setClubsReady] = useState(false);
   useEffect(() => {
     if (!user) {
       setMyClubs([]);
+      setClubsReady(true);
       return;
     }
-    return subscribeMyClubs(user.uid, setMyClubs);
+    setClubsReady(false);
+    let first = true;
+    return subscribeMyClubs(user.uid, (docs) => {
+      setMyClubs(docs);
+      if (first) {
+        setClubsReady(true);
+        first = false;
+      }
+    });
   }, [user?.uid]);
 
   // Pagination (client-side)
@@ -50,6 +63,7 @@ export default function ClubsListPage() {
   const [wizardOpen, setWizardOpen] = useState(false);
   const [step, setStep] = useState<1 | 2 | 3>(1);
   const [clubName, setClubName] = useState("");
+  const [visibility, setVisibility] = useState<"public" | "private">("public");
   const [selectedUsernames, setSelectedUsernames] = useState<string[]>([]);
   const [unameQuery, setUnameQuery] = useState("");
   const [suggests, setSuggests] = useState<string[]>([]);
@@ -129,7 +143,11 @@ export default function ClubsListPage() {
       </section> */}
 
       <section className="space-y-3">
-        {!user ? (
+        {!authReady || (user && !clubsReady) ? (
+          <Card>
+            <LoadingScreen variant="skeleton" count={5} />
+          </Card>
+        ) : !user ? (
           <Card>
             <div className="text-gray-600">
               Please sign in to view your clubs.
@@ -192,13 +210,47 @@ export default function ClubsListPage() {
           <div className="relative w-full max-w-sm rounded-2xl bg-white p-4 shadow-lg max-h-[90vh] overflow-auto">
             <div className="mb-2 text-base font-semibold">Create club</div>
             {step === 1 && (
-              <div>
+              <div className="space-y-2 justify-start">
                 <Input
                   label="Club name"
                   placeholder="e.g. Friday Smash Buddies"
                   value={clubName}
                   onChange={(e) => setClubName(e.target.value)}
                 />
+                <div className="mt-2">
+                  <div className="text-[11px] text-gray-600 mb-1">
+                    Visibility
+                  </div>
+                  <div className="inline-flex rounded-full border p-1 text-xs">
+                    <button
+                      className={`rounded-full px-3 py-1 ${
+                        visibility === "public"
+                          ? "bg-blue-600 text-white"
+                          : "text-gray-700"
+                      }`}
+                      onClick={() => setVisibility("public")}
+                      type="button"
+                    >
+                      Public
+                    </button>
+                    <button
+                      className={`rounded-full px-3 py-1 ${
+                        visibility === "private"
+                          ? "bg-gray-900 text-white"
+                          : "text-gray-700"
+                      }`}
+                      onClick={() => setVisibility("private")}
+                      type="button"
+                    >
+                      Private
+                    </button>
+                  </div>
+                  <div className="mt-1 text-[11px] text-gray-500">
+                    {visibility === "public"
+                      ? "Public: non-members can view club details."
+                      : "Private: only members can view club details and join is disabled."}
+                  </div>
+                </div>
                 <div className="mt-3 flex items-center justify-end gap-2">
                   <button
                     className="rounded-xl border px-3 py-1.5 text-sm"
@@ -319,6 +371,12 @@ export default function ClubsListPage() {
                   <div className="text-sm font-semibold">{clubName.trim()}</div>
                 </div>
                 <div className="mt-2 rounded border p-3">
+                  <div className="text-[11px] text-gray-500">Visibility</div>
+                  <div className="text-sm font-semibold capitalize">
+                    {visibility}
+                  </div>
+                </div>
+                <div className="mt-2 rounded border p-3">
                   <div className="text-[11px] text-gray-500">
                     Members to add
                   </div>
@@ -359,7 +417,8 @@ export default function ClubsListPage() {
                         const id = await createClubRemote(
                           user.uid,
                           clubName,
-                          parsedUsernames
+                          parsedUsernames,
+                          visibility
                         );
                         setWizardOpen(false);
                         window.location.href = `/clubs/${id}`;

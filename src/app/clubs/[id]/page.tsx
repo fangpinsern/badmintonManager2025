@@ -3,6 +3,7 @@ import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { useEffect, useMemo, useState, useRef } from "react";
 import { Card, Input } from "@/components/layout";
+import LoadingScreen from "@/components/LoadingScreen";
 import { auth } from "@/lib/firebase";
 import { onAuthStateChanged } from "firebase/auth";
 import { ConfirmModal } from "@/components/session/confirmModal";
@@ -11,12 +12,13 @@ import {
   subscribeClubFeed,
   joinClubRemote,
   leaveClubRemote,
-  addMemberByUsernameRemote,
   kickMemberRemote,
   renameClubRemote,
   suggestUsernames,
   resolveUsernamesForUids,
   getClubFeedPage,
+  updateClubVisibilityRemote,
+  addMembersByUsernamesRemote,
 } from "@/lib/firestoreClubs";
 import type { FirestoreClub, FirestoreClubFeed } from "@/lib/firestoreClubs";
 import { subscribeClubSessions, saveSession } from "@/lib/firestoreSessions";
@@ -32,6 +34,7 @@ export default function ClubDetailPage() {
   const router = useRouter();
   const id = String(params?.id || "");
   const [club, setClub] = useState<FirestoreClub | null>(null);
+  const [clubReady, setClubReady] = useState(false);
   const [feed, setFeed] = useState<FirestoreClubFeed[]>([]);
   const [feedBusy, setFeedBusy] = useState(false);
   const [feedCursor, setFeedCursor] = useState<any | null>(null);
@@ -45,11 +48,13 @@ export default function ClubDetailPage() {
       ? { uid: auth.currentUser.uid, displayName: auth.currentUser.displayName }
       : null
   );
+  const [authReady, setAuthReady] = useState(false);
   useEffect(
     () =>
-      onAuthStateChanged(auth, (u) =>
-        setUser(u ? { uid: u.uid, displayName: u.displayName } : null)
-      ),
+      onAuthStateChanged(auth, (u) => {
+        setUser(u ? { uid: u.uid, displayName: u.displayName } : null);
+        setAuthReady(true);
+      }),
     []
   );
 
@@ -62,12 +67,15 @@ export default function ClubDetailPage() {
     [club, user]
   );
 
-  const [inviteUsername, setInviteUsername] = useState("");
-  const [unameQuery, setUnameQuery] = useState("");
-  const [suggests, setSuggests] = useState<string[]>([]);
+  const [addModalOpen, setAddModalOpen] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [newName, setNewName] = useState("");
   const [confirmKickUid, setConfirmKickUid] = useState<string | null>(null);
+  const [confirmVisibility, setConfirmVisibility] = useState<null | {
+    desired: "public" | "private";
+  }>(null);
+  const [confirmLeaveMe, setConfirmLeaveMe] = useState(false);
+  const [clubError, setClubError] = useState<string | null>(null);
   const [usernameMap, setUsernameMap] = useState<Record<string, string>>({});
   const [clubSessions, setClubSessions] = useState<Session[]>([]);
   const createSession = useStore((s) => s.createSession);
@@ -114,11 +122,42 @@ export default function ClubDetailPage() {
 
   useEffect(() => {
     if (!id) return;
-    return subscribeClub(id, setClub);
-  }, [id]);
+    setClubReady(false);
+    setClubError(null);
+    let first = true;
+    return subscribeClub(
+      id,
+      (doc) => {
+        setClub(doc);
+        if (first) {
+          setClubReady(true);
+          first = false;
+        }
+      },
+      (err) => {
+        // Gracefully surface permission errors
+        try {
+          const code = (err && (err.code || err?.name)) || "unknown";
+          if (
+            String(code).includes("permission") ||
+            code === "permission-denied"
+          ) {
+            setClubError("You don't have permission to view this club.");
+          } else {
+            setClubError("Unable to load this club.");
+          }
+        } catch {
+          setClubError("Unable to load this club.");
+        }
+        setClubReady(true);
+      },
+      user?.uid || undefined
+    );
+  }, [id, user]);
   // Realtime head (first page) subscription: keep latest messages fresh
   useEffect(() => {
     if (!id) return;
+    if (!authReady) return;
     return subscribeClubFeed(id, 20, (items) => {
       setFeed((prev) => {
         // merge new items with existing, de-dup by id, keep order by createdAt desc
@@ -128,10 +167,11 @@ export default function ClubDetailPage() {
         return Array.from(map.values());
       });
     });
-  }, [id]);
+  }, [id, user]);
 
   // Initial page load for infinite scroll
   useEffect(() => {
+    if (!authReady) return;
     let cancelled = false;
     async function loadFirst() {
       if (!id) return;
@@ -150,7 +190,7 @@ export default function ClubDetailPage() {
     return () => {
       cancelled = true;
     };
-  }, [id]);
+  }, [id, authReady]);
 
   async function loadMoreFeed() {
     if (!id) return;
@@ -206,29 +246,44 @@ export default function ClubDetailPage() {
       cancelled = true;
     };
   }, [club?.memberUids?.join("|")]);
-  useEffect(() => {
-    let cancelled = false;
-    const handle = setTimeout(async () => {
-      const q = (unameQuery || "").trim().toLowerCase();
-      if (!q) {
-        setSuggests([]);
-        return;
-      }
-      const res = await suggestUsernames(q, 8);
-      if (!cancelled) setSuggests(res);
-    }, 200);
-    return () => {
-      cancelled = true;
-      clearTimeout(handle);
-    };
-  }, [unameQuery]);
+  // removed old owner search UI in favor of AddMembersModal
+
+  if (!clubReady || !authReady) {
+    return (
+      <main className="mx-auto max-w-md p-4 text-sm">
+        <Card>
+          <LoadingScreen />
+        </Card>
+      </main>
+    );
+  }
 
   if (!club) {
     return (
       <main className="mx-auto max-w-md p-4 text-sm">
         <Card>
           <div className="flex items-center justify-between">
-            <div className="text-gray-600">Club not found.</div>
+            <div className="text-gray-600">
+              {clubError ? clubError : "Club not found."}
+            </div>
+            <Link href="/clubs" className="rounded border px-2 py-1 text-xs">
+              Back
+            </Link>
+          </div>
+        </Card>
+      </main>
+    );
+  }
+
+  const isPrivate = ((club as any)?.visibility || "public") === "private";
+  if (isPrivate && !isMember) {
+    return (
+      <main className="mx-auto max-w-md p-4 text-sm">
+        <Card>
+          <div className="flex items-center justify-between">
+            <div className="text-gray-600">
+              This club is private. Only members can view the details.
+            </div>
             <Link href="/clubs" className="rounded border px-2 py-1 text-xs">
               Back
             </Link>
@@ -260,7 +315,7 @@ export default function ClubDetailPage() {
                 Sign in to join this club.
               </div>
             )}
-            {!!user && !isMember && (
+            {!!user && !isMember && !isPrivate && (
               <button
                 className="rounded bg-black px-3 py-2 text-xs text-white"
                 onClick={async () => {
@@ -291,6 +346,10 @@ export default function ClubDetailPage() {
                 >
                   Rename
                 </button>
+                <VisibilitySwitch
+                  isPrivate={isPrivate}
+                  onSelect={(desired) => setConfirmVisibility({ desired })}
+                />
                 <div className="text-[11px] text-gray-600">
                   You are the owner
                 </div>
@@ -327,9 +386,17 @@ export default function ClubDetailPage() {
           <div className="flex items-center justify-between">
             <h2 className="text-base font-semibold">Members</h2>
             {isOwner && (
-              <span className="text-[11px] text-gray-500">
-                owner can add/kick
-              </span>
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] text-gray-500">
+                  owner can add/kick
+                </span>
+                <button
+                  className="rounded border px-2 py-1 text-xs"
+                  onClick={() => setAddModalOpen(true)}
+                >
+                  Add members
+                </button>
+              </div>
             )}
           </div>
           <ul className="mt-3 space-y-2">
@@ -349,48 +416,29 @@ export default function ClubDetailPage() {
                     )}
                   </div>
                 </div>
-                {isOwner && uid !== club.ownerUid && (
-                  <button
-                    className="rounded border px-2 py-1 text-xs"
-                    onClick={() => setConfirmKickUid(uid)}
-                  >
-                    Kick
-                  </button>
-                )}
+                <div className="flex items-center gap-2">
+                  {user?.uid === uid && uid !== club.ownerUid && (
+                    <button
+                      className="rounded border px-2 py-1 text-xs"
+                      onClick={() => setConfirmLeaveMe(true)}
+                    >
+                      Leave
+                    </button>
+                  )}
+                  {isOwner && uid !== club.ownerUid && (
+                    <button
+                      className="rounded border px-2 py-1 text-xs"
+                      onClick={() => setConfirmKickUid(uid)}
+                    >
+                      Kick
+                    </button>
+                  )}
+                </div>
               </li>
             ))}
           </ul>
 
-          {isOwner && (
-            <div className="mt-4">
-              <div className="mt-2">
-                <Input
-                  label="Search usernames"
-                  placeholder="type to search"
-                  value={unameQuery}
-                  onChange={(e) => setUnameQuery(e.target.value)}
-                />
-                {suggests.length > 0 && (
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    {suggests.map((s) => (
-                      <button
-                        key={s}
-                        className="rounded-full border px-2 py-0.5 text-xs"
-                        onClick={async () => {
-                          if (!user) return;
-                          await addMemberByUsernameRemote(club.id, user.uid, s);
-                          setUnameQuery("");
-                          setSuggests([]);
-                        }}
-                      >
-                        {s}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
+          {/* old owner search input replaced by Add members modal trigger above */}
         </Card>
 
         <Card className="md:col-span-2">
@@ -658,6 +706,43 @@ export default function ClubDetailPage() {
         </div>
       )}
 
+      {/* Visibility confirm */}
+      <ConfirmModal
+        open={!!confirmVisibility}
+        title="Change visibility?"
+        body={
+          confirmVisibility?.desired === "private"
+            ? "Switch to private: only members can view details and join is disabled. Proceed?"
+            : "Switch to public: anyone can view details and can join. Proceed?"
+        }
+        confirmText="Confirm"
+        onCancel={() => setConfirmVisibility(null)}
+        onConfirm={async () => {
+          if (!confirmVisibility?.desired || !user) return;
+          await updateClubVisibilityRemote(
+            club.id,
+            user.uid,
+            confirmVisibility.desired
+          );
+          setConfirmVisibility(null);
+        }}
+      />
+
+      {/* Add members modal */}
+      <AddMembersModal
+        open={addModalOpen}
+        onClose={() => setAddModalOpen(false)}
+        onConfirm={async (selected) => {
+          if (!user || !selected.length) return;
+          try {
+            await addMembersByUsernamesRemote(club.id, user.uid, selected);
+          } finally {
+            setAddModalOpen(false);
+          }
+        }}
+        existingUsernames={Object.values(usernameMap).filter(Boolean)}
+      />
+
       {/* Kick confirmation */}
       <ConfirmModal
         open={!!confirmKickUid}
@@ -669,6 +754,20 @@ export default function ClubDetailPage() {
           if (!confirmKickUid || !user) return;
           await kickMemberRemote(club.id, user.uid, confirmKickUid);
           setConfirmKickUid(null);
+        }}
+      />
+
+      {/* Leave confirmation (self) */}
+      <ConfirmModal
+        open={confirmLeaveMe}
+        title="Leave club?"
+        body="You will be removed from this club."
+        confirmText="Leave"
+        onCancel={() => setConfirmLeaveMe(false)}
+        onConfirm={async () => {
+          if (!user) return;
+          await leaveClubRemote(club.id, user.uid);
+          setConfirmLeaveMe(false);
         }}
       />
     </main>
@@ -727,6 +826,7 @@ function ClubSessionTabs({
             <UnifiedSessionCard
               session={ss}
               onOpen={(id) => router.push(`/session/${id}`)}
+              variant="compact"
             />
           </div>
         ))
@@ -750,3 +850,166 @@ function ClubSessionTabs({
 }
 
 export const runtime = "edge";
+
+function VisibilitySwitch({
+  isPrivate,
+  onSelect,
+}: {
+  isPrivate: boolean;
+  onSelect: (desired: "public" | "private") => void;
+}) {
+  return (
+    <div className="flex items-center gap-2">
+      <div className="text-[11px] text-gray-600">Visibility</div>
+      <div className="relative inline-flex h-8 items-center rounded-full border px-1">
+        <button
+          className={`rounded-full px-3 py-1 text-xs ${
+            !isPrivate ? "bg-blue-600 text-white" : "text-gray-700"
+          }`}
+          onClick={() => {
+            if (isPrivate) onSelect("public");
+          }}
+        >
+          Public
+        </button>
+        <button
+          className={`rounded-full px-3 py-1 text-xs ${
+            isPrivate ? "bg-gray-900 text-white" : "text-gray-700"
+          }`}
+          onClick={() => {
+            if (!isPrivate) onSelect("private");
+          }}
+        >
+          Private
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function AddMembersModal({
+  open,
+  onClose,
+  onConfirm,
+  existingUsernames,
+}: {
+  open: boolean;
+  onClose: () => void;
+  onConfirm: (usernames: string[]) => void | Promise<void>;
+  existingUsernames: string[];
+}) {
+  const [query, setQuery] = useState("");
+  const [suggests, setSuggests] = useState<string[]>([]);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [busy, setBusy] = useState(false);
+  const existing = useMemo(
+    () => new Set(existingUsernames || []),
+    [existingUsernames]
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    const handle = setTimeout(async () => {
+      const q = (query || "").trim().toLowerCase();
+      if (!q) {
+        setSuggests([]);
+        return;
+      }
+      const res = await suggestUsernames(q, 8);
+      if (!cancelled) setSuggests(res);
+    }, 200);
+    return () => {
+      cancelled = true;
+      clearTimeout(handle);
+    };
+  }, [query]);
+
+  function toggleSelect(uname: string) {
+    const u = (uname || "").trim().toLowerCase();
+    if (!u) return;
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(u)) next.delete(u);
+      else next.add(u);
+      return next;
+    });
+  }
+
+  if (!open) return null;
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      <div className="absolute inset-0 bg-black/40" onClick={onClose}></div>
+      <div className="relative w-full max-w-sm rounded-2xl bg-white p-4 shadow-lg">
+        <div className="mb-2 text-base font-semibold">Add members</div>
+        <Input
+          label="Search usernames"
+          placeholder="type to search"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
+        {suggests.length > 0 && (
+          <div className="mt-2 flex flex-wrap gap-2">
+            {suggests.map((s) => {
+              const disabled = existing.has(s);
+              const isSel = selected.has(s);
+              return (
+                <button
+                  key={s}
+                  disabled={disabled}
+                  className={`rounded-full border px-2 py-0.5 text-xs ${
+                    disabled
+                      ? "opacity-50"
+                      : isSel
+                      ? "border-blue-300 bg-blue-50"
+                      : ""
+                  }`}
+                  onClick={() => toggleSelect(s)}
+                >
+                  {disabled ? `${s} (member)` : s}
+                </button>
+              );
+            })}
+          </div>
+        )}
+        {selected.size > 0 && (
+          <div className="mt-3">
+            <div className="mb-1 text-xs text-gray-600">Selected</div>
+            <div className="flex flex-wrap gap-2">
+              {Array.from(selected).map((s) => (
+                <button
+                  key={s}
+                  className="rounded-full border px-2 py-0.5 text-xs"
+                  onClick={() => toggleSelect(s)}
+                >
+                  {s} ×
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+        <div className="mt-3 flex items-center justify-end gap-2">
+          <button
+            className="rounded-xl border px-3 py-1.5 text-sm"
+            onClick={onClose}
+          >
+            Cancel
+          </button>
+          <button
+            className="rounded-xl bg-black px-3 py-1.5 text-sm text-white disabled:opacity-50"
+            disabled={busy || selected.size === 0}
+            onClick={async () => {
+              try {
+                setBusy(true);
+                await onConfirm(Array.from(selected));
+              } finally {
+                setBusy(false);
+              }
+            }}
+          >
+            Confirm
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}

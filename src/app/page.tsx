@@ -499,6 +499,9 @@ function SessionList({ onOpen }: { onOpen: (id: string) => void }) {
   const endSession = useStore((s) => s.endSession);
   const [endFor, setEndFor] = useState<string | null>(null);
   const [shuttles, setShuttles] = useState<string>("0");
+  const [cardVariant, setCardVariant] = useState<
+    "compact" | "standard" | "detailed"
+  >("compact");
   const me = auth.currentUser?.uid || null;
 
   const nowIsoDate = new Date().toISOString().slice(0, 10);
@@ -530,70 +533,117 @@ function SessionList({ onOpen }: { onOpen: (id: string) => void }) {
 
   return (
     <div className="space-y-3">
-      <div className="mb-1 flex items-center gap-2">
-        <button
-          onClick={() => setTab("upcoming")}
-          className={`rounded-xl border px-3 py-1.5 text-xs ${
-            tab === "upcoming"
-              ? "border-blue-300 bg-blue-50 text-blue-700"
-              : "border-gray-300"
-          }`}
-        >
-          Upcoming
-        </button>
-        <button
-          onClick={() => setTab("closed")}
-          className={`rounded-xl border px-3 py-1.5 text-xs ${
-            tab === "closed"
-              ? "border-gray-400 bg-gray-100 text-gray-700"
-              : "border-gray-300"
-          }`}
-        >
-          Closed
-        </button>
+      <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+        <div className="mb-1 flex items-center gap-2">
+          <button
+            onClick={() => setTab("upcoming")}
+            className={`rounded-xl border px-3 py-1.5 text-xs ${
+              tab === "upcoming"
+                ? "border-blue-300 bg-blue-50 text-blue-700"
+                : "border-gray-300"
+            }`}
+          >
+            Upcoming
+          </button>
+          <button
+            onClick={() => setTab("closed")}
+            className={`rounded-xl border px-3 py-1.5 text-xs ${
+              tab === "closed"
+                ? "border-gray-400 bg-gray-100 text-gray-700"
+                : "border-gray-300"
+            }`}
+          >
+            Closed
+          </button>
+        </div>
+        {/* <div className="flex items-center gap-2">
+          <span className="text-xs text-gray-500">View:</span>
+          <button
+            onClick={() => setCardVariant("compact")}
+            className={`rounded-xl border px-3 py-1.5 text-xs ${
+              cardVariant === "compact"
+                ? "border-blue-300 bg-blue-50 text-blue-700"
+                : "border-gray-300"
+            }`}
+          >
+            Compact
+          </button>
+          <button
+            onClick={() => setCardVariant("standard")}
+            className={`rounded-xl border px-3 py-1.5 text-xs ${
+              cardVariant === "standard"
+                ? "border-blue-300 bg-blue-50 text-blue-700"
+                : "border-gray-300"
+            }`}
+          >
+            Standard
+          </button>
+          <button
+            onClick={() => setCardVariant("detailed")}
+            className={`rounded-xl border px-3 py-1.5 text-xs ${
+              cardVariant === "detailed"
+                ? "border-blue-300 bg-blue-50 text-blue-700"
+                : "border-gray-300"
+            }`}
+          >
+            Detailed
+          </button>
+        </div> */}
       </div>
 
-      {display.map((ss) => (
-        <UnifiedSessionCard
-          key={ss.id}
-          session={ss}
-          onOpen={(id) => {
-            onOpen(id);
-            router.push(`/session/${id}`);
-          }}
-          rightActions={(() => {
-            const owner = (window as any).__sessionOwners?.get?.(ss.id) || null;
-            const isOrganizer = owner && me ? owner === me : false;
-            return (
-              <>
-                {!ss.ended && isOrganizer && (
-                  <button
-                    onClick={() => {
-                      if ((ss.courts || []).some((c) => c.inProgress)) return;
-                      setEndFor(ss.id);
-                      setShuttles("0");
-                    }}
-                    disabled={(ss.courts || []).some((c) => c.inProgress)}
-                    className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-1.5 text-amber-700 disabled:opacity-50"
-                  >
-                    End
-                  </button>
-                )}
-                {isOrganizer && (
-                  <button
-                    onClick={() => {
-                      if (confirm("Delete this session?")) deleteSession(ss.id);
-                    }}
-                    className="rounded-xl border border-red-200 bg-red-50 px-3 py-1.5 text-red-600"
-                  >
-                    Delete
-                  </button>
-                )}
-              </>
-            );
-          })()}
-        />
-      ))}
+      {display.length == 0 ? (
+        <Card>
+          <div className="text-gray-600">
+            No sessions yet. Create one above.
+          </div>
+        </Card>
+      ) : (
+        display.map((ss) => (
+          <UnifiedSessionCard
+            key={ss.id}
+            session={ss}
+            onOpen={(id) => {
+              onOpen(id);
+              router.push(`/session/${id}`);
+            }}
+            variant={cardVariant}
+            rightActions={(() => {
+              const owner =
+                (window as any).__sessionOwners?.get?.(ss.id) || null;
+              const isOrganizer = owner && me ? owner === me : false;
+              if (!isOrganizer) return null;
+              return (
+                <>
+                  {!ss.ended && isOrganizer && (
+                    <button
+                      onClick={() => {
+                        if ((ss.courts || []).some((c) => c.inProgress)) return;
+                        setEndFor(ss.id);
+                        setShuttles("0");
+                      }}
+                      disabled={(ss.courts || []).some((c) => c.inProgress)}
+                      className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-1.5 text-amber-700 disabled:opacity-50"
+                    >
+                      End
+                    </button>
+                  )}
+                  {isOrganizer && (
+                    <button
+                      onClick={() => {
+                        if (confirm("Delete this session?"))
+                          deleteSession(ss.id);
+                      }}
+                      className="rounded-xl border border-red-200 bg-red-50 px-3 py-1.5 text-red-600"
+                    >
+                      Delete
+                    </button>
+                  )}
+                </>
+              );
+            })()}
+          />
+        ))
+      )}
 
       {canSeeMore && (
         <div className="flex justify-center">

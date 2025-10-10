@@ -898,6 +898,22 @@ function SessionManager({ onBack }: { onBack: () => void }) {
         </Card>
       )}
 
+      {session.clubId && (
+        <Card>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="text-[11px] text-gray-600">
+              This is a club session
+            </div>
+            <Link
+              href={`/clubs/${session.clubId}`}
+              className="rounded border px-2 py-1 text-xs"
+            >
+              Club
+            </Link>
+          </div>
+        </Card>
+      )}
+
       {canManage && (
         <Card>
           <h3 className="mb-3 text-base font-semibold">Add players</h3>
