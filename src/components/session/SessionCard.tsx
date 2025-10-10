@@ -46,9 +46,16 @@ export function SessionCard({
     return (
       <Card>
         <div className="flex items-center justify-between gap-3">
-          <div className="min-w-0">
+          <div className="min-w-0 flex flex-col gap-1">
             <div className="font-medium flex items-center gap-2">
               <span className="truncate">{formatSessionTitle(session)}</span>
+            </div>
+            <div className="text-xs text-gray-500">
+              {session.numCourts} court{session.numCourts > 1 ? "s" : ""}
+              {courtSummary} · {session.players.length} player
+              {session.players.length !== 1 ? "s" : ""}
+            </div>
+            <div className="font-medium flex items-center gap-2">
               {session.clubId ? (
                 <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[10px] text-gray-600">
                   Club
@@ -64,11 +71,6 @@ export function SessionCard({
                   Today
                 </span>
               )}
-            </div>
-            <div className="text-xs text-gray-500">
-              {session.numCourts} court{session.numCourts > 1 ? "s" : ""}
-              {courtSummary} · {session.players.length} player
-              {session.players.length !== 1 ? "s" : ""}
             </div>
             {((session.players || []).some((p) => p.accountUid === me) ||
               isOrganizer) && (
