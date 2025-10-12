@@ -54,28 +54,38 @@ export default {
         const m = text.match(/^\/start\s+([A-Za-z0-9_-]{10,})/);
         if (m) {
           const token = m[1];
-          // Call backend endpoint to claim token → update club.telegram mapping.
-          // For MVP, accept a simple exchange via signed endpoint behind Next.js (not implemented here).
           try {
-            const api = env.APP_BACKEND_BASE_URL || ""; // optional; if present, call claim endpoint
-            if (api) {
-              await fetch(`${api}/api/telegram/claim`, {
-                method: "POST",
-                headers: { "content-type": "application/json" },
-                body: JSON.stringify({
-                  token,
-                  chat: {
-                    id: chat.id,
-                    title: chat.title,
-                    username: chat.username,
-                  },
-                }),
-              });
+            const result = await claimTelegramLinkToken(env, token, {
+              id: chat.id,
+              title: chat.title,
+              username: chat.username,
+            });
+            if (result && env.TELEGRAM_BOT_TOKEN) {
+              try {
+                await sendTelegram({
+                  token: env.TELEGRAM_BOT_TOKEN,
+                  chatId: chat.id,
+                  text: `✅ Linked to <b>${escapeHtml(
+                    result.name || "your club"
+                  )}</b>.`,
+                });
+              } catch (e) {
+                try {
+                  console.log("telegram confirm send error", e);
+                } catch {}
+              }
             }
-          } catch (e) {}
+          } catch (e) {
+            try {
+              console.log("claim token error", e);
+            } catch {}
+          }
         }
         return withCors(new Response("ok"), req);
       } catch (e) {
+        try {
+          console.log("webhook error", e);
+        } catch {}
         return withCors(new Response("bad", { status: 400 }), req);
       }
     }
@@ -101,8 +111,12 @@ export default {
       const clubRes = await fetch(`${baseUrl}/${clubsCol}/${clubId}`, {
         headers: { authorization: `Bearer ${token}` },
       });
-      if (!clubRes.ok)
+      if (!clubRes.ok) {
+        try {
+          console.log("club read failed", clubId, clubRes.status);
+        } catch {}
         return withCors(new Response("club read failed", { status: 502 }), req);
+      }
       const clubDoc = await clubRes.json();
       const f = clubDoc.fields || {};
       const telegram = jsonFromFields(f.telegram) || {};
@@ -114,13 +128,20 @@ export default {
         return withCors(new Response("not linked", { status: 202 }), req);
       }
       const botToken = env.TELEGRAM_BOT_TOKEN;
-      if (!botToken)
+      if (!botToken) {
+        try {
+          console.log("no bot token configured");
+        } catch {}
         return withCors(new Response("no bot token", { status: 500 }), req);
+      }
       const text = payload?.text || "✅ Test message from Badminton Manager";
       try {
         await sendTelegram({ token: botToken, chatId: telegram.chatId, text });
         return withCors(new Response("sent"), req);
       } catch (e) {
+        try {
+          console.log("telegram send failed", e);
+        } catch {}
         return withCors(new Response("send failed", { status: 502 }), req);
       }
     }
@@ -712,6 +733,125 @@ function withCors(resp, req, opts) {
   const ch = corsHeaders(req, opts);
   for (const [k, v] of ch) h.set(k, v);
   return new Response(resp.body, { status: resp.status, headers: h });
+}
+function escapeHtml(s) {
+  if (!s) return "";
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+async function claimTelegramLinkToken(env, token, chat) {
+  // Direct Firestore edit: find club by telegram.linkToken == token and not expired
+  // Then set telegram.chatId/title/username, linkState=linked, clear linkToken
+  const access = await getAccessToken(env);
+  const { url: baseUrl } = fsBases(env.GCP_PROJECT_ID, env.FIRESTORE_DB);
+  const clubsCol =
+    String(env?.STATS_TEST_MODE || "").toLowerCase() === "true" ||
+    env?.STATS_TEST_MODE === "1"
+      ? "clubs_test"
+      : "clubs";
+  // Firestore structured query to find by linkToken (document field filter)
+  const queryEndpoint = `${baseUrl}:runQuery`;
+  const body = {
+    structuredQuery: {
+      from: [{ collectionId: clubsCol }],
+      where: {
+        fieldFilter: {
+          field: { fieldPath: "telegram.linkToken" },
+          op: "EQUAL",
+          value: { stringValue: token },
+        },
+      },
+      limit: 1,
+    },
+  };
+  const res = await fetch(queryEndpoint, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${access}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    try {
+      console.log("query error", res.status);
+    } catch {}
+    throw new Error("query failed");
+  }
+  const arr = await res.json();
+  const first = Array.isArray(arr) ? arr.find((x) => x.document) : null;
+  if (!first || !first.document) return null;
+  const doc = first.document;
+  const name = doc.name || ""; // full path
+  // Optional TTL check
+  try {
+    const f = doc.fields || {};
+    const expiresMs = Number(
+      f.telegram?.mapValue?.fields?.linkTokenExpiresAt?.integerValue || 0
+    );
+    if (expiresMs && Date.now() > expiresMs) return null;
+  } catch {}
+  // Apply update mask: set telegram.chatId/title/username/linkState, clear linkToken
+  const fields = {
+    telegram: {
+      mapValue: {
+        fields: {
+          chatId: { integerValue: String(chat.id) },
+          groupTitle: { stringValue: chat.title || "" },
+          groupUsername: chat.username
+            ? { stringValue: chat.username }
+            : undefined,
+          linkState: { stringValue: "linked" },
+          linkToken: { nullValue: null },
+        },
+      },
+    },
+  };
+  // Remove undefined entries
+  if (!fields.telegram.mapValue.fields.groupUsername)
+    delete fields.telegram.mapValue.fields.groupUsername;
+  const updateMask = [
+    "telegram.chatId",
+    "telegram.groupTitle",
+    "telegram.linkState",
+    "telegram.linkToken",
+  ];
+  if (fields.telegram.mapValue.fields.groupUsername)
+    updateMask.push("telegram.groupUsername");
+  const commitRes = await fetch(`${baseUrl}:commit`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${access}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      writes: [
+        {
+          update: { name, fields },
+          updateMask: { fieldPaths: updateMask },
+        },
+      ],
+    }),
+  });
+  if (!commitRes.ok) {
+    try {
+      console.log("claim commit failed", await commitRes.text());
+    } catch {}
+    throw new Error("claim commit failed");
+  }
+  // Return minimal club metadata for confirmation message
+  try {
+    const f = doc.fields || {};
+    const clubName = jsonFromFields(f.name) || "your club";
+    return { name: clubName };
+  } catch {
+    return { name: "your club" };
+  }
 }
 
 async function enqueueEvent(env, userId, ev) {
