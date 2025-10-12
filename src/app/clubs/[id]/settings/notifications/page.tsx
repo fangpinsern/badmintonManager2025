@@ -209,11 +209,12 @@ export default function ClubNotificationsSettingsPage() {
             {!isLinked && (
               <div className="space-y-2">
                 <div className="text-sm">
-                  Connect your club's Telegram group to enable notifications.
+                  Connect your club&apos;s Telegram group to enable
+                  notifications.
                 </div>
                 <div className="text-[11px] text-gray-600">
-                  You'll be able to configure delivery options once the bot is
-                  linked to your group.
+                  You&apos;ll be able to configure delivery options once the bot
+                  is linked to your group.
                 </div>
                 <div className="pt-1">
                   <button

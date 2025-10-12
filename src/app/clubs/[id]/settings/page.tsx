@@ -140,7 +140,7 @@ export default function ClubSettingsPage() {
                   <div>
                     <div className="font-medium">Rename club</div>
                     <div className="text-[11px] text-gray-600">
-                      Change this club's display name
+                      Change this club&apos;s display name
                     </div>
                   </div>
                   <button

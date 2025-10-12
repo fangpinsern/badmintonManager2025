@@ -740,7 +740,6 @@ export async function issueClubTelegramLinkTokenRemote(
 function generateLinkToken(): string {
   try {
     const raw = new Uint8Array(24);
-    // @ts-ignore
     typeof crypto !== "undefined" && crypto.getRandomValues
       ? crypto.getRandomValues(raw)
       : raw.forEach((_, i) => (raw[i] = Math.floor(Math.random() * 256)));
