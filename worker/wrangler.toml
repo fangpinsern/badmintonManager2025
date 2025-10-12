@@ -18,4 +18,4 @@ enabled = true
 
 [vars]
 # Optional public variable for app to know bot username (exposed separately in app env)
-TELEGRAM_BOT_USERNAME = "bm25r_bot"
+TELEGRAM_BOT_USERNAME = ""
