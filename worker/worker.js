@@ -47,7 +47,9 @@ export default {
     if (req.method === "POST" && url.pathname === "/telegram/webhook") {
       try {
         const update = await req.json();
+        console.log("telegram webhook update", update);
         const msg = update.message || update.channel_post;
+        console.log("telegram webhook msg", msg);
         if (!msg) return withCors(new Response("ok"), req);
         const chat = msg.chat || {};
         const text = msg.text || "";
