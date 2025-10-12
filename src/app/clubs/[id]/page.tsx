@@ -337,19 +337,12 @@ export default function ClubDetailPage() {
             )}
             {isOwner && (
               <div className="ml-auto flex items-center gap-2">
-                <button
+                <Link
+                  href={`/clubs/${id}/settings`}
                   className="rounded border px-2 py-1 text-xs"
-                  onClick={() => {
-                    setRenaming(true);
-                    setNewName(club.name);
-                  }}
                 >
-                  Rename
-                </button>
-                <VisibilitySwitch
-                  isPrivate={isPrivate}
-                  onSelect={(desired) => setConfirmVisibility({ desired })}
-                />
+                  Settings
+                </Link>
                 <div className="text-[11px] text-gray-600">
                   You are the owner
                 </div>

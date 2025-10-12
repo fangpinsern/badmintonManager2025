@@ -15,3 +15,7 @@ new_sqlite_classes = ["NotificationMailbox"]
 
 [observability.logs]
 enabled = true
+
+[vars]
+# Optional public variable for app to know bot username (exposed separately in app env)
+TELEGRAM_BOT_USERNAME = "bm25r_bot"

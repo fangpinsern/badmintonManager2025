@@ -43,6 +43,88 @@ export default {
     //   return withCors(resp, req);
     // }
 
+    // Telegram webhook: bot updates (linking via /start <token> and chat id capture)
+    if (req.method === "POST" && url.pathname === "/telegram/webhook") {
+      try {
+        const update = await req.json();
+        const msg = update.message || update.channel_post;
+        if (!msg) return withCors(new Response("ok"), req);
+        const chat = msg.chat || {};
+        const text = msg.text || "";
+        const m = text.match(/^\/start\s+([A-Za-z0-9_-]{10,})/);
+        if (m) {
+          const token = m[1];
+          // Call backend endpoint to claim token → update club.telegram mapping.
+          // For MVP, accept a simple exchange via signed endpoint behind Next.js (not implemented here).
+          try {
+            const api = env.APP_BACKEND_BASE_URL || ""; // optional; if present, call claim endpoint
+            if (api) {
+              await fetch(`${api}/api/telegram/claim`, {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({
+                  token,
+                  chat: {
+                    id: chat.id,
+                    title: chat.title,
+                    username: chat.username,
+                  },
+                }),
+              });
+            }
+          } catch (e) {}
+        }
+        return withCors(new Response("ok"), req);
+      } catch (e) {
+        return withCors(new Response("bad", { status: 400 }), req);
+      }
+    }
+
+    // Telegram send: app → worker for test messages or simple deliveries
+    if (req.method === "POST" && url.pathname === "/telegram/send") {
+      let payload;
+      try {
+        payload = await req.json();
+      } catch {
+        return withCors(new Response("Bad JSON", { status: 400 }), req);
+      }
+      const clubId = payload?.clubId;
+      if (!clubId)
+        return withCors(new Response("Missing clubId", { status: 400 }), req);
+      const token = await getAccessToken(env);
+      const { url: baseUrl } = fsBases(env.GCP_PROJECT_ID, env.FIRESTORE_DB);
+      const clubsCol =
+        String(env?.STATS_TEST_MODE || "") === "1" ||
+        String(env?.STATS_TEST_MODE || "").toLowerCase() === "true"
+          ? "clubs_test"
+          : "clubs";
+      const clubRes = await fetch(`${baseUrl}/${clubsCol}/${clubId}`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      if (!clubRes.ok)
+        return withCors(new Response("club read failed", { status: 502 }), req);
+      const clubDoc = await clubRes.json();
+      const f = clubDoc.fields || {};
+      const telegram = jsonFromFields(f.telegram) || {};
+      if (
+        !telegram.enabled ||
+        telegram.linkState !== "linked" ||
+        !telegram.chatId
+      ) {
+        return withCors(new Response("not linked", { status: 202 }), req);
+      }
+      const botToken = env.TELEGRAM_BOT_TOKEN;
+      if (!botToken)
+        return withCors(new Response("no bot token", { status: 500 }), req);
+      const text = payload?.text || "✅ Test message from Badminton Manager";
+      try {
+        await sendTelegram({ token: botToken, chatId: telegram.chatId, text });
+        return withCors(new Response("sent"), req);
+      } catch (e) {
+        return withCors(new Response("send failed", { status: 502 }), req);
+      }
+    }
+
     if (req.method !== "POST") {
       return withCors(new Response("Method Not Allowed", { status: 405 }), req);
     }
@@ -346,6 +428,31 @@ export default {
     }
   },
 };
+async function sendTelegram({
+  token,
+  chatId,
+  text,
+  replyMarkup,
+  parse = "HTML",
+}) {
+  const url = `https://api.telegram.org/bot${token}/sendMessage`;
+  const body = {
+    chat_id: chatId,
+    text,
+    parse_mode: parse,
+    disable_web_page_preview: true,
+    reply_markup: replyMarkup ? JSON.stringify(replyMarkup) : undefined,
+  };
+  const res = await fetch(url, {
+    method: "POST",
+    body: new URLSearchParams(body),
+  });
+  if (!res.ok) {
+    const t = await res.text();
+    throw new Error(`Telegram error ${res.status}: ${t}`);
+  }
+  return res.json();
+}
 
 // ---------- Helpers (unchanged unless noted) ----------
 

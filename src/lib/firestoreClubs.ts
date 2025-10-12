@@ -60,6 +60,32 @@ export type FirestoreClub = {
   updatedAt?: unknown;
 };
 
+// Optional Telegram settings for clubs. Additive and backward-compatible.
+export type ClubTelegramSettings = {
+  linkState?: "unlinked" | "pending" | "linked" | "disconnected";
+  chatId?: number;
+  groupTitle?: string;
+  groupUsername?: string; // if public
+  linkToken?: string; // one-time, short TTL
+  tz?: string; // e.g., "Asia/Singapore"
+  enabled?: boolean; // global on/off switch
+  notifications?: {
+    sessionCreated?: { enabled?: boolean; templateId?: string };
+    reminders?: {
+      enabled?: boolean;
+      schedule?: string[]; // e.g., ["-24h", "-2h"]
+      templateId?: string;
+    };
+    monthlySummary?: {
+      enabled?: boolean;
+      dayOfMonth?: number;
+      hour?: number; // 0-23 local hour
+      templateId?: string;
+    };
+  };
+  allowCommandsFrom?: "adminsOnly" | "anyMember";
+};
+
 export type FirestoreClubFeed = {
   id: string;
   type: "system" | "join" | "leave" | "kick" | "session";
@@ -634,4 +660,98 @@ export async function getClubFeedPage(
     cursor,
     hasMore: items.length >= Math.max(1, Math.min(100, limitN)),
   };
+}
+
+// Minimal deep merge to preserve existing nested telegram settings when updating specific flags
+function deepMerge<T extends Record<string, any>>(
+  base: T,
+  partial: Partial<T>
+): T {
+  const out: any = Array.isArray(base) ? [...(base as any)] : { ...base };
+  for (const [key, value] of Object.entries(partial || {})) {
+    if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+      const baseChild = (base as any)[key] || {};
+      out[key] = deepMerge(baseChild, value as any);
+    } else {
+      out[key] = value;
+    }
+  }
+  return out as T;
+}
+
+// Owner-gated updater for telegram settings (additive only). Backwards-compatible.
+export async function updateClubTelegramSettingsRemote(
+  clubId: string,
+  actorUid: string,
+  update: Partial<ClubTelegramSettings>
+): Promise<void> {
+  if (!clubId) throw new Error("Club id required");
+  const ref = clubDoc(clubId);
+  await runTransaction(db, async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists()) throw new Error("Club not found");
+    const data = snap.data() as any as FirestoreClub & {
+      telegram?: ClubTelegramSettings;
+    };
+    if (data.ownerUid !== actorUid)
+      throw new Error("Only owner can edit settings");
+    const prev = (data as any).telegram || {};
+    const next = deepMerge(prev, update || {});
+    tx.set(
+      ref,
+      { telegram: next, updatedAt: serverTimestamp() },
+      { merge: true }
+    );
+  });
+}
+
+// Issue a one-time link token for Telegram group linking. Owner only.
+export async function issueClubTelegramLinkTokenRemote(
+  clubId: string,
+  actorUid: string,
+  ttlMs: number = 15 * 60 * 1000
+): Promise<{ token: string; expiresAtMs: number }> {
+  const token = generateLinkToken();
+  const expiresAtMs = Date.now() + Math.max(60_000, ttlMs);
+  const ref = clubDoc(clubId);
+  await runTransaction(db, async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists()) throw new Error("Club not found");
+    const data = snap.data() as any as FirestoreClub & {
+      telegram?: ClubTelegramSettings;
+    };
+    if (data.ownerUid !== actorUid)
+      throw new Error("Only owner can link Telegram");
+    const prev = (data as any).telegram || {};
+    const next = deepMerge(prev, {
+      linkState: "pending",
+      linkToken: token,
+      linkTokenExpiresAt: expiresAtMs,
+    } as any);
+    tx.set(
+      ref,
+      { telegram: next, updatedAt: serverTimestamp() },
+      { merge: true }
+    );
+  });
+  return { token, expiresAtMs };
+}
+
+function generateLinkToken(): string {
+  try {
+    const raw = new Uint8Array(24);
+    // @ts-ignore
+    typeof crypto !== "undefined" && crypto.getRandomValues
+      ? crypto.getRandomValues(raw)
+      : raw.forEach((_, i) => (raw[i] = Math.floor(Math.random() * 256)));
+    const b64 =
+      typeof btoa === "function"
+        ? btoa(String.fromCharCode(...raw))
+        : Buffer.from(raw).toString("base64");
+    return b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+  } catch {
+    return (
+      Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2)
+    );
+  }
 }
