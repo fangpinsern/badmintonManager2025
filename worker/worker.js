@@ -53,9 +53,11 @@ export default {
         if (!msg) return withCors(new Response("ok"), req);
         const chat = msg.chat || {};
         const text = msg.text || "";
+        console.log("telegram webhook text", text);
         const re =
           /^\/start(?:@[A-Za-z0-9_]{5,32})?\s+([A-Za-z0-9_-]{10,128})$/;
         const m = text.trim().match(re);
+        console.log("telegram webhook match", m);
         if (m) {
           const token = m[1];
           try {
@@ -64,6 +66,7 @@ export default {
               title: chat.title,
               username: chat.username,
             });
+            console.log("telegram claim token result", result);
             if (result && env.TELEGRAM_BOT_TOKEN) {
               try {
                 await sendTelegram({
