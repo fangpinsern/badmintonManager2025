@@ -603,6 +603,32 @@ function SessionManager({ onBack }: { onBack: () => void }) {
                               session.id,
                               myUsername
                             );
+                            // Best-effort: trigger Telegram participant list update only for club sessions
+                            try {
+                              if (session && (session as any)?.clubId) {
+                                const endpoint = process.env
+                                  .NEXT_PUBLIC_WORKER_BASE_URL
+                                  ? `${process.env.NEXT_PUBLIC_WORKER_BASE_URL}/telegram/send`
+                                  : "/api/telegram/send";
+                                await fetch(endpoint, {
+                                  method: "POST",
+                                  headers: {
+                                    "content-type": "application/json",
+                                  },
+                                  body: JSON.stringify({
+                                    clubId: String((session as any).clubId),
+                                    type: "session_joined",
+                                    organizerUid: owner,
+                                    sessionId: session.id,
+                                  }),
+                                });
+                              }
+                            } catch (e) {
+                              console.error(
+                                "Error sending Telegram session joined event",
+                                e
+                              );
+                            }
                           } catch (e: any) {
                             setJoinError(
                               e?.message || "Failed to join session"

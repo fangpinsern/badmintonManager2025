@@ -635,25 +635,7 @@ export default function ClubDetailPage() {
                                   idCreated,
                                   uname
                                 );
-                                // Best-effort: trigger Telegram participant list update
-                                try {
-                                  const endpoint = process.env
-                                    .NEXT_PUBLIC_WORKER_BASE_URL
-                                    ? `${process.env.NEXT_PUBLIC_WORKER_BASE_URL}/telegram/send`
-                                    : "/api/telegram/send";
-                                  await fetch(endpoint, {
-                                    method: "POST",
-                                    headers: {
-                                      "content-type": "application/json",
-                                    },
-                                    body: JSON.stringify({
-                                      clubId: id,
-                                      type: "session_joined",
-                                      organizerUid: owner,
-                                      sessionId: idCreated,
-                                    }),
-                                  });
-                                } catch {}
+                                // Do not trigger join update during creation; initial participants are included in original message
                               } catch (e) {
                                 console.error("Error creating user", e);
                               }

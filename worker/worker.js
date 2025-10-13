@@ -215,7 +215,8 @@ export default {
         const baseApp = allowOrigin || "https://bm25r.codingcrayons.com";
         const sessionUrl = `${baseApp}/session/${sessionId}`;
 
-        const text = clubName
+        // Compose header and include initial participants (if any) in original message
+        const header = clubName
           ? `🆕 New session for <b>${escapeHtml(
               clubName
             )}</b> on <b>${escapeHtml(date)}</b> at <b>${escapeHtml(
@@ -224,6 +225,21 @@ export default {
           : `🆕 New session on <b>${escapeHtml(date)}</b> at <b>${escapeHtml(
               time
             )}</b>.\nJoin here:`;
+        const players0 = Array.isArray(spayload.players)
+          ? spayload.players
+          : [];
+        const names0 = players0
+          .map((p) =>
+            (p && (p.accountUsername || p.name || "")).toString().trim()
+          )
+          .filter((s) => !!s)
+          .slice(0, 100);
+        const list0 = names0
+          .map((n) => (n.startsWith("@") ? n : `@${escapeHtml(n)}`))
+          .join("\n");
+        const text = names0.length
+          ? `${header}\n\nParticipants (${names0.length}):\n${list0}`
+          : header;
         const replyMarkup = {
           inline_keyboard: [[{ text: "Open session", url: sessionUrl }]],
         };
