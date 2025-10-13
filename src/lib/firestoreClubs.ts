@@ -77,6 +77,17 @@ export type FirestoreClub = {
 };
 
 // Optional Telegram settings for clubs. Additive and backward-compatible.
+export type ClubReminder = {
+  id: string;
+  name: string;
+  message: string;
+  // 0=Sunday .. 6=Saturday (matches JS Date.getDay)
+  dow: 0 | 1 | 2 | 3 | 4 | 5 | 6;
+  hour: number; // 0-23
+  minute: number; // 0-59
+  enabled?: boolean;
+};
+
 export type ClubTelegramSettings = {
   linkState?: "unlinked" | "pending" | "linked" | "disconnected";
   chatId?: number;
@@ -91,6 +102,11 @@ export type ClubTelegramSettings = {
       enabled?: boolean;
       schedule?: string[]; // e.g., ["-24h", "-2h"]
       templateId?: string;
+    };
+    // Custom weekly reminders (independent of sessions)
+    customReminders?: {
+      enabled?: boolean;
+      items?: ClubReminder[];
     };
     monthlySummary?: {
       enabled?: boolean;

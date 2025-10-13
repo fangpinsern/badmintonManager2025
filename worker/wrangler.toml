@@ -6,12 +6,17 @@ keep_vars = true
 
 [durable_objects]
 bindings = [
-  { name = "MAILBOX", class_name = "NotificationMailbox" }
+  { name = "MAILBOX", class_name = "NotificationMailbox" },
+  { name = "REMINDERS", class_name = "ClubReminders" }
 ]
 
 [[migrations]]
 tag = "v1-mailbox-sqlite"
 new_sqlite_classes = ["NotificationMailbox"]
+
+[[migrations]]
+tag = "v2-reminders-sqlite"
+new_sqlite_classes = ["ClubReminders"]
 
 [observability.logs]
 enabled = true

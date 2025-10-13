@@ -12,6 +12,7 @@ import {
   updateClubTelegramSettingsRemote,
   issueClubTelegramLinkTokenRemote,
   type FirestoreClub,
+  type ClubReminder,
 } from "@/lib/firestoreClubs";
 
 export default function ClubNotificationsSettingsPage() {
@@ -78,6 +79,14 @@ export default function ClubNotificationsSettingsPage() {
   const [monthlyEnabled, setMonthlyEnabled] = useState<boolean>(
     telegram?.notifications?.monthlySummary?.enabled ?? false
   );
+  const [customRemindersEnabled, setCustomRemindersEnabled] = useState<boolean>(
+    telegram?.notifications?.customReminders?.enabled ?? false
+  );
+  const [customReminders, setCustomReminders] = useState<ClubReminder[]>(
+    Array.isArray(telegram?.notifications?.customReminders?.items)
+      ? (telegram?.notifications?.customReminders?.items as ClubReminder[])
+      : []
+  );
   const [monthDay, setMonthDay] = useState<string>(
     String(telegram?.notifications?.monthlySummary?.dayOfMonth ?? 1)
   );
@@ -92,6 +101,8 @@ export default function ClubNotificationsSettingsPage() {
     enabled: boolean;
     sessionCreated: boolean;
     remindersEnabled: boolean;
+    customRemindersEnabled: boolean;
+    customRemindersHash: string;
     monthlyEnabled: boolean;
     monthDay: number;
     monthHour: number;
@@ -99,6 +110,8 @@ export default function ClubNotificationsSettingsPage() {
     enabled: false,
     sessionCreated: false,
     remindersEnabled: false,
+    customRemindersEnabled: false,
+    customRemindersHash: "",
     monthlyEnabled: false,
     monthDay: 1,
     monthHour: 9,
@@ -110,13 +123,29 @@ export default function ClubNotificationsSettingsPage() {
     setEnabled(t?.enabled ?? false);
     setSessionCreated(t?.notifications?.sessionCreated?.enabled ?? false);
     setRemindersEnabled(t?.notifications?.reminders?.enabled ?? false);
+    setCustomRemindersEnabled(
+      t?.notifications?.customReminders?.enabled ?? false
+    );
+    setCustomReminders(
+      Array.isArray(t?.notifications?.customReminders?.items)
+        ? (t?.notifications?.customReminders?.items as ClubReminder[])
+        : []
+    );
     setMonthlyEnabled(t?.notifications?.monthlySummary?.enabled ?? false);
     setMonthDay(String(t?.notifications?.monthlySummary?.dayOfMonth ?? 1));
     setMonthHour(String(t?.notifications?.monthlySummary?.hour ?? 9));
+    const hash = hashReminders(
+      Array.isArray(t?.notifications?.customReminders?.items)
+        ? (t?.notifications?.customReminders?.items as ClubReminder[])
+        : []
+    );
     setBaseline({
       enabled: t?.enabled ?? false,
       sessionCreated: t?.notifications?.sessionCreated?.enabled ?? false,
       remindersEnabled: t?.notifications?.reminders?.enabled ?? false,
+      customRemindersEnabled:
+        t?.notifications?.customReminders?.enabled ?? false,
+      customRemindersHash: hash,
       monthlyEnabled: t?.notifications?.monthlySummary?.enabled ?? false,
       monthDay: Number(
         String(t?.notifications?.monthlySummary?.dayOfMonth ?? 1)
@@ -131,10 +160,13 @@ export default function ClubNotificationsSettingsPage() {
   const dayValid = Number.isFinite(dayNum) && dayNum >= 1 && dayNum <= 28;
   const hourValid = Number.isFinite(hourNum) && hourNum >= 0 && hourNum <= 23;
   const isValid = dayValid && hourValid;
+  const remindersHash = hashReminders(customReminders);
   const isDirty =
     enabled !== baseline.enabled ||
     sessionCreated !== baseline.sessionCreated ||
     remindersEnabled !== baseline.remindersEnabled ||
+    customRemindersEnabled !== baseline.customRemindersEnabled ||
+    remindersHash !== baseline.customRemindersHash ||
     monthlyEnabled !== baseline.monthlyEnabled ||
     dayNum !== baseline.monthDay ||
     hourNum !== baseline.monthHour;
@@ -149,6 +181,10 @@ export default function ClubNotificationsSettingsPage() {
         notifications: {
           sessionCreated: { enabled: sessionCreated },
           reminders: { enabled: remindersEnabled },
+          customReminders: {
+            enabled: customRemindersEnabled,
+            items: customReminders.slice(0, 5),
+          },
           monthlySummary: {
             enabled: monthlyEnabled,
             dayOfMonth: dayNum,
@@ -156,10 +192,23 @@ export default function ClubNotificationsSettingsPage() {
           },
         },
       });
+      // Best-effort: tell worker to sync reminders configuration
+      try {
+        const endpoint = process.env.NEXT_PUBLIC_WORKER_BASE_URL
+          ? `${process.env.NEXT_PUBLIC_WORKER_BASE_URL}/telegram/reminders/sync`
+          : "/api/telegram/reminders/sync";
+        await fetch(endpoint, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ clubId: id }),
+        });
+      } catch {}
       setBaseline({
         enabled,
         sessionCreated,
         remindersEnabled,
+        customRemindersEnabled,
+        customRemindersHash: hashReminders(customReminders),
         monthlyEnabled,
         monthDay: dayNum,
         monthHour: hourNum,
@@ -169,6 +218,80 @@ export default function ClubNotificationsSettingsPage() {
     } finally {
       setSaving(false);
     }
+  }
+
+  function hashReminders(items: ClubReminder[]): string {
+    try {
+      const norm = [...(items || [])]
+        .map((r) => ({
+          id: String(r.id || ""),
+          name: String(r.name || ""),
+          message: String(r.message || ""),
+          dow: Number(r.dow || 0),
+          hour: Number(r.hour || 0),
+          minute: Number(r.minute || 0),
+          enabled: r.enabled !== false,
+        }))
+        .sort((a, b) => a.id.localeCompare(b.id));
+      return JSON.stringify(norm);
+    } catch {
+      return "";
+    }
+  }
+
+  // Modal state for adding/editing a reminder
+  const [remModalOpen, setRemModalOpen] = useState(false);
+  const [remName, setRemName] = useState("");
+  const [remMsg, setRemMsg] = useState("");
+  const [remDow, setRemDow] = useState<string>("1");
+  const [remTime, setRemTime] = useState<string>("09:00");
+  function resetRemModal() {
+    setRemName("");
+    setRemMsg("");
+    setRemDow("1");
+    setRemTime("09:00");
+  }
+  function openAddReminder() {
+    resetRemModal();
+    setRemModalOpen(true);
+  }
+  function addReminderConfirm() {
+    const [hh, mm] = String(remTime || "09:00").split(":");
+    const hour = Math.max(0, Math.min(23, Number(hh)));
+    const minute = Math.max(0, Math.min(59, Number(mm)));
+    const item: ClubReminder = {
+      id:
+        (typeof crypto !== "undefined" && (crypto as any).randomUUID
+          ? (crypto as any).randomUUID()
+          : Math.random().toString(36).slice(2)) + Date.now().toString(36),
+      name: (remName || "").trim() || "Reminder",
+      message: (remMsg || "").trim() || "Reminder",
+      dow: Math.max(0, Math.min(6, Number(remDow))) as any,
+      hour,
+      minute,
+      enabled: true,
+    };
+    setCustomReminders(
+      (prev) => [...prev, item].slice(0, 5) // enforce max 5
+    );
+    setRemModalOpen(false);
+  }
+
+  function toggleReminder(id2: string) {
+    setCustomReminders((prev) =>
+      prev.map((r) =>
+        r.id === id2 ? { ...r, enabled: r.enabled === false ? true : false } : r
+      )
+    );
+  }
+  function removeReminder(id2: string) {
+    setCustomReminders((prev) => prev.filter((r) => r.id !== id2));
+  }
+
+  function dowName(d: number): string {
+    return ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][
+      Math.max(0, Math.min(6, d))
+    ];
   }
 
   async function setupTelegram() {
@@ -346,6 +469,91 @@ export default function ClubNotificationsSettingsPage() {
                       </button>
                     </div>
 
+                    <div className="rounded border p-3">
+                      <div className="mb-2 flex items-center justify-between">
+                        <div>
+                          <div className="font-medium">
+                            Custom reminders (weekly)
+                          </div>
+                          <div className="text-[11px] text-gray-600">
+                            Scheduled weekly messages to your group (max 5)
+                          </div>
+                        </div>
+                        <button
+                          className={`rounded-full border px-3 py-1 text-xs ${
+                            customRemindersEnabled
+                              ? "bg-blue-600 text-white"
+                              : ""
+                          }`}
+                          disabled={!isOwner}
+                          onClick={() => setCustomRemindersEnabled((v) => !v)}
+                        >
+                          {customRemindersEnabled ? "On" : "Off"}
+                        </button>
+                      </div>
+
+                      <div className="space-y-2">
+                        {customReminders.length === 0 && (
+                          <div className="text-[11px] text-gray-500">
+                            No reminders yet.
+                          </div>
+                        )}
+                        {customReminders.map((r) => (
+                          <div
+                            key={r.id}
+                            className="flex items-center justify-between rounded border px-2 py-1"
+                          >
+                            <div className="min-w-0">
+                              <div className="truncate text-sm font-medium">
+                                {r.name || "Reminder"}
+                              </div>
+                              <div className="truncate text-[11px] text-gray-600">
+                                {dowName(Number(r.dow))}{" "}
+                                {String(r.hour).padStart(2, "0")}:
+                                {String(r.minute).padStart(2, "0")} ·{" "}
+                                {r.message}
+                              </div>
+                            </div>
+                            <div className="ml-2 flex items-center gap-2">
+                              <button
+                                className={`rounded-full border px-3 py-1 text-xs ${
+                                  r.enabled === false
+                                    ? ""
+                                    : "bg-blue-600 text-white"
+                                }`}
+                                disabled={!isOwner}
+                                onClick={() => toggleReminder(r.id)}
+                              >
+                                {r.enabled === false ? "Off" : "On"}
+                              </button>
+                              <button
+                                className="rounded border px-2 py-1 text-[11px]"
+                                disabled={!isOwner}
+                                onClick={() => removeReminder(r.id)}
+                              >
+                                Remove
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+
+                      <div className="mt-2">
+                        <button
+                          className="rounded border px-2 py-1 text-xs disabled:opacity-50"
+                          disabled={!isOwner || customReminders.length >= 5}
+                          onClick={openAddReminder}
+                        >
+                          Add reminder
+                        </button>
+                        {customReminders.length >= 5 && (
+                          <span className="ml-2 text-[11px] text-gray-500">
+                            Limit reached (5)
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
                     <div className="flex items-center justify-between">
                       <div>
                         <div className="font-medium">Monthly summary</div>
@@ -446,6 +654,81 @@ export default function ClubNotificationsSettingsPage() {
           </div>
         </Card>
       </section>
+
+      {remModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div
+            className="absolute inset-0 bg-black/40"
+            onClick={() => setRemModalOpen(false)}
+          ></div>
+          <div className="relative w-full max-w-sm rounded-2xl bg-white p-4 shadow-lg max-h-[90vh] overflow-auto">
+            <div className="mb-2 text-base font-semibold">Add reminder</div>
+            <div className="space-y-3">
+              <Input
+                label="Name"
+                value={remName}
+                onChange={(e) => setRemName(e.target.value)}
+              />
+              <div>
+                <label className="mb-1 block text-[11px] text-gray-600">
+                  Message
+                </label>
+                <textarea
+                  className="w-full rounded border p-2 text-sm"
+                  rows={3}
+                  value={remMsg}
+                  onChange={(e) => setRemMsg(e.target.value)}
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="mb-1 block text-[11px] text-gray-600">
+                    Day of week
+                  </label>
+                  <select
+                    className="w-full rounded border p-2 text-sm"
+                    value={remDow}
+                    onChange={(e) => setRemDow(e.target.value)}
+                  >
+                    <option value="0">Sunday</option>
+                    <option value="1">Monday</option>
+                    <option value="2">Tuesday</option>
+                    <option value="3">Wednesday</option>
+                    <option value="4">Thursday</option>
+                    <option value="5">Friday</option>
+                    <option value="6">Saturday</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="mb-1 block text-[11px] text-gray-600">
+                    Time (24h)
+                  </label>
+                  <input
+                    type="time"
+                    className="w-full rounded border p-2 text-sm"
+                    value={remTime}
+                    onChange={(e) => setRemTime(e.target.value)}
+                  />
+                </div>
+              </div>
+            </div>
+            <div className="mt-3 flex items-center justify-end gap-2">
+              <button
+                onClick={() => setRemModalOpen(false)}
+                className="rounded-xl border px-3 py-1.5 text-sm"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={addReminderConfirm}
+                className="rounded-xl bg-black px-3 py-1.5 text-sm text-white"
+              >
+                Add
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }

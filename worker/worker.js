@@ -415,6 +415,97 @@ export default {
       return withCors(new Response("Method Not Allowed", { status: 405 }), req);
     }
 
+    // Custom weekly reminders: sync configuration from app → DO scheduler
+    if (req.method === "POST" && url.pathname === "/telegram/reminders/sync") {
+      let payload;
+      try {
+        payload = await req.json();
+      } catch {
+        return withCors(new Response("Bad JSON", { status: 400 }), req);
+      }
+      const clubId = String(payload?.clubId || "").trim();
+      if (!clubId)
+        return withCors(new Response("Missing clubId", { status: 400 }), req);
+
+      // Read club's sensitive notifications to fetch Telegram + reminder config
+      const token = await getAccessToken(env);
+      const { url: baseUrl } = fsBases(env.GCP_PROJECT_ID, env.FIRESTORE_DB);
+      const sensitiveCol =
+        String(env?.STATS_TEST_MODE || "") === "1" ||
+        String(env?.STATS_TEST_MODE || "").toLowerCase() === "true"
+          ? "clubSensitive_test"
+          : "clubSensitive";
+
+      const notiRes = await fetch(
+        `${baseUrl}/${sensitiveCol}/${clubId}/sensitive/notifications`,
+        {
+          headers: { authorization: `Bearer ${token}` },
+        }
+      );
+      if (!notiRes.ok)
+        return withCors(
+          new Response("club sensitive read failed", { status: 502 }),
+          req
+        );
+      const notiDoc = await notiRes.json();
+      const nf = notiDoc.fields || {};
+      const telegram = jsonFromFields(nf.telegram) || {};
+
+      const globalEnabled = !!telegram.enabled;
+      const linkOk =
+        String(telegram?.linkState || "") === "linked" && !!telegram.chatId;
+      const tz = String(telegram?.tz || "UTC");
+      const cr = telegram?.notifications?.customReminders || {};
+      const customEnabled = !!cr.enabled;
+      const rawItems = Array.isArray(cr.items) ? cr.items : [];
+      const items = rawItems
+        .map((r) => ({
+          id: String(r?.id || ""),
+          name: String(r?.name || ""),
+          message: String(r?.message || ""),
+          dow: Number(r?.dow),
+          hour: Number(r?.hour),
+          minute: Number(r?.minute),
+          enabled: r?.enabled !== false,
+        }))
+        .filter(
+          (r) =>
+            r.id &&
+            Number.isFinite(r.dow) &&
+            r.dow >= 0 &&
+            r.dow <= 6 &&
+            Number.isFinite(r.hour) &&
+            r.hour >= 0 &&
+            r.hour <= 23 &&
+            Number.isFinite(r.minute) &&
+            r.minute >= 0 &&
+            r.minute <= 59
+        )
+        .slice(0, 5);
+
+      // Configure the DO regardless of link status; DO will schedule only when effective
+      if (!env.REMINDERS) {
+        return withCors(
+          new Response("reminders DO not bound", { status: 500 }),
+          req
+        );
+      }
+      const id = env.REMINDERS.idFromName(clubId);
+      const stub = env.REMINDERS.get(id);
+      const resp = await stub.fetch("https://do/reminders/config", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          clubId,
+          enabled: !!(globalEnabled && customEnabled && linkOk && items.length),
+          chatId: telegram.chatId || null,
+          timeZone: tz,
+          items,
+        }),
+      });
+      return withCors(resp, req);
+    }
+
     try {
       let body;
       try {
@@ -1369,6 +1460,172 @@ export class NotificationMailbox {
       await this.state.storage.put("alarmAt", when);
     }
   }
+}
+
+// Durable Object: per-club weekly reminder scheduler for Telegram
+export class ClubReminders {
+  constructor(state, env) {
+    this.state = state;
+    this.env = env;
+  }
+
+  async fetch(req) {
+    const url = new URL(req.url);
+    if (req.method === "POST" && url.pathname.endsWith("/reminders/config")) {
+      let body = {};
+      try {
+        body = await req.json();
+      } catch {}
+      const clubId = String(body?.clubId || "").trim();
+      const enabled = !!body?.enabled;
+      const chatId = body?.chatId || null;
+      const timeZone = String(body?.timeZone || "UTC");
+      const items = Array.isArray(body?.items) ? body.items : [];
+      await this.state.storage.put("config", {
+        clubId,
+        enabled,
+        chatId,
+        timeZone,
+        // Normalize and cap at 5
+        items: items
+          .map((r) => ({
+            id: String(r?.id || ""),
+            name: String(r?.name || ""),
+            message: String(r?.message || ""),
+            dow: Number(r?.dow),
+            hour: Number(r?.hour),
+            minute: Number(r?.minute),
+            enabled: r?.enabled !== false,
+          }))
+          .filter(
+            (r) =>
+              r.id &&
+              Number.isFinite(r.dow) &&
+              r.dow >= 0 &&
+              r.dow <= 6 &&
+              Number.isFinite(r.hour) &&
+              r.hour >= 0 &&
+              r.hour <= 23 &&
+              Number.isFinite(r.minute) &&
+              r.minute >= 0 &&
+              r.minute <= 59
+          )
+          .slice(0, 5),
+      });
+      // Schedule next alarm
+      await this.scheduleNext();
+      return new Response("ok");
+    }
+    return new Response("not-found", { status: 404 });
+  }
+
+  async alarm() {
+    // On alarm, send messages due in the minute window, then schedule next
+    const cfg = (await this.state.storage.get("config")) || {};
+    const enabled = !!cfg.enabled;
+    const chatId = cfg.chatId;
+    const timeZone = cfg.timeZone || "UTC";
+    const items = Array.isArray(cfg.items) ? cfg.items : [];
+    if (!enabled || !chatId || !items.length) {
+      return; // nothing to do
+    }
+    const now = Date.now();
+    const windowMs = 60 * 1000; // 1 minute window
+    for (const r of items) {
+      if (!r.enabled) continue;
+      const nextTs = nextOccurrenceTs(
+        timeZone,
+        r.dow,
+        r.hour,
+        r.minute,
+        now - windowMs
+      );
+      // If next occurrence falls within [now-window, now+window), consider it due
+      if (nextTs >= now - windowMs && nextTs <= now + windowMs) {
+        try {
+          // Use Telegram bot token from env; send html-safe message
+          const token = this.env.TELEGRAM_BOT_TOKEN;
+          if (!token) continue;
+          const text = escapeHtml(r.message || r.name || "Reminder");
+          await sendTelegram({ token, chatId, text, parse: "HTML" });
+        } catch (e) {
+          try {
+            console.log("reminder send failed", e?.message || e);
+          } catch {}
+        }
+      }
+    }
+    await this.scheduleNext();
+  }
+
+  async scheduleNext() {
+    const cfg = (await this.state.storage.get("config")) || {};
+    const enabled = !!cfg.enabled;
+    const chatId = cfg.chatId;
+    const timeZone = cfg.timeZone || "UTC";
+    const items = Array.isArray(cfg.items) ? cfg.items : [];
+    // Clear any existing alarm marker
+    await this.state.storage.delete("alarmAt");
+    if (!enabled || !chatId || !items.length) return;
+    const now = Date.now();
+    let earliest = Infinity;
+    for (const r of items) {
+      if (!r.enabled) continue;
+      const ts = nextOccurrenceTs(timeZone, r.dow, r.hour, r.minute, now);
+      if (ts < earliest) earliest = ts;
+    }
+    if (!Number.isFinite(earliest)) return;
+    await this.state.storage.setAlarm(earliest);
+    await this.state.storage.put("alarmAt", earliest);
+  }
+}
+
+// Compute next occurrence in ms for a weekly schedule in a given IANA time zone
+function nextOccurrenceTs(timeZone, dow, hour, minute, fromMs) {
+  const from = new Date(fromMs);
+  // Construct date components in target timeZone
+  // Get current time in that tz
+  const fmt = new Intl.DateTimeFormat("en-GB", {
+    timeZone,
+    weekday: "short",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+  const parts = Object.fromEntries(
+    fmt.formatToParts(from).map((p) => [p.type, p.value])
+  );
+  // Start from same tz date
+  const y = Number(parts.year);
+  const m = Number(parts.month) - 1;
+  const d = Number(parts.day);
+  // Build a Date in that tz by approximating via UTC offset trick
+  // We'll search up to 8 days ahead to find the target DOW
+  let candidate = zonedDate(timeZone, y, m, d, hour, minute);
+  const curDow = new Date(candidate).getDay();
+  let addDays = (dow - curDow + 7) % 7;
+  if (addDays === 0 && candidate.getTime() <= fromMs) addDays = 7;
+  candidate = zonedDate(timeZone, y, m, d + addDays, hour, minute);
+  return candidate.getTime();
+}
+
+// Create a Date that represents local time in timeZone at y-m-d hh:mm
+function zonedDate(timeZone, year, monthIdx, day, hour, minute) {
+  // Build an ISO in that timezone using Intl and then parse back to Date
+  const dt = new Date(Date.UTC(year, monthIdx, day, hour, minute, 0));
+  // Adjust by the difference between target tz and UTC at that instant
+  const tzOffsetMinutes = tzOffsetAt(timeZone, dt);
+  return new Date(dt.getTime() - tzOffsetMinutes * 60 * 1000);
+}
+
+function tzOffsetAt(timeZone, date) {
+  // Compute offset minutes for provided date/timeZone
+  const str = date.toLocaleString("en-US", { timeZone });
+  const local = new Date(str);
+  return (date.getTime() - local.getTime()) / (60 * 1000);
 }
 
 function dayKey(d = new Date()) {
