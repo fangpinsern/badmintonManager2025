@@ -68,15 +68,15 @@ export default function ClubNotificationsSettingsPage() {
 
   const telegram = (noti as any)?.telegram || {};
   const isLinked = String(telegram?.linkState || "unlinked") === "linked";
-  const [enabled, setEnabled] = useState<boolean>(telegram?.enabled ?? true);
+  const [enabled, setEnabled] = useState<boolean>(telegram?.enabled ?? false);
   const [sessionCreated, setSessionCreated] = useState<boolean>(
-    telegram?.notifications?.sessionCreated?.enabled ?? true
+    telegram?.notifications?.sessionCreated?.enabled ?? false
   );
   const [remindersEnabled, setRemindersEnabled] = useState<boolean>(
-    telegram?.notifications?.reminders?.enabled ?? true
+    telegram?.notifications?.reminders?.enabled ?? false
   );
   const [monthlyEnabled, setMonthlyEnabled] = useState<boolean>(
-    telegram?.notifications?.monthlySummary?.enabled ?? true
+    telegram?.notifications?.monthlySummary?.enabled ?? false
   );
   const [monthDay, setMonthDay] = useState<string>(
     String(telegram?.notifications?.monthlySummary?.dayOfMonth ?? 1)
@@ -90,11 +90,11 @@ export default function ClubNotificationsSettingsPage() {
 
   useEffect(() => {
     // sync local state when club doc changes
-    const t = (club as any)?.telegram || {};
-    setEnabled(t?.enabled ?? true);
-    setSessionCreated(t?.notifications?.sessionCreated?.enabled ?? true);
-    setRemindersEnabled(t?.notifications?.reminders?.enabled ?? true);
-    setMonthlyEnabled(t?.notifications?.monthlySummary?.enabled ?? true);
+    const t = (noti as any)?.telegram || {};
+    setEnabled(t?.enabled ?? false);
+    setSessionCreated(t?.notifications?.sessionCreated?.enabled ?? false);
+    setRemindersEnabled(t?.notifications?.reminders?.enabled ?? false);
+    setMonthlyEnabled(t?.notifications?.monthlySummary?.enabled ?? false);
     setMonthDay(String(t?.notifications?.monthlySummary?.dayOfMonth ?? 1));
     setMonthHour(String(t?.notifications?.monthlySummary?.hour ?? 9));
   }, [club?.id, (noti as any)?.telegram]);

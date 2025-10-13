@@ -202,7 +202,7 @@ export function subscribeClubNotifications(
   clubId: string,
   onChange: (noti: { telegram?: ClubTelegramSettings } | null) => void
 ) {
-  const ref = clubSensitiveDoc(clubId);
+  const ref = clubSensitiveNotificationsDoc(clubId);
   return onSnapshot(
     ref,
     (snap) => {
@@ -705,6 +705,7 @@ function deepMerge<T extends Record<string, any>>(
 ): T {
   const out: any = Array.isArray(base) ? [...(base as any)] : { ...base };
   for (const [key, value] of Object.entries(partial || {})) {
+    if (typeof value === "undefined") continue; // skip undefined to avoid bad writes
     if (value !== null && typeof value === "object" && !Array.isArray(value)) {
       const baseChild = (base as any)[key] || {};
       out[key] = deepMerge(baseChild, value as any);
@@ -713,6 +714,25 @@ function deepMerge<T extends Record<string, any>>(
     }
   }
   return out as T;
+}
+
+// Remove undefined deeply to satisfy Firestore SDK constraints
+function stripUndefinedDeep<T>(value: T): T {
+  if (Array.isArray(value)) {
+    const filtered = (value as unknown as any[]).map((v) =>
+      stripUndefinedDeep(v)
+    );
+    return filtered as unknown as T;
+  }
+  if (value && typeof value === "object") {
+    const out: Record<string, any> = {};
+    for (const [k, v] of Object.entries(value as Record<string, any>)) {
+      if (typeof v === "undefined") continue;
+      out[k] = stripUndefinedDeep(v);
+    }
+    return out as unknown as T;
+  }
+  return value;
 }
 
 // Owner-gated updater for telegram settings (additive only). Backwards-compatible.
@@ -736,7 +756,7 @@ export async function updateClubTelegramSettingsRemote(
     const ssnap = await tx.get(sref);
     const prevSensitive =
       (ssnap.exists() ? (ssnap.data() as any)?.telegram : null) || {};
-    const next = deepMerge(prevSensitive, update || {});
+    const next = stripUndefinedDeep(deepMerge(prevSensitive, update || {}));
     // Write to protected sensitive doc (top-level)
     tx.set(
       sref,
