@@ -1656,9 +1656,43 @@ export class ClubReminders {
 
 // Compute next occurrence in ms for a weekly schedule in a given IANA time zone
 function nextOccurrenceTs(timeZone, dow, hour, minute, fromMs) {
-  const from = new Date(fromMs);
-  // Construct date components in target timeZone
-  // Get current time in that tz
+  const now = new Date(fromMs);
+  const nowDow = tzWeekdayIndexOf(now, timeZone);
+  const initialAdd = (dow - nowDow + 7) % 7;
+
+  function ymdAfterDays(days) {
+    const d2 = new Date(fromMs + days * 24 * 60 * 60 * 1000);
+    const p = tzParts(d2, timeZone);
+    return [p.year, p.month - 1, p.day];
+  }
+
+  let addDays = initialAdd;
+  let [y, m, d] = ymdAfterDays(addDays);
+  let ts = localTimeToUtcTs(timeZone, y, m, d, hour, minute);
+  if (ts <= fromMs) {
+    addDays = addDays === 0 ? 7 : addDays + 7;
+    [y, m, d] = ymdAfterDays(addDays);
+    ts = localTimeToUtcTs(timeZone, y, m, d, hour, minute);
+  }
+  return ts;
+}
+
+// Create a Date that represents local time in timeZone at y-m-d hh:mm
+function zonedDate(timeZone, year, monthIdx, day, hour, minute) {
+  // Deprecated in favor of localTimeToUtcTs; kept for backward-compat only
+  const ts = localTimeToUtcTs(timeZone, year, monthIdx, day, hour, minute);
+  return new Date(ts);
+}
+
+function tzOffsetAt(timeZone, date) {
+  // Compute offset minutes for provided date/timeZone
+  const str = date.toLocaleString("en-US", { timeZone });
+  const local = new Date(str);
+  return (date.getTime() - local.getTime()) / (60 * 1000);
+}
+
+// ---- Timezone helpers (robust) ----
+function tzParts(date, timeZone) {
   const fmt = new Intl.DateTimeFormat("en-GB", {
     timeZone,
     weekday: "short",
@@ -1669,37 +1703,57 @@ function nextOccurrenceTs(timeZone, dow, hour, minute, fromMs) {
     minute: "2-digit",
     hour12: false,
   });
-  const parts = Object.fromEntries(
-    fmt.formatToParts(from).map((p) => [p.type, p.value])
+  const obj = Object.fromEntries(
+    fmt.formatToParts(date).map((p) => [p.type, p.value])
   );
-  // Start from same tz date
-  const y = Number(parts.year);
-  const m = Number(parts.month) - 1;
-  const d = Number(parts.day);
-  // Build a Date in that tz by approximating via UTC offset trick
-  // We'll search up to 8 days ahead to find the target DOW
-  let candidate = zonedDate(timeZone, y, m, d, hour, minute);
-  const curDow = new Date(candidate).getDay();
-  let addDays = (dow - curDow + 7) % 7;
-  if (addDays === 0 && candidate.getTime() <= fromMs) addDays = 7;
-  candidate = zonedDate(timeZone, y, m, d + addDays, hour, minute);
-  return candidate.getTime();
+  return {
+    year: Number(obj.year),
+    month: Number(obj.month),
+    day: Number(obj.day),
+    hour: Number(obj.hour),
+    minute: Number(obj.minute),
+    weekday: String(obj.weekday || ""),
+  };
 }
 
-// Create a Date that represents local time in timeZone at y-m-d hh:mm
-function zonedDate(timeZone, year, monthIdx, day, hour, minute) {
-  // Build an ISO in that timezone using Intl and then parse back to Date
-  const dt = new Date(Date.UTC(year, monthIdx, day, hour, minute, 0));
-  // Adjust by the difference between target tz and UTC at that instant
-  const tzOffsetMinutes = tzOffsetAt(timeZone, dt);
-  return new Date(dt.getTime() - tzOffsetMinutes * 60 * 1000);
+function tzWeekdayIndexOf(date, timeZone) {
+  const w = tzParts(date, timeZone).weekday.toLowerCase();
+  if (w.startsWith("sun")) return 0;
+  if (w.startsWith("mon")) return 1;
+  if (w.startsWith("tue")) return 2;
+  if (w.startsWith("wed")) return 3;
+  if (w.startsWith("thu")) return 4;
+  if (w.startsWith("fri")) return 5;
+  if (w.startsWith("sat")) return 6;
+  return new Date(date).getUTCDay();
 }
 
-function tzOffsetAt(timeZone, date) {
-  // Compute offset minutes for provided date/timeZone
-  const str = date.toLocaleString("en-US", { timeZone });
-  const local = new Date(str);
-  return (date.getTime() - local.getTime()) / (60 * 1000);
+function daysBetweenUTC(y1, m1, d1, y2, m2, d2) {
+  const a = Date.UTC(y1, m1 - 1, d1);
+  const b = Date.UTC(y2, m2 - 1, d2);
+  return Math.round((a - b) / (24 * 60 * 60 * 1000));
+}
+
+function localTimeToUtcTs(timeZone, year, monthIdx, day, hour, minute) {
+  // Iteratively adjust a UTC timestamp so that, when viewed in timeZone,
+  // it matches the desired local Y-M-D HH:mm.
+  let ts = Date.UTC(year, monthIdx, day, hour, minute, 0);
+  for (let i = 0; i < 4; i++) {
+    const p = tzParts(new Date(ts), timeZone);
+    const dayDelta = daysBetweenUTC(
+      p.year,
+      p.month,
+      p.day,
+      year,
+      monthIdx + 1,
+      day
+    );
+    const minutesDelta =
+      p.hour * 60 + p.minute - (hour * 60 + minute) + dayDelta * 1440;
+    if (minutesDelta === 0) break;
+    ts -= minutesDelta * 60 * 1000;
+  }
+  return ts;
 }
 
 // Simple token formatter for reminder messages
