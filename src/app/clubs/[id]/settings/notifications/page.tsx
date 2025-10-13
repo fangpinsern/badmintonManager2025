@@ -15,6 +15,20 @@ import {
   type ClubReminder,
 } from "@/lib/firestoreClubs";
 
+const COMMON_TIMEZONES = [
+  "UTC",
+  "Europe/London",
+  "Europe/Berlin",
+  "America/New_York",
+  "America/Los_Angeles",
+  "Asia/Singapore",
+  "Asia/Kuala_Lumpur",
+  "Asia/Jakarta",
+  "Asia/Bangkok",
+  "Asia/Tokyo",
+  "Australia/Sydney",
+];
+
 export default function ClubNotificationsSettingsPage() {
   const params = useParams<{ id: string }>();
   const id = String(params?.id || "");
@@ -70,6 +84,7 @@ export default function ClubNotificationsSettingsPage() {
   const telegram = (noti as any)?.telegram || {};
   const isLinked = String(telegram?.linkState || "unlinked") === "linked";
   const [enabled, setEnabled] = useState<boolean>(telegram?.enabled ?? false);
+  const [timeZone, setTimeZone] = useState<string>(telegram?.tz || "UTC");
   const [sessionCreated, setSessionCreated] = useState<boolean>(
     telegram?.notifications?.sessionCreated?.enabled ?? false
   );
@@ -99,6 +114,7 @@ export default function ClubNotificationsSettingsPage() {
   const [saved, setSaved] = useState(false);
   const [baseline, setBaseline] = useState<{
     enabled: boolean;
+    timeZone: string;
     sessionCreated: boolean;
     remindersEnabled: boolean;
     customRemindersEnabled: boolean;
@@ -108,6 +124,7 @@ export default function ClubNotificationsSettingsPage() {
     monthHour: number;
   }>({
     enabled: false,
+    timeZone: "UTC",
     sessionCreated: false,
     remindersEnabled: false,
     customRemindersEnabled: false,
@@ -121,6 +138,7 @@ export default function ClubNotificationsSettingsPage() {
     // sync local state when club doc changes
     const t = (noti as any)?.telegram || {};
     setEnabled(t?.enabled ?? false);
+    setTimeZone(String(t?.tz || "UTC"));
     setSessionCreated(t?.notifications?.sessionCreated?.enabled ?? false);
     setRemindersEnabled(t?.notifications?.reminders?.enabled ?? false);
     setCustomRemindersEnabled(
@@ -141,6 +159,7 @@ export default function ClubNotificationsSettingsPage() {
     );
     setBaseline({
       enabled: t?.enabled ?? false,
+      timeZone: String(t?.tz || "UTC"),
       sessionCreated: t?.notifications?.sessionCreated?.enabled ?? false,
       remindersEnabled: t?.notifications?.reminders?.enabled ?? false,
       customRemindersEnabled:
@@ -163,6 +182,7 @@ export default function ClubNotificationsSettingsPage() {
   const remindersHash = hashReminders(customReminders);
   const isDirty =
     enabled !== baseline.enabled ||
+    timeZone !== baseline.timeZone ||
     sessionCreated !== baseline.sessionCreated ||
     remindersEnabled !== baseline.remindersEnabled ||
     customRemindersEnabled !== baseline.customRemindersEnabled ||
@@ -178,6 +198,7 @@ export default function ClubNotificationsSettingsPage() {
     try {
       await updateClubTelegramSettingsRemote(id, user.uid, {
         enabled,
+        tz: timeZone,
         notifications: {
           sessionCreated: { enabled: sessionCreated },
           reminders: { enabled: remindersEnabled },
@@ -205,6 +226,7 @@ export default function ClubNotificationsSettingsPage() {
       } catch {}
       setBaseline({
         enabled,
+        timeZone,
         sessionCreated,
         remindersEnabled,
         customRemindersEnabled,
@@ -241,6 +263,7 @@ export default function ClubNotificationsSettingsPage() {
 
   // Modal state for adding/editing a reminder
   const [remModalOpen, setRemModalOpen] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [remName, setRemName] = useState("");
   const [remMsg, setRemMsg] = useState("");
   const [remDow, setRemDow] = useState<string>("1");
@@ -250,30 +273,64 @@ export default function ClubNotificationsSettingsPage() {
     setRemMsg("");
     setRemDow("1");
     setRemTime("09:00");
+    setEditingId(null);
   }
   function openAddReminder() {
     resetRemModal();
+    setRemModalOpen(true);
+  }
+  function openEditReminder(r: ClubReminder) {
+    setEditingId(r.id);
+    setRemName(r.name || "");
+    setRemMsg(r.message || "");
+    setRemDow(String(r.dow));
+    const hh = String(Math.max(0, Math.min(23, Number(r.hour)))).padStart(
+      2,
+      "0"
+    );
+    const mm = String(Math.max(0, Math.min(59, Number(r.minute)))).padStart(
+      2,
+      "0"
+    );
+    setRemTime(`${hh}:${mm}`);
     setRemModalOpen(true);
   }
   function addReminderConfirm() {
     const [hh, mm] = String(remTime || "09:00").split(":");
     const hour = Math.max(0, Math.min(23, Number(hh)));
     const minute = Math.max(0, Math.min(59, Number(mm)));
-    const item: ClubReminder = {
-      id:
-        (typeof crypto !== "undefined" && (crypto as any).randomUUID
-          ? (crypto as any).randomUUID()
-          : Math.random().toString(36).slice(2)) + Date.now().toString(36),
-      name: (remName || "").trim() || "Reminder",
-      message: (remMsg || "").trim() || "Reminder",
-      dow: Math.max(0, Math.min(6, Number(remDow))) as any,
-      hour,
-      minute,
-      enabled: true,
-    };
-    setCustomReminders(
-      (prev) => [...prev, item].slice(0, 5) // enforce max 5
-    );
+    if (editingId) {
+      setCustomReminders((prev) =>
+        prev.map((r) =>
+          r.id === editingId
+            ? {
+                ...r,
+                name: (remName || "").trim() || "Reminder",
+                message: (remMsg || "").trim() || "Reminder",
+                dow: Math.max(0, Math.min(6, Number(remDow))) as any,
+                hour,
+                minute,
+              }
+            : r
+        )
+      );
+    } else {
+      const item: ClubReminder = {
+        id:
+          (typeof crypto !== "undefined" && (crypto as any).randomUUID
+            ? (crypto as any).randomUUID()
+            : Math.random().toString(36).slice(2)) + Date.now().toString(36),
+        name: (remName || "").trim() || "Reminder",
+        message: (remMsg || "").trim() || "Reminder",
+        dow: Math.max(0, Math.min(6, Number(remDow))) as any,
+        hour,
+        minute,
+        enabled: true,
+      };
+      setCustomReminders(
+        (prev) => [...prev, item].slice(0, 5) // enforce max 5
+      );
+    }
     setRemModalOpen(false);
   }
 
@@ -529,6 +586,13 @@ export default function ClubNotificationsSettingsPage() {
                               <button
                                 className="rounded border px-2 py-1 text-[11px]"
                                 disabled={!isOwner}
+                                onClick={() => openEditReminder(r)}
+                              >
+                                Edit
+                              </button>
+                              <button
+                                className="rounded border px-2 py-1 text-[11px]"
+                                disabled={!isOwner}
                                 onClick={() => removeReminder(r.id)}
                               >
                                 Remove
@@ -618,6 +682,28 @@ export default function ClubNotificationsSettingsPage() {
                   <div className="mt-2 text-[11px] text-gray-500">
                     Status: {(telegram?.linkState || "unlinked").toUpperCase()}
                   </div>
+                  <div className="mt-2 grid grid-cols-1 gap-2 md:grid-cols-2">
+                    <div>
+                      <label className="mb-1 block text-[11px] text-gray-600">
+                        Timezone
+                      </label>
+                      <select
+                        className="w-full rounded border p-2 text-sm"
+                        disabled={!isOwner}
+                        value={timeZone}
+                        onChange={(e) => setTimeZone(e.target.value)}
+                      >
+                        {COMMON_TIMEZONES.map((tz) => (
+                          <option key={tz} value={tz}>
+                            {tz}
+                          </option>
+                        ))}
+                      </select>
+                      <div className="mt-1 text-[11px] text-gray-500">
+                        Used for custom reminders and monthly summaries.
+                      </div>
+                    </div>
+                  </div>
                   <div className="mt-2">
                     <button
                       className="rounded border px-2 py-1 text-xs disabled:opacity-50"
@@ -662,7 +748,9 @@ export default function ClubNotificationsSettingsPage() {
             onClick={() => setRemModalOpen(false)}
           ></div>
           <div className="relative w-full max-w-sm rounded-2xl bg-white p-4 shadow-lg max-h-[90vh] overflow-auto">
-            <div className="mb-2 text-base font-semibold">Add reminder</div>
+            <div className="mb-2 text-base font-semibold">
+              {editingId ? "Edit reminder" : "Add reminder"}
+            </div>
             <div className="space-y-3">
               <Input
                 label="Name"
@@ -723,7 +811,7 @@ export default function ClubNotificationsSettingsPage() {
                 onClick={addReminderConfirm}
                 className="rounded-xl bg-black px-3 py-1.5 text-sm text-white"
               >
-                Add
+                {editingId ? "Save" : "Add"}
               </button>
             </div>
           </div>

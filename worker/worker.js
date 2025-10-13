@@ -1587,7 +1587,11 @@ export class ClubReminders {
           // Use Telegram bot token from env; send html-safe message
           const token = this.env.TELEGRAM_BOT_TOKEN;
           if (!token) continue;
-          const text = escapeHtml(r.message || r.name || "Reminder");
+          const formatted = formatReminderMessage(
+            r.message || r.name || "Reminder",
+            timeZone
+          );
+          const text = escapeHtml(formatted);
           await sendTelegram({ token, chatId, text, parse: "HTML" });
           try {
             console.log("ClubReminders.alarm:sent", {
@@ -1689,6 +1693,30 @@ function tzOffsetAt(timeZone, date) {
   const str = date.toLocaleString("en-US", { timeZone });
   const local = new Date(str);
   return (date.getTime() - local.getTime()) / (60 * 1000);
+}
+
+// Simple token formatter for reminder messages
+// Supports {date} as YYYY-MM-DD in the reminder's timezone
+function formatReminderMessage(template, timeZone) {
+  try {
+    const d = new Date();
+    const fmt = new Intl.DateTimeFormat("en-CA", {
+      timeZone: timeZone || "UTC",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    });
+    const parts = Object.fromEntries(
+      fmt.formatToParts(d).map((p) => [p.type, p.value])
+    );
+    const yyyy = parts.year;
+    const mm = parts.month;
+    const dd = parts.day;
+    const dateStr = `${yyyy}-${mm}-${dd}`;
+    return String(template || "").replace(/\{date\}/g, dateStr);
+  } catch {
+    return String(template || "");
+  }
 }
 
 function dayKey(d = new Date()) {
