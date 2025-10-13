@@ -110,23 +110,27 @@ export default {
         return withCors(new Response("Missing clubId", { status: 400 }), req);
       const token = await getAccessToken(env);
       const { url: baseUrl } = fsBases(env.GCP_PROJECT_ID, env.FIRESTORE_DB);
-      const clubsCol =
+      const sensitiveCol =
         String(env?.STATS_TEST_MODE || "") === "1" ||
         String(env?.STATS_TEST_MODE || "").toLowerCase() === "true"
-          ? "clubs_test"
-          : "clubs";
-      const clubRes = await fetch(`${baseUrl}/${clubsCol}/${clubId}`, {
-        headers: { authorization: `Bearer ${token}` },
-      });
-      if (!clubRes.ok) {
-        try {
-          console.log("club read failed", clubId, clubRes.status);
-        } catch {}
-        return withCors(new Response("club read failed", { status: 502 }), req);
-      }
-      const clubDoc = await clubRes.json();
-      const f = clubDoc.fields || {};
-      const telegram = jsonFromFields(f.telegram) || {};
+          ? "clubSensitive_test"
+          : "clubSensitive";
+      // Read only from protected sensitive notifications sub-document
+      let telegram = {};
+      const notiRes = await fetch(
+        `${baseUrl}/${sensitiveCol}/${clubId}/sensitive/notifications`,
+        {
+          headers: { authorization: `Bearer ${token}` },
+        }
+      );
+      if (!notiRes.ok)
+        return withCors(
+          new Response("club sensitive read failed", { status: 502 }),
+          req
+        );
+      const notiDoc = await notiRes.json();
+      const nf = notiDoc.fields || {};
+      telegram = jsonFromFields(nf.telegram) || {};
       if (
         !telegram.enabled ||
         telegram.linkState !== "linked" ||
@@ -760,11 +764,11 @@ async function claimTelegramLinkToken(env, token, chat) {
   // Then set telegram.chatId/title/username, linkState=linked, clear linkToken
   const access = await getAccessToken(env);
   const { url: baseUrl } = fsBases(env.GCP_PROJECT_ID, env.FIRESTORE_DB);
-  const clubsCol =
+  const sensitiveCol =
     String(env?.STATS_TEST_MODE || "").toLowerCase() === "true" ||
     env?.STATS_TEST_MODE === "1"
-      ? "clubs_test"
-      : "clubs";
+      ? "clubSensitive_test"
+      : "clubSensitive";
   try {
     console.log("claim:start", {
       tokenPrefix: String(token || "").slice(0, 8),
@@ -773,11 +777,11 @@ async function claimTelegramLinkToken(env, token, chat) {
       db: env.FIRESTORE_DB,
     });
   } catch {}
-  // Firestore structured query to find by linkToken (document field filter)
+  // Firestore structured query to find by linkToken in sensitive collection only
   const queryEndpoint = `${baseUrl}:runQuery`;
   const body = {
     structuredQuery: {
-      from: [{ collectionId: clubsCol }],
+      from: [{ collectionId: sensitiveCol }],
       where: {
         fieldFilter: {
           field: { fieldPath: "telegram.linkToken" },
@@ -788,9 +792,6 @@ async function claimTelegramLinkToken(env, token, chat) {
       limit: 1,
     },
   };
-  try {
-    console.log("claim:runQuery body", body);
-  } catch {}
   const res = await fetch(queryEndpoint, {
     method: "POST",
     headers: {
@@ -799,27 +800,12 @@ async function claimTelegramLinkToken(env, token, chat) {
     },
     body: JSON.stringify(body),
   });
-  try {
-    console.log("claim:runQuery status", res.status);
-  } catch {}
-  if (!res.ok) {
-    try {
-      console.log("claim:runQuery errorText", await res.text());
-    } catch {}
-    throw new Error("query failed");
-  }
-  console.log("query res", res);
+  if (!res.ok) return null;
   const arr = await res.json();
-  try {
-    console.log(
-      "claim:runQuery results length",
-      Array.isArray(arr) ? arr.length : -1
-    );
-  } catch {}
   const first = Array.isArray(arr) ? arr.find((x) => x.document) : null;
-  if (!first || !first.document) return null;
-  const doc = first.document;
-  const name = doc.name || ""; // full path
+  const foundDoc = first && first.document ? first.document : null;
+  if (!foundDoc) return null;
+  const name = foundDoc.name || ""; // full path
   try {
     console.log("claim:doc name", name);
   } catch {}
@@ -871,6 +857,8 @@ async function claimTelegramLinkToken(env, token, chat) {
   ];
   if (fields.telegram.mapValue.fields.groupUsername)
     updateMask.push("telegram.groupUsername");
+  // Write to sensitive collection top-level and notifications sub-doc only
+  const notifPath = `${name}/sensitive/notifications`;
   const commitRes = await fetch(`${baseUrl}:commit`, {
     method: "POST",
     headers: {
@@ -879,8 +867,9 @@ async function claimTelegramLinkToken(env, token, chat) {
     },
     body: JSON.stringify({
       writes: [
+        { update: { name, fields }, updateMask: { fieldPaths: updateMask } },
         {
-          update: { name, fields },
+          update: { name: notifPath, fields },
           updateMask: { fieldPaths: updateMask },
         },
       ],

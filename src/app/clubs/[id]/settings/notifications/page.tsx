@@ -8,6 +8,7 @@ import { auth } from "@/lib/firebase";
 import { onAuthStateChanged } from "firebase/auth";
 import {
   subscribeClub,
+  subscribeClubNotifications,
   updateClubTelegramSettingsRemote,
   issueClubTelegramLinkTokenRemote,
   type FirestoreClub,
@@ -16,10 +17,9 @@ import {
 export default function ClubNotificationsSettingsPage() {
   const params = useParams<{ id: string }>();
   const id = String(params?.id || "");
-  const [club, setClub] = useState<
-    FirestoreClub | (FirestoreClub & { telegram?: any }) | null
-  >(null);
+  const [club, setClub] = useState<FirestoreClub | null>(null);
   const [clubReady, setClubReady] = useState(false);
+  const [noti, setNoti] = useState<{ telegram?: any } | null>(null);
   const [user, setUser] = useState<{
     uid: string;
     displayName?: string | null;
@@ -41,7 +41,7 @@ export default function ClubNotificationsSettingsPage() {
   useEffect(() => {
     if (!id) return;
     setClubReady(false);
-    return subscribeClub(
+    const unsubClub = subscribeClub(
       id,
       (doc) => {
         setClub(doc as any);
@@ -50,6 +50,15 @@ export default function ClubNotificationsSettingsPage() {
       () => setClubReady(true),
       user?.uid || undefined
     );
+    const unsubNoti = subscribeClubNotifications(id, (n) => setNoti(n));
+    return () => {
+      try {
+        unsubClub && (unsubClub as any)();
+      } catch {}
+      try {
+        unsubNoti && (unsubNoti as any)();
+      } catch {}
+    };
   }, [id, user]);
 
   const isOwner = useMemo(
@@ -57,7 +66,7 @@ export default function ClubNotificationsSettingsPage() {
     [club, user]
   );
 
-  const telegram = (club as any)?.telegram || {};
+  const telegram = (noti as any)?.telegram || {};
   const isLinked = String(telegram?.linkState || "unlinked") === "linked";
   const [enabled, setEnabled] = useState<boolean>(telegram?.enabled ?? true);
   const [sessionCreated, setSessionCreated] = useState<boolean>(
@@ -88,7 +97,7 @@ export default function ClubNotificationsSettingsPage() {
     setMonthlyEnabled(t?.notifications?.monthlySummary?.enabled ?? true);
     setMonthDay(String(t?.notifications?.monthlySummary?.dayOfMonth ?? 1));
     setMonthHour(String(t?.notifications?.monthlySummary?.hour ?? 9));
-  }, [club?.id, (club as any)?.telegram]);
+  }, [club?.id, (noti as any)?.telegram]);
 
   async function saveSettings() {
     if (!id || !user || !isOwner) return;

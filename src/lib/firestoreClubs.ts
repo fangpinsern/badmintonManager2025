@@ -32,6 +32,10 @@ function clubsCollectionId(): string {
   return isTestMode ? "clubs_test" : "clubs";
 }
 
+function clubSensitiveCollectionId(): string {
+  return isTestMode ? "clubSensitive_test" : "clubSensitive";
+}
+
 function usernamesCollectionIdLocal(): string {
   return isTestMode ? "usernames_test" : "usernames";
 }
@@ -42,6 +46,18 @@ function clubsCollection() {
 
 function clubDoc(id: string) {
   return doc(clubsCollection(), id);
+}
+
+function clubSensitiveDoc(id: string) {
+  // Top-level sensitive document: clubSensitive/{clubId}
+  // Used for token query and consolidated sensitive state
+  return doc(db, clubSensitiveCollectionId(), id);
+}
+
+function clubSensitiveNotificationsDoc(id: string) {
+  // Sub-document for notifications: clubSensitive/{clubId}/sensitive/notifications
+  // UI reads from this doc; rules can be scoped tightly
+  return doc(db, clubSensitiveCollectionId(), id, "sensitive", "notifications");
 }
 
 function clubFeedCollection(clubId: string) {
@@ -179,6 +195,26 @@ export function subscribeClub(
   //   }
   // );
   if (onError) onError(new Error("no permission"));
+}
+
+// Subscribe to sensitive club notification settings (separate, rule-protected doc)
+export function subscribeClubNotifications(
+  clubId: string,
+  onChange: (noti: { telegram?: ClubTelegramSettings } | null) => void
+) {
+  const ref = clubSensitiveDoc(clubId);
+  return onSnapshot(
+    ref,
+    (snap) => {
+      if (!snap.exists()) return onChange(null);
+      const data = snap.data() as any;
+      onChange({ telegram: data?.telegram });
+    },
+    (err) => {
+      console.error(err);
+      onChange(null);
+    }
+  );
 }
 
 export function subscribeClubFeed(
@@ -695,10 +731,21 @@ export async function updateClubTelegramSettingsRemote(
     };
     if (data.ownerUid !== actorUid)
       throw new Error("Only owner can edit settings");
-    const prev = (data as any).telegram || {};
-    const next = deepMerge(prev, update || {});
+    // Read existing sensitive state from protected docs if present
+    const sref = clubSensitiveDoc(clubId);
+    const ssnap = await tx.get(sref);
+    const prevSensitive =
+      (ssnap.exists() ? (ssnap.data() as any)?.telegram : null) || {};
+    const next = deepMerge(prevSensitive, update || {});
+    // Write to protected sensitive doc (top-level)
     tx.set(
-      ref,
+      sref,
+      { telegram: next, updatedAt: serverTimestamp() },
+      { merge: true }
+    );
+    // Also write to notifications sub-doc for UI consumption
+    tx.set(
+      clubSensitiveNotificationsDoc(clubId),
       { telegram: next, updatedAt: serverTimestamp() },
       { merge: true }
     );
@@ -722,14 +769,24 @@ export async function issueClubTelegramLinkTokenRemote(
     };
     if (data.ownerUid !== actorUid)
       throw new Error("Only owner can link Telegram");
-    const prev = (data as any).telegram || {};
-    const next = deepMerge(prev, {
+    const sref = clubSensitiveDoc(clubId);
+    const ssnap = await tx.get(sref);
+    const prevSensitive =
+      (ssnap.exists() ? (ssnap.data() as any)?.telegram : null) || {};
+    const next = deepMerge(prevSensitive, {
       linkState: "pending",
       linkToken: token,
       linkTokenExpiresAt: expiresAtMs,
     } as any);
+    // Write to protected sensitive doc (top-level)
     tx.set(
-      ref,
+      sref,
+      { telegram: next, updatedAt: serverTimestamp() },
+      { merge: true }
+    );
+    // Also write to notifications sub-doc for UI consumption
+    tx.set(
+      clubSensitiveNotificationsDoc(clubId),
       { telegram: next, updatedAt: serverTimestamp() },
       { merge: true }
     );
