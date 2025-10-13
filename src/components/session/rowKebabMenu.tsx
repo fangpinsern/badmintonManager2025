@@ -192,6 +192,8 @@ function RowKebabMenu({
         onConfirm={async () => {
           try {
             removePlayer(session.id, player.id);
+            // Delay slightly to allow Firestore replication so worker reads latest
+            await new Promise((r) => setTimeout(r, 400));
             // Best-effort: notify worker to update Telegram message for club sessions
             try {
               const clubId = (session as any)?.clubId

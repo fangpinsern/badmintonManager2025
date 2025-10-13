@@ -880,6 +880,13 @@ async function editTelegramMessage({
   const res = await fetch(url, { method: "POST", body: params });
   if (!res.ok) {
     const t = await res.text();
+    // If there's no effective change, Telegram returns 400: message is not modified — treat as success/no-op
+    if (/message is not modified/i.test(t)) {
+      try {
+        console.log("telegram edit: no changes, treated as success");
+      } catch {}
+      return { ok: true, unchanged: true };
+    }
     throw new Error(`Telegram edit error ${res.status}: ${t}`);
   }
   return res.json();
