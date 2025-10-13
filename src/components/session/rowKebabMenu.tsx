@@ -189,9 +189,30 @@ function RowKebabMenu({
         }
         confirmText="Remove"
         onCancel={() => setRemoveOpen(false)}
-        onConfirm={() => {
+        onConfirm={async () => {
           try {
             removePlayer(session.id, player.id);
+            // Best-effort: notify worker to update Telegram message for club sessions
+            try {
+              const clubId = (session as any)?.clubId
+                ? String((session as any).clubId)
+                : "";
+              if (clubId) {
+                const endpoint = process.env.NEXT_PUBLIC_WORKER_BASE_URL
+                  ? `${process.env.NEXT_PUBLIC_WORKER_BASE_URL}/telegram/send`
+                  : "/api/telegram/send";
+                await fetch(endpoint, {
+                  method: "POST",
+                  headers: { "content-type": "application/json" },
+                  body: JSON.stringify({
+                    clubId,
+                    type: "session_updated",
+                    organizerUid: organizerUid || auth.currentUser?.uid || "",
+                    sessionId: session.id,
+                  }),
+                });
+              }
+            } catch {}
           } finally {
             setRemoveOpen(false);
           }

@@ -270,7 +270,7 @@ export default {
         }
       }
 
-      if (type === "session_joined") {
+      if (type === "session_updated" || type === "session_joined") {
         // Gate by optional flag under sessionCreated settings
         const showList = !!(
           telegram?.notifications?.sessionCreated?.showParticipantsOnJoin ===
