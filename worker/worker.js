@@ -464,17 +464,21 @@ async function sendTelegram({
   parse = "HTML",
 }) {
   const url = `https://api.telegram.org/bot${token}/sendMessage`;
-  const body = {
-    chat_id: chatId,
-    text,
-    parse_mode: parse,
-    disable_web_page_preview: true,
-    reply_markup: replyMarkup ? JSON.stringify(replyMarkup) : undefined,
-  };
-  const res = await fetch(url, {
-    method: "POST",
-    body: new URLSearchParams(body),
-  });
+  const params = new URLSearchParams();
+  params.set("chat_id", String(chatId));
+  params.set("text", String(text || ""));
+  if (parse) params.set("parse_mode", String(parse));
+  params.set("disable_web_page_preview", "true");
+  if (replyMarkup) {
+    try {
+      params.set("reply_markup", JSON.stringify(replyMarkup));
+    } catch (e) {
+      try {
+        console.log("sendTelegram reply_markup JSON error", e);
+      } catch {}
+    }
+  }
+  const res = await fetch(url, { method: "POST", body: params });
   if (!res.ok) {
     const t = await res.text();
     throw new Error(`Telegram error ${res.status}: ${t}`);
