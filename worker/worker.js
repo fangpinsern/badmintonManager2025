@@ -145,10 +145,248 @@ export default {
         } catch {}
         return withCors(new Response("no bot token", { status: 500 }), req);
       }
+      // Optional enforcement/rendering based on type
+      const type = String(payload?.type || "").trim();
+
+      if (type === "session_created") {
+        // Gate by feature toggle
+        const enabledCreated = !!(
+          telegram?.notifications?.sessionCreated?.enabled ?? true
+        );
+        if (!enabledCreated) {
+          return withCors(
+            new Response("feature disabled", { status: 202 }),
+            req
+          );
+        }
+        const organizerUid = String(payload?.organizerUid || "").trim();
+        const sessionId = String(payload?.sessionId || "").trim();
+        if (!organizerUid || !sessionId) {
+          return withCors(
+            new Response("Missing organizer/session", { status: 400 }),
+            req
+          );
+        }
+
+        // Read session payload to render message text safely on server
+        const userCol =
+          String(env?.STATS_TEST_MODE || "").toLowerCase() === "true" ||
+          env?.STATS_TEST_MODE === "1"
+            ? "users_test"
+            : "users";
+        const sessionRes = await fetch(
+          `${baseUrl}/${userCol}/${organizerUid}/sessions/${sessionId}`,
+          { headers: { authorization: `Bearer ${token}` } }
+        );
+        if (!sessionRes.ok) {
+          return withCors(
+            new Response("Session read failed", { status: 502 }),
+            req
+          );
+        }
+        const sdoc = await sessionRes.json();
+        const sfields = sdoc.fields || {};
+        const spayload = jsonFromFields(sfields.payload) || {};
+        const date = String(spayload.date || "");
+        const time = String(spayload.time || "");
+
+        // Read club name for nicer message
+        let clubName = "";
+        try {
+          const clubsCol =
+            String(env?.STATS_TEST_MODE || "").toLowerCase() === "true" ||
+            env?.STATS_TEST_MODE === "1"
+              ? "clubs_test"
+              : "clubs";
+          const cres = await fetch(`${baseUrl}/${clubsCol}/${clubId}`, {
+            headers: { authorization: `Bearer ${token}` },
+          });
+          if (cres.ok) {
+            const cdoc = await cres.json();
+            const cf = cdoc.fields || {};
+            clubName = String(jsonFromFields(cf.name) || "");
+          }
+        } catch {}
+
+        const origin = req.headers.get("Origin") || "";
+        const allowOrigin = ALLOW_ORIGINS.has(origin)
+          ? origin
+          : String(env?.APP_BASE_URL || "");
+        const baseApp = allowOrigin || "https://bm25r.codingcrayons.com";
+        const sessionUrl = `${baseApp}/session/${sessionId}`;
+
+        const text = clubName
+          ? `🆕 New session for <b>${escapeHtml(
+              clubName
+            )}</b> on <b>${escapeHtml(date)}</b> at <b>${escapeHtml(
+              time
+            )}</b>.\nJoin here:`
+          : `🆕 New session on <b>${escapeHtml(date)}</b> at <b>${escapeHtml(
+              time
+            )}</b>.\nJoin here:`;
+        const replyMarkup = {
+          inline_keyboard: [[{ text: "Open session", url: sessionUrl }]],
+        };
+
+        try {
+          const res = await sendTelegram({
+            token: botToken,
+            chatId: telegram.chatId,
+            text,
+            replyMarkup,
+            parse: "HTML",
+          });
+          const mid =
+            (res && res.result && res.result.message_id) || res?.message_id;
+          const body = mid ? JSON.stringify({ message_id: mid }) : "sent";
+          return withCors(
+            new Response(body, {
+              status: 200,
+              headers: mid ? { "content-type": "application/json" } : undefined,
+            }),
+            req
+          );
+        } catch (e) {
+          try {
+            console.log("telegram send failed", e);
+          } catch {}
+          return withCors(new Response("send failed", { status: 502 }), req);
+        }
+      }
+
+      if (type === "session_joined") {
+        // Gate by optional flag under sessionCreated settings
+        const showList = !!(
+          telegram?.notifications?.sessionCreated?.showParticipantsOnJoin ===
+          true
+        );
+        if (!showList)
+          return withCors(new Response("no-op", { status: 202 }), req);
+
+        const organizerUid = String(payload?.organizerUid || "").trim();
+        const sessionId = String(payload?.sessionId || "").trim();
+        if (!organizerUid || !sessionId)
+          return withCors(
+            new Response("Missing organizer/session", { status: 400 }),
+            req
+          );
+
+        // Load session to get message id + participants
+        const userCol =
+          String(env?.STATS_TEST_MODE || "").toLowerCase() === "true" ||
+          env?.STATS_TEST_MODE === "1"
+            ? "users_test"
+            : "users";
+        const sRes = await fetch(
+          `${baseUrl}/${userCol}/${organizerUid}/sessions/${sessionId}`,
+          { headers: { authorization: `Bearer ${token}` } }
+        );
+        if (!sRes.ok)
+          return withCors(
+            new Response("Session read failed", { status: 502 }),
+            req
+          );
+        const sdoc = await sRes.json();
+        const sfields = sdoc.fields || {};
+        const spayload = jsonFromFields(sfields.payload) || {};
+        const date = String(spayload.date || "");
+        const time = String(spayload.time || "");
+        const players = Array.isArray(spayload.players) ? spayload.players : [];
+        const mid = Number(spayload.telegramMessageId || 0);
+        if (!mid)
+          return withCors(new Response("no message id", { status: 202 }), req);
+
+        // Compose participant list
+        let clubName = "";
+        try {
+          const clubsCol =
+            String(env?.STATS_TEST_MODE || "").toLowerCase() === "true" ||
+            env?.STATS_TEST_MODE === "1"
+              ? "clubs_test"
+              : "clubs";
+          const cres = await fetch(`${baseUrl}/${clubsCol}/${clubId}`, {
+            headers: { authorization: `Bearer ${token}` },
+          });
+          if (cres.ok) {
+            const cdoc = await cres.json();
+            const cf = cdoc.fields || {};
+            clubName = String(jsonFromFields(cf.name) || "");
+          }
+        } catch {}
+
+        const origin = req.headers.get("Origin") || "";
+        const allowOrigin = ALLOW_ORIGINS.has(origin)
+          ? origin
+          : String(env?.APP_BASE_URL || "");
+        const baseApp = allowOrigin || "https://bm25r.codingcrayons.com";
+        const sessionUrl = `${baseApp}/session/${sessionId}`;
+
+        const names = players
+          .map((p) =>
+            (p && (p.accountUsername || p.name || "")).toString().trim()
+          )
+          .filter((s) => !!s)
+          .slice(0, 100);
+        const list = names
+          .map((n) => (n.startsWith("@") ? n : `@${escapeHtml(n)}`))
+          .join("\n");
+        const header = clubName
+          ? `🆕 New session for <b>${escapeHtml(
+              clubName
+            )}</b> on <b>${escapeHtml(date)}</b> at <b>${escapeHtml(
+              time
+            )}</b>.\nJoin here:`
+          : `🆕 New session on <b>${escapeHtml(date)}</b> at <b>${escapeHtml(
+              time
+            )}</b>.\nJoin here:`;
+        const body = names.length
+          ? `${header}\n\nParticipants (${names.length}):\n${list}`
+          : header;
+
+        const replyMarkup = {
+          inline_keyboard: [[{ text: "Open session", url: sessionUrl }]],
+        };
+
+        try {
+          const res = await editTelegramMessage({
+            token: botToken,
+            chatId: telegram.chatId,
+            messageId: mid,
+            text: body,
+            replyMarkup,
+            parse: "HTML",
+          });
+          return withCors(new Response("edited"), req);
+        } catch (e) {
+          try {
+            console.log("telegram edit failed", e);
+          } catch {}
+          return withCors(new Response("edit failed", { status: 502 }), req);
+        }
+      }
+
+      // Default: simple test or explicit text send (legacy/test usage)
       const text = payload?.text || "✅ Test message from Badminton Manager";
+      const replyMarkup = payload?.replyMarkup || undefined;
+      const parse = payload?.parse || "HTML";
       try {
-        await sendTelegram({ token: botToken, chatId: telegram.chatId, text });
-        return withCors(new Response("sent"), req);
+        const res = await sendTelegram({
+          token: botToken,
+          chatId: telegram.chatId,
+          text,
+          replyMarkup,
+          parse,
+        });
+        const mid =
+          (res && res.result && res.result.message_id) || res?.message_id;
+        const body = mid ? JSON.stringify({ message_id: mid }) : "sent";
+        return withCors(
+          new Response(body, {
+            status: 200,
+            headers: mid ? { "content-type": "application/json" } : undefined,
+          }),
+          req
+        );
       } catch (e) {
         try {
           console.log("telegram send failed", e);
@@ -486,6 +724,37 @@ async function sendTelegram({
   if (!res.ok) {
     const t = await res.text();
     throw new Error(`Telegram error ${res.status}: ${t}`);
+  }
+  return res.json();
+}
+async function editTelegramMessage({
+  token,
+  chatId,
+  messageId,
+  text,
+  replyMarkup,
+  parse = "HTML",
+}) {
+  const url = `https://api.telegram.org/bot${token}/editMessageText`;
+  const params = new URLSearchParams();
+  params.set("chat_id", String(chatId));
+  params.set("message_id", String(messageId));
+  params.set("text", String(text || ""));
+  if (parse) params.set("parse_mode", String(parse));
+  params.set("disable_web_page_preview", "true");
+  if (replyMarkup) {
+    try {
+      params.set("reply_markup", JSON.stringify(replyMarkup));
+    } catch (e) {
+      try {
+        console.log("editTelegram reply_markup JSON error", e);
+      } catch {}
+    }
+  }
+  const res = await fetch(url, { method: "POST", body: params });
+  if (!res.ok) {
+    const t = await res.text();
+    throw new Error(`Telegram edit error ${res.status}: ${t}`);
   }
   return res.json();
 }

@@ -635,6 +635,25 @@ export default function ClubDetailPage() {
                                   idCreated,
                                   uname
                                 );
+                                // Best-effort: trigger Telegram participant list update
+                                try {
+                                  const endpoint = process.env
+                                    .NEXT_PUBLIC_WORKER_BASE_URL
+                                    ? `${process.env.NEXT_PUBLIC_WORKER_BASE_URL}/telegram/send`
+                                    : "/api/telegram/send";
+                                  await fetch(endpoint, {
+                                    method: "POST",
+                                    headers: {
+                                      "content-type": "application/json",
+                                    },
+                                    body: JSON.stringify({
+                                      clubId: id,
+                                      type: "session_joined",
+                                      organizerUid: owner,
+                                      sessionId: idCreated,
+                                    }),
+                                  });
+                                } catch {}
                               } catch (e) {
                                 console.error("Error creating user", e);
                               }
@@ -646,6 +665,48 @@ export default function ClubDetailPage() {
                           } catch (e) {
                             console.error("Error creating session", e);
                           }
+                        }
+                        // Send minimal event for session_created; worker renders content securely
+                        try {
+                          const endpoint = process.env
+                            .NEXT_PUBLIC_WORKER_BASE_URL
+                            ? `${process.env.NEXT_PUBLIC_WORKER_BASE_URL}/telegram/send`
+                            : "/api/telegram/send";
+                          const resp = await fetch(endpoint, {
+                            method: "POST",
+                            headers: { "content-type": "application/json" },
+                            body: JSON.stringify({
+                              clubId: id,
+                              type: "session_created",
+                              organizerUid: user.uid,
+                              sessionId: idCreated,
+                            }),
+                          });
+                          if (resp.ok) {
+                            let mid: number | undefined;
+                            try {
+                              const j = await resp.json();
+                              mid = j?.message_id;
+                            } catch {}
+                            if (mid) {
+                              const current2 = (
+                                useStore.getState().sessions || []
+                              ).find((s) => s.id === idCreated);
+                              if (current2) {
+                                const withTelegram = {
+                                  ...current2,
+                                  telegramMessageId: mid,
+                                } as any;
+                                try {
+                                  await saveSession(idCreated, withTelegram);
+                                } catch (e) {
+                                  console.error("Error saving session", e);
+                                }
+                              }
+                            }
+                          }
+                        } catch (e) {
+                          console.log("telegram notify error", e);
                         }
                       }
                     } catch (e) {
