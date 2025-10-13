@@ -451,7 +451,7 @@ export default function ClubNotificationsSettingsPage() {
                       </button>
                     </div>
 
-                    <div className="flex items-center justify-between">
+                    {/* <div className="flex items-center justify-between">
                       <div>
                         <div className="font-medium">Reminders</div>
                         <div className="text-[11px] text-gray-600">
@@ -467,7 +467,7 @@ export default function ClubNotificationsSettingsPage() {
                       >
                         {remindersEnabled ? "On" : "Off"}
                       </button>
-                    </div>
+                    </div> */}
 
                     <div className="rounded border p-3">
                       <div className="mb-2 flex items-center justify-between">

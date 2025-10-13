@@ -484,6 +484,22 @@ export default {
         .slice(0, 5);
 
       // Configure the DO regardless of link status; DO will schedule only when effective
+      try {
+        console.log("reminders.sync:state", {
+          clubId,
+          globalEnabled,
+          linkOk,
+          tz,
+          customEnabled,
+          items: items.map((x) => ({
+            id: x.id,
+            dow: x.dow,
+            h: x.hour,
+            m: x.minute,
+            enabled: x.enabled !== false,
+          })),
+        });
+      } catch {}
       if (!env.REMINDERS) {
         return withCors(
           new Response("reminders DO not bound", { status: 500 }),
@@ -503,6 +519,9 @@ export default {
           items,
         }),
       });
+      try {
+        console.log("reminders.sync:do_response", resp.status);
+      } catch {}
       return withCors(resp, req);
     }
 
@@ -1476,6 +1495,9 @@ export class ClubReminders {
       try {
         body = await req.json();
       } catch {}
+      try {
+        console.log("ClubReminders.fetch:config", { body });
+      } catch {}
       const clubId = String(body?.clubId || "").trim();
       const enabled = !!body?.enabled;
       const chatId = body?.chatId || null;
@@ -1513,6 +1535,15 @@ export class ClubReminders {
           .slice(0, 5),
       });
       // Schedule next alarm
+      try {
+        console.log("ClubReminders.config:stored", {
+          clubId,
+          enabled,
+          chatId,
+          timeZone,
+          count: items.length,
+        });
+      } catch {}
       await this.scheduleNext();
       return new Response("ok");
     }
@@ -1521,12 +1552,22 @@ export class ClubReminders {
 
   async alarm() {
     // On alarm, send messages due in the minute window, then schedule next
+    try {
+      console.log("ClubReminders.alarm:triggered");
+    } catch {}
     const cfg = (await this.state.storage.get("config")) || {};
     const enabled = !!cfg.enabled;
     const chatId = cfg.chatId;
     const timeZone = cfg.timeZone || "UTC";
     const items = Array.isArray(cfg.items) ? cfg.items : [];
     if (!enabled || !chatId || !items.length) {
+      try {
+        console.log("ClubReminders.alarm:skip", {
+          enabled,
+          chatId: !!chatId,
+          count: items.length,
+        });
+      } catch {}
       return; // nothing to do
     }
     const now = Date.now();
@@ -1548,9 +1589,17 @@ export class ClubReminders {
           if (!token) continue;
           const text = escapeHtml(r.message || r.name || "Reminder");
           await sendTelegram({ token, chatId, text, parse: "HTML" });
+          try {
+            console.log("ClubReminders.alarm:sent", {
+              id: r.id,
+              dow: r.dow,
+              h: r.hour,
+              m: r.minute,
+            });
+          } catch {}
         } catch (e) {
           try {
-            console.log("reminder send failed", e?.message || e);
+            console.log("ClubReminders.alarm:error", e?.message || e);
           } catch {}
         }
       }
@@ -1566,7 +1615,16 @@ export class ClubReminders {
     const items = Array.isArray(cfg.items) ? cfg.items : [];
     // Clear any existing alarm marker
     await this.state.storage.delete("alarmAt");
-    if (!enabled || !chatId || !items.length) return;
+    if (!enabled || !chatId || !items.length) {
+      try {
+        console.log("ClubReminders.scheduleNext:skip", {
+          enabled,
+          chatId: !!chatId,
+          count: items.length,
+        });
+      } catch {}
+      return;
+    }
     const now = Date.now();
     let earliest = Infinity;
     for (const r of items) {
@@ -1575,8 +1633,13 @@ export class ClubReminders {
       if (ts < earliest) earliest = ts;
     }
     if (!Number.isFinite(earliest)) return;
-    await this.state.storage.setAlarm(earliest);
-    await this.state.storage.put("alarmAt", earliest);
+    // If earliest is in the past for any reason (clock/tz mismatch), schedule a minimal delay
+    const when = earliest > now ? earliest : now + 60 * 1000;
+    await this.state.storage.setAlarm(when);
+    await this.state.storage.put("alarmAt", when);
+    try {
+      console.log("ClubReminders.scheduleNext:set", { when });
+    } catch {}
   }
 }
 
