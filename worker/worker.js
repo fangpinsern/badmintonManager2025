@@ -761,6 +761,14 @@ async function claimTelegramLinkToken(env, token, chat) {
     env?.STATS_TEST_MODE === "1"
       ? "clubs_test"
       : "clubs";
+  try {
+    console.log("claim:start", {
+      tokenPrefix: String(token || "").slice(0, 8),
+      clubsCol,
+      project: env.GCP_PROJECT_ID,
+      db: env.FIRESTORE_DB,
+    });
+  } catch {}
   // Firestore structured query to find by linkToken (document field filter)
   const queryEndpoint = `${baseUrl}:runQuery`;
   const body = {
@@ -776,6 +784,9 @@ async function claimTelegramLinkToken(env, token, chat) {
       limit: 1,
     },
   };
+  try {
+    console.log("claim:runQuery body", body);
+  } catch {}
   const res = await fetch(queryEndpoint, {
     method: "POST",
     headers: {
@@ -784,24 +795,50 @@ async function claimTelegramLinkToken(env, token, chat) {
     },
     body: JSON.stringify(body),
   });
+  try {
+    console.log("claim:runQuery status", res.status);
+  } catch {}
   if (!res.ok) {
     try {
-      console.log("query error", res.status);
+      console.log("claim:runQuery errorText", await res.text());
     } catch {}
     throw new Error("query failed");
   }
+  console.log("query res", res);
   const arr = await res.json();
+  try {
+    console.log(
+      "claim:runQuery results length",
+      Array.isArray(arr) ? arr.length : -1
+    );
+  } catch {}
   const first = Array.isArray(arr) ? arr.find((x) => x.document) : null;
   if (!first || !first.document) return null;
   const doc = first.document;
   const name = doc.name || ""; // full path
+  try {
+    console.log("claim:doc name", name);
+  } catch {}
   // Optional TTL check
   try {
     const f = doc.fields || {};
-    const expiresMs = Number(
-      f.telegram?.mapValue?.fields?.linkTokenExpiresAt?.integerValue || 0
-    );
-    if (expiresMs && Date.now() > expiresMs) return null;
+    const ttlField = f.telegram?.mapValue?.fields?.linkTokenExpiresAt;
+    const expiresMs = ttlField
+      ? "integerValue" in ttlField
+        ? Number(ttlField.integerValue)
+        : "doubleValue" in ttlField
+        ? Number(ttlField.doubleValue)
+        : 0
+      : 0;
+    try {
+      console.log("claim:ttl", { now: Date.now(), expiresMs });
+    } catch {}
+    if (expiresMs && Date.now() > expiresMs) {
+      try {
+        console.log("claim:ttl expired", { expiresMs });
+      } catch {}
+      return null;
+    }
   } catch {}
   // Apply update mask: set telegram.chatId/title/username/linkState, clear linkToken
   const fields = {
@@ -845,6 +882,9 @@ async function claimTelegramLinkToken(env, token, chat) {
       ],
     }),
   });
+  try {
+    console.log("claim:commit status", commitRes.status);
+  } catch {}
   if (!commitRes.ok) {
     try {
       console.log("claim commit failed", await commitRes.text());
@@ -855,6 +895,9 @@ async function claimTelegramLinkToken(env, token, chat) {
   try {
     const f = doc.fields || {};
     const clubName = jsonFromFields(f.name) || "your club";
+    try {
+      console.log("claim:success", { clubName });
+    } catch {}
     return { name: clubName };
   } catch {
     return { name: "your club" };
