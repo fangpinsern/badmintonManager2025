@@ -53,7 +53,9 @@ export default {
         if (!msg) return withCors(new Response("ok"), req);
         const chat = msg.chat || {};
         const text = msg.text || "";
-        const m = text.match(/^\/start\s+([A-Za-z0-9_-]{10,})/);
+        const re =
+          /^\/start(?:@[A-Za-z0-9_]{5,32})?\s+([A-Za-z0-9_-]{10,128})$/;
+        const m = text.trim().match(re);
         if (m) {
           const token = m[1];
           try {
