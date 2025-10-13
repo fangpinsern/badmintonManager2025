@@ -87,6 +87,22 @@ export default function ClubNotificationsSettingsPage() {
   const [saving, setSaving] = useState(false);
   const [linking, setLinking] = useState(false);
   const [testing, setTesting] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [baseline, setBaseline] = useState<{
+    enabled: boolean;
+    sessionCreated: boolean;
+    remindersEnabled: boolean;
+    monthlyEnabled: boolean;
+    monthDay: number;
+    monthHour: number;
+  }>({
+    enabled: false,
+    sessionCreated: false,
+    remindersEnabled: false,
+    monthlyEnabled: false,
+    monthDay: 1,
+    monthHour: 9,
+  });
 
   useEffect(() => {
     // sync local state when club doc changes
@@ -97,10 +113,35 @@ export default function ClubNotificationsSettingsPage() {
     setMonthlyEnabled(t?.notifications?.monthlySummary?.enabled ?? false);
     setMonthDay(String(t?.notifications?.monthlySummary?.dayOfMonth ?? 1));
     setMonthHour(String(t?.notifications?.monthlySummary?.hour ?? 9));
+    setBaseline({
+      enabled: t?.enabled ?? false,
+      sessionCreated: t?.notifications?.sessionCreated?.enabled ?? false,
+      remindersEnabled: t?.notifications?.reminders?.enabled ?? false,
+      monthlyEnabled: t?.notifications?.monthlySummary?.enabled ?? false,
+      monthDay: Number(
+        String(t?.notifications?.monthlySummary?.dayOfMonth ?? 1)
+      ),
+      monthHour: Number(String(t?.notifications?.monthlySummary?.hour ?? 9)),
+    });
+    setSaved(false);
   }, [club?.id, (noti as any)?.telegram]);
+
+  const dayNum = Math.floor(Number(monthDay));
+  const hourNum = Math.floor(Number(monthHour));
+  const dayValid = Number.isFinite(dayNum) && dayNum >= 1 && dayNum <= 28;
+  const hourValid = Number.isFinite(hourNum) && hourNum >= 0 && hourNum <= 23;
+  const isValid = dayValid && hourValid;
+  const isDirty =
+    enabled !== baseline.enabled ||
+    sessionCreated !== baseline.sessionCreated ||
+    remindersEnabled !== baseline.remindersEnabled ||
+    monthlyEnabled !== baseline.monthlyEnabled ||
+    dayNum !== baseline.monthDay ||
+    hourNum !== baseline.monthHour;
 
   async function saveSettings() {
     if (!id || !user || !isOwner) return;
+    if (!isValid) return;
     setSaving(true);
     try {
       await updateClubTelegramSettingsRemote(id, user.uid, {
@@ -110,11 +151,21 @@ export default function ClubNotificationsSettingsPage() {
           reminders: { enabled: remindersEnabled },
           monthlySummary: {
             enabled: monthlyEnabled,
-            dayOfMonth: Math.max(1, Math.min(28, Number(monthDay) || 1)),
-            hour: Math.max(0, Math.min(23, Number(monthHour) || 0)),
+            dayOfMonth: dayNum,
+            hour: hourNum,
           },
         },
       });
+      setBaseline({
+        enabled,
+        sessionCreated,
+        remindersEnabled,
+        monthlyEnabled,
+        monthDay: dayNum,
+        monthHour: hourNum,
+      });
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2500);
     } finally {
       setSaving(false);
     }
@@ -314,24 +365,38 @@ export default function ClubNotificationsSettingsPage() {
                     </div>
 
                     <div className="grid grid-cols-2 gap-3">
-                      <Input
-                        type="number"
-                        label="Day of month"
-                        min={1}
-                        max={28}
-                        inputMode="numeric"
-                        value={monthDay}
-                        onChange={(e) => setMonthDay(e.target.value)}
-                      />
-                      <Input
-                        type="number"
-                        label="Hour (0-23)"
-                        min={0}
-                        max={23}
-                        inputMode="numeric"
-                        value={monthHour}
-                        onChange={(e) => setMonthHour(e.target.value)}
-                      />
+                      <div>
+                        <Input
+                          type="number"
+                          label="Day of month"
+                          min={1}
+                          max={28}
+                          inputMode="numeric"
+                          value={monthDay}
+                          onChange={(e) => setMonthDay(e.target.value)}
+                        />
+                        {!dayValid && (
+                          <div className="mt-1 text-[11px] text-red-600">
+                            Enter a value between 1 and 28.
+                          </div>
+                        )}
+                      </div>
+                      <div>
+                        <Input
+                          type="number"
+                          label="Hour (0-23)"
+                          min={0}
+                          max={23}
+                          inputMode="numeric"
+                          value={monthHour}
+                          onChange={(e) => setMonthHour(e.target.value)}
+                        />
+                        {!hourValid && (
+                          <div className="mt-1 text-[11px] text-red-600">
+                            Enter a value between 0 and 23.
+                          </div>
+                        )}
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -357,6 +422,11 @@ export default function ClubNotificationsSettingsPage() {
                 </div>
 
                 <div className="flex items-center justify-end gap-2">
+                  {saved && (
+                    <div className="mr-auto rounded border border-green-200 bg-green-50 px-2 py-1 text-[11px] text-green-700">
+                      Saved
+                    </div>
+                  )}
                   <Link
                     href={`${base}/settings`}
                     className="rounded-xl border px-3 py-1.5 text-sm"
@@ -365,7 +435,7 @@ export default function ClubNotificationsSettingsPage() {
                   </Link>
                   <button
                     className="rounded-xl bg-black px-3 py-1.5 text-sm text-white disabled:opacity-50"
-                    disabled={!isOwner || saving}
+                    disabled={!isOwner || saving || !isDirty || !isValid}
                     onClick={saveSettings}
                   >
                     Save
