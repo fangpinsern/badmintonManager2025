@@ -143,6 +143,7 @@ type Session = {
   playerLimit?: number;
   // Optional venue information. Keep minimal now; expandable for maps later
   venue?: {
+    id?: string; // optional stable id for common club venues
     name?: string;
     location?: {
       lat: number;

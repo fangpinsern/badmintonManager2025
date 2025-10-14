@@ -33,6 +33,7 @@ import {
   addAndLinkPlayerByUsername,
 } from "@/lib/firestoreSessions";
 import { subscribeMyClubs } from "@/lib/firestoreClubs";
+import { subscribeClubVenues, type ClubVenue } from "@/lib/firestoreClubs";
 import { subscribeClubSessions } from "@/lib/firestoreSessions";
 import { useParams, useRouter } from "next/navigation";
 import { GoogleAuthProvider, onAuthStateChanged } from "firebase/auth";
@@ -70,6 +71,7 @@ function SessionManager({ onBack }: { onBack: () => void }) {
   const updateSessionMeta = useStore((s) => (s as any).updateSessionMeta);
   const [settingsPlayerLimit, setSettingsPlayerLimit] = useState<string>("");
   const [settingsVenueName, setSettingsVenueName] = useState<string>("");
+  const [clubVenues, setClubVenues] = useState<ClubVenue[]>([]);
 
   useEffect(() => {
     return onAuthStateChanged(auth, (u) => {
@@ -189,6 +191,18 @@ function SessionManager({ onBack }: { onBack: () => void }) {
         } catch {}
     };
   }, [id, user?.uid, myClubIds, session]);
+
+  // Subscribe to venues when we know the club id of the session, for suggestions in settings modal
+  useEffect(() => {
+    const cid = (session && (session as any).clubId) || clubIdForViewing;
+    if (!cid) return;
+    const unsub = subscribeClubVenues(String(cid), (v) => setClubVenues(v));
+    return () => {
+      try {
+        unsub && (unsub as any)();
+      } catch {}
+    };
+  }, [session?.clubId, clubIdForViewing]);
 
   // Save organizer-owned session updates (from store) back to Firestore
   const storeSession = useStore((s) =>
@@ -679,6 +693,41 @@ function SessionManager({ onBack }: { onBack: () => void }) {
                 value={settingsVenueName}
                 onChange={(e) => setSettingsVenueName(e.target.value)}
               />
+              {(() => {
+                const q = (settingsVenueName || "").trim().toLowerCase();
+                const list = (clubVenues || [])
+                  .filter((v) =>
+                    q
+                      ? String(v.name || "")
+                          .toLowerCase()
+                          .includes(q)
+                      : true
+                  )
+                  .slice(0, 8);
+                if (!list.length) return null;
+                return (
+                  <div className="flex flex-wrap gap-2">
+                    {list.map((v) => {
+                      const selected =
+                        v.name.trim().toLowerCase() === q && q.length > 0;
+                      return (
+                        <button
+                          key={v.id}
+                          type="button"
+                          onClick={() => setSettingsVenueName(v.name)}
+                          className={`rounded-full border px-2 py-0.5 text-xs ${
+                            selected ? "border-blue-300 bg-blue-50" : ""
+                          }`}
+                          title={selected ? "Selected" : "Use this venue"}
+                          aria-pressed={selected}
+                        >
+                          {v.name}
+                        </button>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
             </div>
             <div className="mt-3 flex items-center justify-end gap-2">
               <button

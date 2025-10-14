@@ -64,6 +64,10 @@ function clubFeedCollection(clubId: string) {
   return collection(db, clubsCollectionId(), clubId, "feed");
 }
 
+function clubVenuesCollection(clubId: string) {
+  return collection(db, clubsCollectionId(), clubId, "venues");
+}
+
 export type FirestoreClub = {
   id: string;
   name: string;
@@ -72,6 +76,21 @@ export type FirestoreClub = {
   // visibility controls whether non-members can view the club details
   // default unspecified/"public" for backwards compatibility
   visibility?: "public" | "private";
+  createdAt?: unknown;
+  updatedAt?: unknown;
+};
+
+// Common venue entity for clubs
+export type ClubVenue = {
+  id: string;
+  name: string;
+  deleted?: boolean; // soft delete flag for future stats consistency
+  location?: {
+    lat?: number;
+    lng?: number;
+    address?: string;
+    placeId?: string;
+  };
   createdAt?: unknown;
   updatedAt?: unknown;
 };
@@ -249,6 +268,32 @@ export function subscribeClubFeed(
     snap.forEach((d) => items.push({ id: d.id, ...(d.data() as any) }));
     onChange(items);
   });
+}
+
+// Subscribe to club venues (non-deleted by default)
+export function subscribeClubVenues(
+  clubId: string,
+  onChange: (venues: ClubVenue[]) => void,
+  options?: { includeDeleted?: boolean }
+) {
+  const qref = query(clubVenuesCollection(clubId), orderBy("name"));
+  return onSnapshot(
+    qref,
+    (snap) => {
+      const items: ClubVenue[] = [];
+      snap.forEach((d) => items.push({ id: d.id, ...(d.data() as any) }));
+      const filtered = (
+        options?.includeDeleted ? items : items.filter((v) => !v.deleted)
+      )
+        .map((v) => ({ ...v, name: String(v.name || "").trim() }))
+        .filter((v) => !!v.name);
+      onChange(filtered);
+    },
+    (err) => {
+      console.error(err);
+      onChange([]);
+    }
+  );
 }
 
 // Create a feed message of type 'session' for a club. Returns the new feed doc id.
@@ -601,6 +646,129 @@ export async function kickMemberRemote(
       actorUid: actorUid,
       createdAt: serverTimestamp(),
     } as Omit<FirestoreClubFeed, "id">);
+  });
+}
+
+// Add a new common venue (owner-only). Returns venue id.
+export async function addClubVenueRemote(
+  clubId: string,
+  actorUid: string,
+  name: string
+): Promise<string> {
+  const clean = (name || "").trim();
+  if (!clean) throw new Error("Venue name required");
+  // Verify owner rights in a transaction
+  await runTransaction(db, async (tx) => {
+    const cref = clubDoc(clubId);
+    const csnap = await tx.get(cref);
+    if (!csnap.exists()) throw new Error("Club not found");
+    const cdata = csnap.data() as any as FirestoreClub;
+    if (cdata.ownerUid !== actorUid)
+      throw new Error("Only owner can manage venues");
+  });
+  const ref = doc(clubVenuesCollection(clubId));
+  await setDoc(ref, {
+    id: ref.id,
+    name: clean,
+    deleted: false,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  } as Omit<ClubVenue, "id"> & { id: string });
+  return ref.id;
+}
+
+// Soft delete venue (owner-only)
+export async function removeClubVenueRemote(
+  clubId: string,
+  actorUid: string,
+  venueId: string
+): Promise<void> {
+  await runTransaction(db, async (tx) => {
+    const cref = clubDoc(clubId);
+    const csnap = await tx.get(cref);
+    if (!csnap.exists()) throw new Error("Club not found");
+    const cdata = csnap.data() as any as FirestoreClub;
+    if (cdata.ownerUid !== actorUid)
+      throw new Error("Only owner can manage venues");
+    const vref = doc(clubVenuesCollection(clubId), venueId);
+    const vsnap = await tx.get(vref);
+    if (!vsnap.exists()) return; // already removed
+    tx.set(
+      vref,
+      { deleted: true, updatedAt: serverTimestamp() } as Partial<ClubVenue>,
+      { merge: true }
+    );
+  });
+}
+
+// Restore a soft-deleted venue (owner-only)
+export async function restoreClubVenueRemote(
+  clubId: string,
+  actorUid: string,
+  venueId: string
+): Promise<void> {
+  await runTransaction(db, async (tx) => {
+    const cref = clubDoc(clubId);
+    const csnap = await tx.get(cref);
+    if (!csnap.exists()) throw new Error("Club not found");
+    const cdata = csnap.data() as any as FirestoreClub;
+    if (cdata.ownerUid !== actorUid)
+      throw new Error("Only owner can manage venues");
+    const vref = doc(clubVenuesCollection(clubId), venueId);
+    const vsnap = await tx.get(vref);
+    if (!vsnap.exists()) throw new Error("Venue not found");
+    tx.set(
+      vref,
+      { deleted: false, updatedAt: serverTimestamp() } as Partial<ClubVenue>,
+      { merge: true }
+    );
+  });
+}
+
+// Update venue details (owner-only). Currently supports name and optional location.
+export async function updateClubVenueRemote(
+  clubId: string,
+  actorUid: string,
+  venueId: string,
+  update: Partial<Pick<ClubVenue, "name" | "location">>
+): Promise<void> {
+  await runTransaction(db, async (tx) => {
+    const cref = clubDoc(clubId);
+    const csnap = await tx.get(cref);
+    if (!csnap.exists()) throw new Error("Club not found");
+    const cdata = csnap.data() as any as FirestoreClub;
+    if (cdata.ownerUid !== actorUid)
+      throw new Error("Only owner can manage venues");
+    const vref = doc(clubVenuesCollection(clubId), venueId);
+    const vsnap = await tx.get(vref);
+    if (!vsnap.exists()) throw new Error("Venue not found");
+    const partial: any = {};
+    if (typeof update.name === "string")
+      partial.name = (update.name || "").trim();
+    if (update.location && typeof update.location === "object") {
+      const loc = update.location as any;
+      const lat = Number(loc.lat);
+      const lng = Number(loc.lng);
+      if (Number.isFinite(lat) && Number.isFinite(lng)) {
+        partial.location = {
+          lat,
+          lng,
+          address: (loc.address || "").trim() || undefined,
+          placeId: (loc.placeId || "").trim() || undefined,
+        };
+      } else {
+        // allow clearing location when neither is provided
+        if (
+          typeof loc.address === "string" &&
+          !loc.address.trim() &&
+          typeof loc.placeId === "string" &&
+          !loc.placeId.trim()
+        ) {
+          partial.location = undefined;
+        }
+      }
+    }
+    tx.set(vref, { ...partial, updatedAt: serverTimestamp() }, { merge: true });
   });
 }
 

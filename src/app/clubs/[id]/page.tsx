@@ -30,6 +30,7 @@ import { useStore } from "@/lib/store";
 import { formatSessionTitle } from "@/lib/helper";
 import type { Session } from "@/types/player";
 import { createClubSessionFeedMessage } from "@/lib/firestoreClubs";
+import { subscribeClubVenues, type ClubVenue } from "@/lib/firestoreClubs";
 import { SessionCard as UnifiedSessionCard } from "@/components/session/SessionCard";
 
 export default function ClubDetailPage() {
@@ -90,6 +91,7 @@ export default function ClubDetailPage() {
   const [numCourts, setNumCourts] = useState<string>("3");
   const [playerLimit, setPlayerLimit] = useState<string>("");
   const [venueName, setVenueName] = useState<string>("");
+  const [clubVenues, setClubVenues] = useState<ClubVenue[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [selectedMemberUids, setSelectedMemberUids] = useState<Set<string>>(
     new Set()
@@ -158,6 +160,17 @@ export default function ClubDetailPage() {
       user?.uid || undefined
     );
   }, [id, user]);
+
+  // Subscribe to club venues for suggestions
+  useEffect(() => {
+    if (!id) return;
+    const unsub = subscribeClubVenues(id, (v) => setClubVenues(v));
+    return () => {
+      try {
+        unsub && (unsub as any)();
+      } catch {}
+    };
+  }, [id]);
   // Realtime head (first page) subscription: keep latest messages fresh
   useEffect(() => {
     if (!id) return;
@@ -475,6 +488,41 @@ export default function ClubDetailPage() {
                 value={venueName}
                 onChange={(e) => setVenueName(e.target.value)}
               />
+              {(() => {
+                const q = (venueName || "").trim().toLowerCase();
+                const list = (clubVenues || [])
+                  .filter((v) =>
+                    q
+                      ? String(v.name || "")
+                          .toLowerCase()
+                          .includes(q)
+                      : true
+                  )
+                  .slice(0, 8);
+                if (!list.length) return null;
+                return (
+                  <div className="flex flex-wrap gap-2">
+                    {list.map((v) => {
+                      const selected =
+                        v.name.trim().toLowerCase() === q && q.length > 0;
+                      return (
+                        <button
+                          key={v.id}
+                          type="button"
+                          onClick={() => setVenueName(v.name)}
+                          className={`rounded-full border px-2 py-0.5 text-xs ${
+                            selected ? "border-blue-300 bg-blue-50" : ""
+                          }`}
+                          title={selected ? "Selected" : "Use this venue"}
+                          aria-pressed={selected}
+                        >
+                          {v.name}
+                        </button>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
               <Input
                 type="number"
                 label="Player limit (optional)"
@@ -535,7 +583,34 @@ export default function ClubDetailPage() {
                       clubId: id,
                       venue: (() => {
                         const n = (venueName || "").trim();
-                        return n ? { name: n } : undefined;
+                        if (!n) return undefined;
+                        // Best-effort: attach venue id if an exact match exists in club venues
+                        const match = (clubVenues || []).find(
+                          (v) =>
+                            (v.name || "").trim().toLowerCase() ===
+                            n.toLowerCase()
+                        );
+                        return match
+                          ? {
+                              id: match.id,
+                              name: match.name,
+                              location:
+                                match.location &&
+                                typeof match.location.lat === "number" &&
+                                typeof match.location.lng === "number"
+                                  ? {
+                                      lat: match.location.lat,
+                                      lng: match.location.lng,
+                                      address:
+                                        (match.location.address || "").trim() ||
+                                        undefined,
+                                      placeId:
+                                        (match.location.placeId || "").trim() ||
+                                        undefined,
+                                    }
+                                  : undefined,
+                            }
+                          : { name: n };
                       })(),
                       playerLimit: (() => {
                         const num = Number(playerLimit);

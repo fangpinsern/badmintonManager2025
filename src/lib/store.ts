@@ -206,9 +206,11 @@ const useStore = create<StoreState>()((set, _get) => ({
       venue: (() => {
         if (!venue) return undefined;
         const name = (venue.name || "").trim();
+        const id = (venue as any).id ? String((venue as any).id) : undefined;
         const loc = venue.location;
-        if (!name && !loc) return undefined;
-        const out: NonNullable<Session["venue"]> = {};
+        if (!name && !loc && !id) return undefined;
+        const out: NonNullable<Session["venue"]> = {} as any;
+        if (id) (out as any).id = id;
         if (name) out.name = name;
         if (
           loc &&
@@ -1115,10 +1117,51 @@ const useStore = create<StoreState>()((set, _get) => ({
         if (Object.prototype.hasOwnProperty.call(partial, "venue")) {
           const raw: any = (partial as any).venue;
           const name = (raw && raw.name ? String(raw.name) : "").trim();
-          if (!name) {
-            next.venue = undefined; // clear venue when empty
+          const id = raw && raw.id ? String(raw.id) : undefined;
+          const loc = raw && raw.location ? (raw.location as any) : undefined;
+          if (!name && !id && !loc) {
+            next.venue = undefined; // clear when nothing provided
+          } else if (!name) {
+            // if id provided without name, keep previous name if any
+            const prevName = (
+              ss.venue && ss.venue.name ? ss.venue.name : ""
+            ).trim();
+            const out: any = {};
+            if (id) out.id = id;
+            if (prevName) out.name = prevName;
+            if (
+              loc &&
+              typeof loc.lat === "number" &&
+              typeof loc.lng === "number" &&
+              isFinite(loc.lat) &&
+              isFinite(loc.lng)
+            ) {
+              out.location = {
+                lat: loc.lat,
+                lng: loc.lng,
+                address: (loc.address || "").trim() || undefined,
+                placeId: (loc.placeId || "").trim() || undefined,
+              };
+            }
+            next.venue = out as Session["venue"];
           } else {
-            next.venue = { name } as Session["venue"]; // only name supported in UI for now
+            const out: any = { name };
+            if (id) out.id = id;
+            if (
+              loc &&
+              typeof loc.lat === "number" &&
+              typeof loc.lng === "number" &&
+              isFinite(loc.lat) &&
+              isFinite(loc.lng)
+            ) {
+              out.location = {
+                lat: loc.lat,
+                lng: loc.lng,
+                address: (loc.address || "").trim() || undefined,
+                placeId: (loc.placeId || "").trim() || undefined,
+              };
+            }
+            next.venue = out as Session["venue"];
           }
         }
         console.log("here", next);

@@ -207,6 +207,20 @@ export default function ClubSettingsPage() {
                 Open
               </button>
             </li>
+            <li className="flex items-center justify-between py-3">
+              <div>
+                <div className="font-medium">Venues</div>
+                <div className="text-[11px] text-gray-600">
+                  Manage common places your club plays at
+                </div>
+              </div>
+              <button
+                className="rounded border px-2 py-1 text-xs"
+                onClick={() => router.push(`${base}/settings/venue`)}
+              >
+                Open
+              </button>
+            </li>
             {!isOwner && (
               <li className="py-3">
                 <div className="text-[11px] text-gray-500">
