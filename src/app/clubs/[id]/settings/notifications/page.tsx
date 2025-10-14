@@ -85,6 +85,9 @@ export default function ClubNotificationsSettingsPage() {
   const isLinked = String(telegram?.linkState || "unlinked") === "linked";
   const [enabled, setEnabled] = useState<boolean>(telegram?.enabled ?? false);
   const [timeZone, setTimeZone] = useState<string>(telegram?.tz || "UTC");
+  const [nowMs, setNowMs] = useState<number>(Date.now());
+  const [copying, setCopying] = useState<boolean>(false);
+  const [refreshing, setRefreshing] = useState<boolean>(false);
   const [sessionCreated, setSessionCreated] = useState<boolean>(
     telegram?.notifications?.sessionCreated?.enabled ?? false
   );
@@ -173,6 +176,14 @@ export default function ClubNotificationsSettingsPage() {
     });
     setSaved(false);
   }, [club?.id, (noti as any)?.telegram]);
+
+  // Tick timer to update link token countdown while a token exists
+  useEffect(() => {
+    const expiresAt = Number((telegram as any)?.linkTokenExpiresAt || 0);
+    if (!expiresAt) return;
+    const timer = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [telegram?.linkTokenExpiresAt]);
 
   const dayNum = Math.floor(Number(monthDay));
   const hourNum = Math.floor(Number(monthHour));
@@ -447,7 +458,7 @@ export default function ClubNotificationsSettingsPage() {
               Telegram
             </div>
             {!isLinked && (
-              <div className="space-y-2">
+              <div className="space-y-3">
                 <div className="text-sm">
                   Connect your club&apos;s Telegram group to enable
                   notifications.
@@ -456,14 +467,110 @@ export default function ClubNotificationsSettingsPage() {
                   You&apos;ll be able to configure delivery options once the bot
                   is linked to your group.
                 </div>
-                <div className="pt-1">
-                  <button
-                    className="rounded border px-2 py-1 text-xs disabled:opacity-50"
-                    disabled={!isOwner || linking}
-                    onClick={setupTelegram}
-                  >
-                    {linking ? "Preparing..." : "Set up Telegram"}
-                  </button>
+
+                <div className="rounded border p-3 space-y-2">
+                  <div className="text-xs font-semibold uppercase text-gray-500">
+                    Step 1
+                  </div>
+                  <div className="text-sm">
+                    Add the bot to your Telegram group
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      className="rounded border px-2 py-1 text-xs disabled:opacity-50"
+                      disabled={!isOwner || linking}
+                      onClick={setupTelegram}
+                    >
+                      {linking ? "Preparing..." : "Add via Telegram"}
+                    </button>
+                    {process.env.NEXT_PUBLIC_TELEGRAM_BOT_USERNAME && (
+                      <div className="text-[11px] text-gray-600">
+                        If the button doesn&apos;t work, open Telegram and add{" "}
+                        <span className="font-mono">
+                          @
+                          {String(
+                            process.env.NEXT_PUBLIC_TELEGRAM_BOT_USERNAME
+                          )}
+                        </span>{" "}
+                        to your group.
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="rounded border p-3 space-y-2">
+                  <div className="text-xs font-semibold uppercase text-gray-500">
+                    Step 2
+                  </div>
+                  <div className="text-sm">Paste this in the group to link</div>
+                  <div className="grid grid-cols-1 gap-2 md:grid-cols-[1fr_auto] md:items-start">
+                    <textarea
+                      className="w-full rounded border p-2 text-sm font-mono"
+                      rows={2}
+                      readOnly
+                      value={`/start@${
+                        process.env.NEXT_PUBLIC_TELEGRAM_BOT_USERNAME ||
+                        "bm25r_bot"
+                      } ${String((telegram as any)?.linkToken || "").trim()}`}
+                    />
+                    <div className="flex gap-2 md:justify-end">
+                      <button
+                        className="rounded border px-2 py-1 text-xs disabled:opacity-50"
+                        disabled={!(telegram as any)?.linkToken}
+                        onClick={async () => {
+                          try {
+                            setCopying(true);
+                            await navigator?.clipboard?.writeText(
+                              `/start@${
+                                process.env.NEXT_PUBLIC_TELEGRAM_BOT_USERNAME ||
+                                "bm25r_bot"
+                              } ${String(
+                                (telegram as any)?.linkToken || ""
+                              ).trim()}`
+                            );
+                          } catch {}
+                          setTimeout(() => setCopying(false), 1200);
+                        }}
+                      >
+                        {copying ? "Copied" : "Copy"}
+                      </button>
+                      <button
+                        className="rounded border px-2 py-1 text-xs disabled:opacity-50"
+                        disabled={!isOwner || refreshing}
+                        onClick={async () => {
+                          if (!id || !user || !isOwner) return;
+                          setRefreshing(true);
+                          try {
+                            await issueClubTelegramLinkTokenRemote(
+                              id,
+                              user.uid
+                            );
+                          } finally {
+                            setRefreshing(false);
+                          }
+                        }}
+                      >
+                        {refreshing ? "Refreshing..." : "Refresh key"}
+                      </button>
+                    </div>
+                  </div>
+                  <div className="text-[11px] text-gray-600">
+                    Key expires{" "}
+                    {(() => {
+                      const exp = Number(
+                        (telegram as any)?.linkTokenExpiresAt || 0
+                      );
+                      if (!exp) return "soon.";
+                      const ms = Math.max(0, exp - nowMs);
+                      const mm = Math.floor(ms / 60000);
+                      const ss = Math.floor((ms % 60000) / 1000);
+                      return ms <= 0 ? "(expired)" : `in ${mm}m ${ss}s`;
+                    })()}
+                  </div>
+                  <div className="text-[11px] text-gray-500">
+                    Tip: You can paste the message as-is. The bot will confirm
+                    here when linked.
+                  </div>
                 </div>
               </div>
             )}
