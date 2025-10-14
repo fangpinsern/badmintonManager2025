@@ -228,14 +228,26 @@ export default {
         const players0 = Array.isArray(spayload.players)
           ? spayload.players
           : [];
-        const names0 = players0
-          .map((p) =>
-            (p && (p.accountUsername || p.name || "")).toString().trim()
-          )
-          .filter((s) => !!s)
+        const entries0 = players0
+          .map((p) => {
+            const uname = (
+              p && p.accountUsername ? String(p.accountUsername) : ""
+            ).trim();
+            const display = (p && (p.accountUsername || p.name || ""))
+              .toString()
+              .trim();
+            return { uname, display };
+          })
+          .filter((e) => !!e.display)
           .slice(0, 100);
-        const list0 = names0
-          .map((n) => (n.startsWith("@") ? n : `@${escapeHtml(n)}`))
+        const list0 = entries0
+          .map(({ uname, display }) => {
+            if (uname) {
+              const url = `${baseApp}/profile/${encodeURIComponent(uname)}`;
+              return `<a href="${escapeHtml(url)}">@${escapeHtml(uname)}</a>`;
+            }
+            return escapeHtml(display);
+          })
           .join("\n");
         // Append venue when available
         const venueName = (
@@ -246,8 +258,8 @@ export default {
         const headerWithVenue = venueName
           ? `${header}\n\nVenue: <b>${escapeHtml(venueName)}</b>`
           : header;
-        const text = names0.length
-          ? `${headerWithVenue}\n\nParticipants (${names0.length}):\n${list0}`
+        const text = entries0.length
+          ? `${headerWithVenue}\n\nParticipants (${entries0.length}):\n${list0}`
           : headerWithVenue;
         const replyMarkup = {
           inline_keyboard: [[{ text: "Open session", url: sessionUrl }]],
@@ -350,14 +362,26 @@ export default {
         const baseApp = allowOrigin || "https://bm25r.codingcrayons.com";
         const sessionUrl = `${baseApp}/session/${sessionId}`;
 
-        const names = players
-          .map((p) =>
-            (p && (p.accountUsername || p.name || "")).toString().trim()
-          )
-          .filter((s) => !!s)
+        const entries = players
+          .map((p) => {
+            const uname = (
+              p && p.accountUsername ? String(p.accountUsername) : ""
+            ).trim();
+            const display = (p && (p.accountUsername || p.name || ""))
+              .toString()
+              .trim();
+            return { uname, display };
+          })
+          .filter((e) => !!e.display)
           .slice(0, 100);
-        const list = names
-          .map((n) => (n.startsWith("@") ? n : `@${escapeHtml(n)}`))
+        const list = entries
+          .map(({ uname, display }) => {
+            if (uname) {
+              const url = `${baseApp}/profile/${encodeURIComponent(uname)}`;
+              return `<a href="${escapeHtml(url)}">@${escapeHtml(uname)}</a>`;
+            }
+            return escapeHtml(display);
+          })
           .join("\n");
         const header = clubName
           ? `🆕 New session for <b>${escapeHtml(
@@ -376,8 +400,8 @@ export default {
         const headerWithVenue = venueName
           ? `${header}\n\nVenue: <b>${escapeHtml(venueName)}</b>`
           : header;
-        const body = names.length
-          ? `${headerWithVenue}\n\nParticipants (${names.length}):\n${list}`
+        const body = entries.length
+          ? `${headerWithVenue}\n\nParticipants (${entries.length}):\n${list}`
           : headerWithVenue;
 
         const replyMarkup = {

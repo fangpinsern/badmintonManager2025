@@ -84,6 +84,7 @@ export default function ClubDetailPage() {
   const [clubSessions, setClubSessions] = useState<Session[]>([]);
   const createSession = useStore((s) => s.createSession);
   const [creating, setCreating] = useState(false);
+  const [creatingBusy, setCreatingBusy] = useState(false);
   const [date, setDate] = useState<string>(
     new Date().toISOString().slice(0, 10)
   );
@@ -553,17 +554,22 @@ export default function ClubDetailPage() {
               {error && <div className="text-xs text-red-600">{error}</div>}
               <div className="mt-1 flex items-center justify-end gap-2">
                 <button
-                  className="rounded-xl border px-3 py-1.5 text-sm"
+                  className="rounded-xl border px-3 py-1.5 text-sm disabled:opacity-50"
+                  disabled={creatingBusy}
                   onClick={() => setCreating(false)}
                 >
                   Cancel
                 </button>
                 <button
-                  className="rounded-xl bg-black px-3 py-1.5 text-sm text-white"
+                  className="rounded-xl bg-black px-3 py-1.5 text-sm text-white disabled:opacity-50"
+                  disabled={creatingBusy}
                   onClick={async () => {
+                    if (creatingBusy) return;
+                    setCreatingBusy(true);
                     const desired = Math.max(1, Number(numCourts || 1));
                     if (desired > 10) {
                       setError("Courts per session are limited to 10.");
+                      setCreatingBusy(false);
                       return;
                     }
                     setError(null);
@@ -705,10 +711,11 @@ export default function ClubDetailPage() {
                       console.error("Error creating session", e);
                     }
                     setCreating(false);
+                    setCreatingBusy(false);
                     router.push(`/session/${idCreated}`);
                   }}
                 >
-                  Create
+                  {creatingBusy ? "Creating…" : "Create"}
                 </button>
               </div>
             </div>
