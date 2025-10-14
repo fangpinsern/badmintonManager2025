@@ -12,7 +12,6 @@ import {
   subscribeClubFeed,
   joinClubRemote,
   leaveClubRemote,
-  kickMemberRemote,
   renameClubRemote,
   suggestUsernames,
   resolveUsernamesForUids,
@@ -74,7 +73,6 @@ export default function ClubDetailPage() {
   const [addModalOpen, setAddModalOpen] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [newName, setNewName] = useState("");
-  const [confirmKickUid, setConfirmKickUid] = useState<string | null>(null);
   const [confirmVisibility, setConfirmVisibility] = useState<null | {
     desired: "public" | "private";
   }>(null);
@@ -305,7 +303,13 @@ export default function ClubDetailPage() {
         <div>
           <h1 className="text-2xl font-bold">{club.name}</h1>
           <div className="text-gray-600">
-            {(club.memberUids || []).length} members
+            {(club.memberUids || []).length} members{" "}
+            <Link
+              href={`/clubs/${id}/members`}
+              className="ml-2 underline text-xs text-blue-600"
+            >
+              View all members
+            </Link>
           </div>
         </div>
         <Link href="/clubs" className="rounded border px-2 py-1 text-xs">
@@ -340,6 +344,16 @@ export default function ClubDetailPage() {
               >
                 Leave club
               </button>
+            )}
+            {isOwner && (
+              <div className="flex items-center gap-2">
+                <button
+                  className="rounded border px-2 py-1 text-xs"
+                  onClick={() => setAddModalOpen(true)}
+                >
+                  Add members
+                </button>
+              </div>
             )}
             {isOwner && (
               <div className="ml-auto flex items-center gap-2">
@@ -381,65 +395,6 @@ export default function ClubDetailPage() {
       </section>
 
       <section className="mb-4 grid grid-cols-1 gap-4 md:grid-cols-3">
-        <Card className="md:col-span-1">
-          <div className="flex items-center justify-between">
-            <h2 className="text-base font-semibold">Members</h2>
-            {isOwner && (
-              <div className="flex items-center gap-2">
-                <span className="text-[11px] text-gray-500">
-                  owner can add/kick
-                </span>
-                <button
-                  className="rounded border px-2 py-1 text-xs"
-                  onClick={() => setAddModalOpen(true)}
-                >
-                  Add members
-                </button>
-              </div>
-            )}
-          </div>
-          <ul className="mt-3 space-y-2">
-            {(club.memberUids || []).map((uid) => (
-              <li key={uid} className="flex items-center justify-between">
-                <div>
-                  <div className="font-medium">
-                    {usernameMap[uid] ? (
-                      <Link
-                        href={`/profile/${usernameMap[uid]}`}
-                        className="text-blue-600 hover:underline"
-                      >
-                        @{usernameMap[uid]}
-                      </Link>
-                    ) : (
-                      <span>@{uid}</span>
-                    )}
-                  </div>
-                </div>
-                <div className="flex items-center gap-2">
-                  {user?.uid === uid && uid !== club.ownerUid && (
-                    <button
-                      className="rounded border px-2 py-1 text-xs"
-                      onClick={() => setConfirmLeaveMe(true)}
-                    >
-                      Leave
-                    </button>
-                  )}
-                  {isOwner && uid !== club.ownerUid && (
-                    <button
-                      className="rounded border px-2 py-1 text-xs"
-                      onClick={() => setConfirmKickUid(uid)}
-                    >
-                      Kick
-                    </button>
-                  )}
-                </div>
-              </li>
-            ))}
-          </ul>
-
-          {/* old owner search input replaced by Add members modal trigger above */}
-        </Card>
-
         <Card className="md:col-span-2">
           <div className="flex items-center justify-between">
             <h2 className="text-base font-semibold">Club feed</h2>
@@ -796,19 +751,7 @@ export default function ClubDetailPage() {
         existingUsernames={Object.values(usernameMap).filter(Boolean)}
       />
 
-      {/* Kick confirmation */}
-      <ConfirmModal
-        open={!!confirmKickUid}
-        title="Remove member?"
-        body="This member will be removed from the club."
-        confirmText="Remove"
-        onCancel={() => setConfirmKickUid(null)}
-        onConfirm={async () => {
-          if (!confirmKickUid || !user) return;
-          await kickMemberRemote(club.id, user.uid, confirmKickUid);
-          setConfirmKickUid(null);
-        }}
-      />
+      {/* Kick confirmation moved to Members page */}
 
       {/* Leave confirmation (self) */}
       <ConfirmModal
