@@ -141,6 +141,16 @@ type Session = {
   clubFeedMessageId?: string;
   // Optional maximum number of players allowed in the session
   playerLimit?: number;
+  // Optional venue information. Keep minimal now; expandable for maps later
+  venue?: {
+    name?: string;
+    location?: {
+      lat: number;
+      lng: number;
+      address?: string;
+      placeId?: string;
+    };
+  };
 };
 
 export type {

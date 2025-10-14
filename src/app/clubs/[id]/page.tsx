@@ -86,6 +86,7 @@ export default function ClubDetailPage() {
   const [time, setTime] = useState<string>("19:00");
   const [numCourts, setNumCourts] = useState<string>("3");
   const [playerLimit, setPlayerLimit] = useState<string>("");
+  const [venueName, setVenueName] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
   const [selectedMemberUids, setSelectedMemberUids] = useState<Set<string>>(
     new Set()
@@ -509,6 +510,12 @@ export default function ClubDetailPage() {
                 onChange={(e) => setNumCourts(e.target.value)}
               />
               <Input
+                label="Venue"
+                placeholder="e.g. ABC Sports Hall"
+                value={venueName}
+                onChange={(e) => setVenueName(e.target.value)}
+              />
+              <Input
                 type="number"
                 label="Player limit (optional)"
                 min={1}
@@ -561,6 +568,10 @@ export default function ClubDetailPage() {
                       time,
                       numCourts: desired,
                       clubId: id,
+                      venue: (() => {
+                        const n = (venueName || "").trim();
+                        return n ? { name: n } : undefined;
+                      })(),
                       playerLimit: (() => {
                         const num = Number(playerLimit);
                         return Number.isFinite(num) && num > 0

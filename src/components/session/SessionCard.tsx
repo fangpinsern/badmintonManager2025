@@ -41,13 +41,21 @@ export function SessionCard({
   const slotsLeft = hasLimit
     ? Math.max(0, (session.playerLimit as number) - session.players.length)
     : null;
+  const venueName = (
+    session.venue && (session.venue as any).name
+      ? String((session.venue as any).name).trim()
+      : ""
+  ) as string;
 
   if (variant === "compact") {
     return (
       <Card>
         <div className="flex items-center justify-between gap-3">
           <div className="min-w-0 flex flex-col gap-1">
-            <div className="font-medium flex items-center gap-2">
+            <div className="font-medium flex flex-col items-start">
+              <span className="font-bold">
+                {venueName ? `${venueName}` : ""}
+              </span>
               <span className="truncate">{formatSessionTitle(session)}</span>
             </div>
             <div className="text-xs text-gray-500">
@@ -71,10 +79,8 @@ export function SessionCard({
                   Today
                 </span>
               )}
-            </div>
-            {((session.players || []).some((p) => p.accountUid === me) ||
-              isOrganizer) && (
-              <div className="mt-1">
+              {((session.players || []).some((p) => p.accountUid === me) ||
+                isOrganizer) && (
                 <span
                   className={`rounded-full px-2 py-0.5 text-[10px] ${
                     isOrganizer
@@ -90,8 +96,8 @@ export function SessionCard({
                     ? "Co-organizer"
                     : "Participant"}
                 </span>
-              </div>
-            )}
+              )}
+            </div>
             {session.ended && (
               <div className="mt-1 text-[11px] text-emerald-700">
                 Ended
@@ -180,6 +186,7 @@ export function SessionCard({
             {session.numCourts} court{session.numCourts > 1 ? "s" : ""}
             {courtSummary}· {session.players.length} player
             {session.players.length !== 1 ? "s" : ""}
+            {venueName ? ` · ${venueName}` : ""}
           </div>
           {session.ended && (
             <div className="mt-1 text-[11px] text-emerald-700">

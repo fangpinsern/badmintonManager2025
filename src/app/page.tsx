@@ -439,6 +439,7 @@ function SessionForm({
   );
   const [time, setTime] = useState<string>("19:00");
   const [numCourts, setNumCourts] = useState<string>("3");
+  const [venueName, setVenueName] = useState<string>("");
 
   function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -452,6 +453,10 @@ function SessionForm({
       time,
       numCourts: desired,
       // playersPerCourt defaults to 4 in the store
+      venue: (() => {
+        const n = (venueName || "").trim();
+        return n ? { name: n } : undefined;
+      })(),
     });
     onCreated(id);
   }
@@ -479,6 +484,12 @@ function SessionForm({
           inputMode="numeric"
           value={numCourts}
           onChange={(e) => setNumCourts(e.target.value)}
+        />
+        <Input
+          label="Venue"
+          placeholder="e.g. ABC Sports Hall"
+          value={venueName}
+          onChange={(e) => setVenueName(e.target.value)}
         />
         {error && <div className="text-xs text-red-600">{error}</div>}
         <button

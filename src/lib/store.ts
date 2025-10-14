@@ -25,6 +25,7 @@ interface StoreState {
     playersPerCourt?: number;
     clubId?: string;
     playerLimit?: number;
+    venue?: Session["venue"];
   }) => string; // returns new sessionId
   deleteSession: (sessionId: string) => void;
   addPlayer: (sessionId: string, name: string) => void;
@@ -167,6 +168,7 @@ const useStore = create<StoreState>()((set, _get) => ({
     playersPerCourt = 4,
     clubId,
     playerLimit,
+    venue,
   }) => {
     const clampedCourts = Math.max(1, Math.min(10, numCourts));
     const id = nanoid(10);
@@ -201,6 +203,29 @@ const useStore = create<StoreState>()((set, _get) => ({
         playerLimit > 0
           ? Math.floor(playerLimit)
           : undefined,
+      venue: (() => {
+        if (!venue) return undefined;
+        const name = (venue.name || "").trim();
+        const loc = venue.location;
+        if (!name && !loc) return undefined;
+        const out: NonNullable<Session["venue"]> = {};
+        if (name) out.name = name;
+        if (
+          loc &&
+          typeof loc.lat === "number" &&
+          typeof loc.lng === "number" &&
+          isFinite(loc.lat) &&
+          isFinite(loc.lng)
+        ) {
+          out.location = {
+            lat: loc.lat,
+            lng: loc.lng,
+            address: (loc.address || "").trim() || undefined,
+            placeId: (loc.placeId || "").trim() || undefined,
+          } as any;
+        }
+        return out;
+      })(),
     };
     console.log("creating session", clubId, session);
     set((s) => ({ sessions: [session, ...s.sessions] }));
