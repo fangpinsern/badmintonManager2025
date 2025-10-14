@@ -261,7 +261,8 @@ export async function addAndLinkPlayerByUsername(
   console.log("addAndLinkPlayerByUsername", organizerUid, sessionId, username);
   const normalized = (username || "").trim().toLowerCase();
   if (!normalized) return null;
-  return await runTransaction(db, async (tx) => {
+  let sessionClubId: string | undefined = undefined;
+  const result = await runTransaction(db, async (tx) => {
     // resolve username -> uid
     const unameRef = doc(usernamesCollection(), normalized);
     const unameSnap = await tx.get(unameRef);
@@ -275,6 +276,10 @@ export async function addAndLinkPlayerByUsername(
     if (!sSnap.exists()) throw new Error("Session not found");
     const data = sSnap.data() as FirestoreSession;
     const payload: any = data.payload || {};
+    try {
+      const cid = (payload && payload.clubId) || undefined;
+      sessionClubId = typeof cid === "string" && cid ? cid : undefined;
+    } catch {}
     const players: any[] = Array.isArray(payload.players)
       ? [...payload.players]
       : [];
@@ -356,6 +361,27 @@ export async function addAndLinkPlayerByUsername(
 
     return { playerId, uid };
   });
+
+  // Best-effort: if session is a club session, notify worker to update Telegram message
+  try {
+    if (sessionClubId) {
+      const endpoint = (process.env.NEXT_PUBLIC_WORKER_BASE_URL as any)
+        ? `${process.env.NEXT_PUBLIC_WORKER_BASE_URL}/telegram/send`
+        : "/api/telegram/send";
+      await fetch(endpoint, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          clubId: sessionClubId,
+          type: "session_updated",
+          organizerUid,
+          sessionId,
+        }),
+      });
+    }
+  } catch {}
+
+  return result;
 }
 
 export async function saveSession(sessionId: string, payload: unknown) {

@@ -236,13 +236,14 @@ export default {
             const display = (p && (p.accountUsername || p.name || ""))
               .toString()
               .trim();
-            return { uname, display };
+            const isGuest = !uname;
+            return { uname, display, isGuest };
           })
           .filter((e) => !!e.display)
           .slice(0, 100);
         const list0 = entries0
-          .map(({ uname, display }) => {
-            if (uname) {
+          .map(({ uname, display, isGuest }) => {
+            if (!isGuest && uname) {
               const url = `${baseApp}/profile/${encodeURIComponent(uname)}`;
               return `<a href="${escapeHtml(url)}">@${escapeHtml(uname)}</a>`;
             }
@@ -370,13 +371,14 @@ export default {
             const display = (p && (p.accountUsername || p.name || ""))
               .toString()
               .trim();
-            return { uname, display };
+            const isGuest = !uname;
+            return { uname, display, isGuest };
           })
           .filter((e) => !!e.display)
           .slice(0, 100);
         const list = entries
-          .map(({ uname, display }) => {
-            if (uname) {
+          .map(({ uname, display, isGuest }) => {
+            if (!isGuest && uname) {
               const url = `${baseApp}/profile/${encodeURIComponent(uname)}`;
               return `<a href="${escapeHtml(url)}">@${escapeHtml(uname)}</a>`;
             }
