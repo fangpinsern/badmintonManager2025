@@ -237,9 +237,18 @@ export default {
         const list0 = names0
           .map((n) => (n.startsWith("@") ? n : `@${escapeHtml(n)}`))
           .join("\n");
-        const text = names0.length
-          ? `${header}\n\nParticipants (${names0.length}):\n${list0}`
+        // Append venue when available
+        const venueName = (
+          spayload && spayload.venue && spayload.venue.name
+            ? String(spayload.venue.name)
+            : ""
+        ).trim();
+        const headerWithVenue = venueName
+          ? `${header}\n\nVenue: <b>${escapeHtml(venueName)}</b>`
           : header;
+        const text = names0.length
+          ? `${headerWithVenue}\n\nParticipants (${names0.length}):\n${list0}`
+          : headerWithVenue;
         const replyMarkup = {
           inline_keyboard: [[{ text: "Open session", url: sessionUrl }]],
         };
@@ -270,7 +279,11 @@ export default {
         }
       }
 
-      if (type === "session_updated" || type === "session_joined") {
+      if (
+        type === "session_updated" ||
+        type === "session_joined" ||
+        type === "session_meta_updated"
+      ) {
         // Gate by optional flag under sessionCreated settings
         const showList = !!(
           telegram?.notifications?.sessionCreated?.showParticipantsOnJoin ===
@@ -355,9 +368,17 @@ export default {
           : `🆕 New session on <b>${escapeHtml(date)}</b> at <b>${escapeHtml(
               time
             )}</b>.\nJoin here:`;
-        const body = names.length
-          ? `${header}\n\nParticipants (${names.length}):\n${list}`
+        const venueName = (
+          spayload && spayload.venue && spayload.venue.name
+            ? String(spayload.venue.name)
+            : ""
+        ).trim();
+        const headerWithVenue = venueName
+          ? `${header}\n\nVenue: <b>${escapeHtml(venueName)}</b>`
           : header;
+        const body = names.length
+          ? `${headerWithVenue}\n\nParticipants (${names.length}):\n${list}`
+          : headerWithVenue;
 
         const replyMarkup = {
           inline_keyboard: [[{ text: "Open session", url: sessionUrl }]],

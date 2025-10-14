@@ -1112,6 +1112,15 @@ const useStore = create<StoreState>()((set, _get) => ({
               ? Math.floor(raw)
               : undefined;
         }
+        if (Object.prototype.hasOwnProperty.call(partial, "venue")) {
+          const raw: any = (partial as any).venue;
+          const name = (raw && raw.name ? String(raw.name) : "").trim();
+          if (!name) {
+            next.venue = undefined; // clear venue when empty
+          } else {
+            next.venue = { name } as Session["venue"]; // only name supported in UI for now
+          }
+        }
         console.log("here", next);
         return { ...ss, ...next } as Session;
       }),

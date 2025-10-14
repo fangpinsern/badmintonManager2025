@@ -385,11 +385,13 @@ export async function saveSession(sessionId: string, payload: unknown) {
   const linkedUids = collectLinkedUids(sanitized);
   // Read previous linkedUids to update per-user linkedSessions index
   let prevLinked: string[] = [];
+  let prevPayload: any = undefined;
   try {
     const prevSnap = await getDoc(ref);
     if (prevSnap.exists()) {
       const d = prevSnap.data() as any;
       if (Array.isArray(d?.linkedUids)) prevLinked = [...d.linkedUids];
+      prevPayload = (d && d.payload) || undefined;
     }
   } catch {}
   await setDoc(
@@ -406,6 +408,9 @@ export async function saveSession(sessionId: string, payload: unknown) {
   try {
     if (typeof (sanitized as any)?.playerLimit === "undefined") {
       await updateDoc(ref, { "payload.playerLimit": deleteField() });
+    }
+    if (typeof (sanitized as any)?.venue === "undefined") {
+      await updateDoc(ref, { "payload.venue": deleteField() });
     }
   } catch {}
   // Index under club if session is sanctioned by a club
@@ -462,6 +467,54 @@ export async function saveSession(sessionId: string, payload: unknown) {
         await deleteDoc(idxRef);
       })
     );
+  } catch {}
+  // Best-effort: if participants or venue changed, ask worker to edit Telegram message
+  try {
+    const clubId: string | undefined = (sanitized as any)?.clubId;
+    if (typeof clubId === "string" && clubId) {
+      const beforeP = (prevPayload as any) || {};
+      const afterP = sanitized || {};
+      const namesFrom = (p: any): string[] => {
+        try {
+          const arr: any[] = Array.isArray(p?.players) ? p.players : [];
+          return arr
+            .map(
+              (x) =>
+                (x && (x.accountUsername || x.name || "").toString().trim()) ||
+                ""
+            )
+            .filter((s) => !!s)
+            .sort();
+        } catch {
+          return [];
+        }
+      };
+      const beforeNames = namesFrom(beforeP).join("|");
+      const afterNames = namesFrom(afterP).join("|");
+      const playersChanged = beforeNames !== afterNames;
+      const normVenue = (v: any) =>
+        (v && v.venue && v.venue.name ? String(v.venue.name) : "")
+          .trim()
+          .toLowerCase() || "";
+      const venueChanged = normVenue(beforeP) !== normVenue(afterP);
+      if (playersChanged || venueChanged) {
+        const endpoint = (process.env.NEXT_PUBLIC_WORKER_BASE_URL as any)
+          ? `${process.env.NEXT_PUBLIC_WORKER_BASE_URL}/telegram/send`
+          : "/api/telegram/send";
+        try {
+          await fetch(endpoint, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              clubId,
+              type: "session_updated",
+              organizerUid: uid,
+              sessionId,
+            }),
+          });
+        } catch {}
+      }
+    }
   } catch {}
 }
 
@@ -552,6 +605,27 @@ export async function saveSessionOnBehalf(
         );
       })
     );
+  } catch {}
+  // Best-effort: Edit Telegram message if participants or venue changed and session is a club session
+  try {
+    const clubId: string | undefined = (sanitized as any)?.clubId;
+    if (typeof clubId === "string" && clubId) {
+      const endpoint = (process.env.NEXT_PUBLIC_WORKER_BASE_URL as any)
+        ? `${process.env.NEXT_PUBLIC_WORKER_BASE_URL}/telegram/send`
+        : "/api/telegram/send";
+      try {
+        await fetch(endpoint, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            clubId,
+            type: "session_updated",
+            organizerUid,
+            sessionId,
+          }),
+        });
+      } catch {}
+    }
   } catch {}
 }
 
@@ -651,6 +725,20 @@ export async function deleteSessionDoc(sessionId: string) {
     }
   } catch {}
   await deleteDoc(ref);
+}
+
+// Minimal update helper to set Telegram message id without touching players/linked indices
+export async function setSessionTelegramMessageId(
+  sessionId: string,
+  messageId: number
+) {
+  const uid = auth.currentUser?.uid;
+  if (!uid) return; // not signed in; skip
+  const ref = doc(sessionsCollectionForUid(uid), sessionId);
+  await updateDoc(ref, {
+    "payload.telegramMessageId": messageId,
+    updatedAt: serverTimestamp(),
+  });
 }
 
 export async function getSessionDoc(sessionId: string) {

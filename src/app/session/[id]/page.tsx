@@ -69,6 +69,7 @@ function SessionManager({ onBack }: { onBack: () => void }) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const updateSessionMeta = useStore((s) => (s as any).updateSessionMeta);
   const [settingsPlayerLimit, setSettingsPlayerLimit] = useState<string>("");
+  const [settingsVenueName, setSettingsVenueName] = useState<string>("");
 
   useEffect(() => {
     return onAuthStateChanged(auth, (u) => {
@@ -672,6 +673,12 @@ function SessionManager({ onBack }: { onBack: () => void }) {
                 value={settingsPlayerLimit}
                 onChange={(e) => setSettingsPlayerLimit(e.target.value)}
               />
+              <Input
+                label="Venue"
+                placeholder="e.g. ABC Sports Hall"
+                value={settingsVenueName}
+                onChange={(e) => setSettingsVenueName(e.target.value)}
+              />
             </div>
             <div className="mt-3 flex items-center justify-end gap-2">
               <button
@@ -682,17 +689,41 @@ function SessionManager({ onBack }: { onBack: () => void }) {
               </button>
               <button
                 className="rounded-xl bg-black px-3 py-1.5 text-sm text-white"
-                onClick={() => {
+                onClick={async () => {
                   const raw = (settingsPlayerLimit || "").trim();
                   const num = Number(raw);
                   const next =
                     raw && Number.isFinite(num) && num > 0
                       ? Math.floor(num)
                       : undefined;
-
-                  console.log(next);
-                  updateSessionMeta(session.id, { playerLimit: next } as any);
+                  const venueName = (settingsVenueName || "").trim();
+                  updateSessionMeta(session.id, {
+                    playerLimit: next,
+                    venue: venueName ? { name: venueName } : undefined,
+                  } as any);
                   setSettingsOpen(false);
+                  // Best-effort: notify worker to update Telegram header if club session
+                  try {
+                    const clubId = (session as any)?.clubId
+                      ? String((session as any).clubId)
+                      : "";
+                    if (clubId) {
+                      const endpoint = process.env.NEXT_PUBLIC_WORKER_BASE_URL
+                        ? `${process.env.NEXT_PUBLIC_WORKER_BASE_URL}/telegram/send`
+                        : "/api/telegram/send";
+                      await fetch(endpoint, {
+                        method: "POST",
+                        headers: { "content-type": "application/json" },
+                        body: JSON.stringify({
+                          clubId,
+                          type: "session_meta_updated",
+                          organizerUid:
+                            organizerUid || auth.currentUser?.uid || "",
+                          sessionId: session.id,
+                        }),
+                      });
+                    }
+                  } catch {}
                 }}
               >
                 Save

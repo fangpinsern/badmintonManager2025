@@ -85,28 +85,6 @@ function UnlinkMeButton({
             }
           }
           unlinkPlayerFromAccount(sessionId, playerId);
-          // Best-effort: notify worker to update Telegram message if this is a club session
-          try {
-            const sessions = (useStore.getState().sessions || []) as any[];
-            const ss = sessions.find((s) => s.id === sessionId);
-            const clubId = ss && ss.clubId ? String(ss.clubId) : "";
-            if (clubId) {
-              const endpoint = process.env.NEXT_PUBLIC_WORKER_BASE_URL
-                ? `${process.env.NEXT_PUBLIC_WORKER_BASE_URL}/telegram/send`
-                : "/api/telegram/send";
-              await fetch(endpoint, {
-                method: "POST",
-                headers: { "content-type": "application/json" },
-                body: JSON.stringify({
-                  clubId,
-                  type: "session_updated",
-                  organizerUid:
-                    (ownerUid as string) || auth.currentUser?.uid || "",
-                  sessionId,
-                }),
-              });
-            }
-          } catch {}
           if (!isOwner && typeof onUnlinked === "function") onUnlinked();
         } finally {
           setBusy(false);

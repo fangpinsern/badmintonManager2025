@@ -21,7 +21,11 @@ import {
   addMembersByUsernamesRemote,
 } from "@/lib/firestoreClubs";
 import type { FirestoreClub, FirestoreClubFeed } from "@/lib/firestoreClubs";
-import { subscribeClubSessions, saveSession } from "@/lib/firestoreSessions";
+import {
+  subscribeClubSessions,
+  saveSession,
+  setSessionTelegramMessageId,
+} from "@/lib/firestoreSessions";
 import { addAndLinkPlayerByUsername } from "@/lib/firestoreSessions";
 import { useStore } from "@/lib/store";
 import { formatSessionTitle } from "@/lib/helper";
@@ -682,19 +686,14 @@ export default function ClubDetailPage() {
                               mid = j?.message_id;
                             } catch {}
                             if (mid) {
-                              const current2 = (
-                                useStore.getState().sessions || []
-                              ).find((s) => s.id === idCreated);
-                              if (current2) {
-                                const withTelegram = {
-                                  ...current2,
-                                  telegramMessageId: mid,
-                                } as any;
-                                try {
-                                  await saveSession(idCreated, withTelegram);
-                                } catch (e) {
-                                  console.error("Error saving session", e);
-                                }
+                              // attach telegramMessageId minimally to avoid dropping late-added players
+                              try {
+                                await setSessionTelegramMessageId(
+                                  idCreated,
+                                  mid
+                                );
+                              } catch (e) {
+                                console.error("Error tagging telegram id", e);
                               }
                             }
                           }
