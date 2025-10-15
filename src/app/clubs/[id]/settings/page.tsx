@@ -293,5 +293,3 @@ export default function ClubSettingsPage() {
     </main>
   );
 }
-
-export const runtime = "edge";

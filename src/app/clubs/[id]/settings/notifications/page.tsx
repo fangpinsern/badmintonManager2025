@@ -927,5 +927,3 @@ export default function ClubNotificationsSettingsPage() {
     </main>
   );
 }
-
-export const runtime = "edge";

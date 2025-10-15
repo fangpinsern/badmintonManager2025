@@ -918,44 +918,6 @@ function ClubSessionTabs({
   );
 }
 
-export const runtime = "edge";
-
-function VisibilitySwitch({
-  isPrivate,
-  onSelect,
-}: {
-  isPrivate: boolean;
-  onSelect: (desired: "public" | "private") => void;
-}) {
-  return (
-    <div className="flex items-center gap-2">
-      <div className="text-[11px] text-gray-600">Visibility</div>
-      <div className="relative inline-flex h-8 items-center rounded-full border px-1">
-        <button
-          className={`rounded-full px-3 py-1 text-xs ${
-            !isPrivate ? "bg-blue-600 text-white" : "text-gray-700"
-          }`}
-          onClick={() => {
-            if (isPrivate) onSelect("public");
-          }}
-        >
-          Public
-        </button>
-        <button
-          className={`rounded-full px-3 py-1 text-xs ${
-            isPrivate ? "bg-gray-900 text-white" : "text-gray-700"
-          }`}
-          onClick={() => {
-            if (!isPrivate) onSelect("private");
-          }}
-        >
-          Private
-        </button>
-      </div>
-    </div>
-  );
-}
-
 function AddMembersModal({
   open,
   onClose,
