@@ -1221,7 +1221,6 @@ async function claimTelegramLinkToken(env, token, chat) {
   try {
     console.log("claim:start", {
       tokenPrefix: String(token || "").slice(0, 8),
-      clubsCol,
       project: env.GCP_PROJECT_ID,
       db: env.FIRESTORE_DB,
     });
@@ -1335,8 +1334,28 @@ async function claimTelegramLinkToken(env, token, chat) {
   }
   // Return minimal club metadata for confirmation message
   try {
-    const f = doc.fields || {};
-    const clubName = jsonFromFields(f.name) || "your club";
+    const f = foundDoc.fields || {};
+    let clubName = jsonFromFields(f.name) || "your club";
+    // Attempt to read public club document for a better name
+    try {
+      const parts = String(name || "").split("/");
+      const clubId = parts[parts.length - 1] || "";
+      if (clubId) {
+        const clubsCol =
+          String(env?.STATS_TEST_MODE || "").toLowerCase() === "true" ||
+          env?.STATS_TEST_MODE === "1"
+            ? "clubs_test"
+            : "clubs";
+        const cres = await fetch(`${baseUrl}/${clubsCol}/${clubId}`, {
+          headers: { authorization: `Bearer ${access}` },
+        });
+        if (cres.ok) {
+          const cdoc = await cres.json();
+          const cf = cdoc.fields || {};
+          clubName = String(jsonFromFields(cf.name) || clubName);
+        }
+      }
+    } catch {}
     try {
       console.log("claim:success", { clubName });
     } catch {}
@@ -1477,7 +1496,10 @@ export class NotificationMailbox {
       this.env,
       "https://www.googleapis.com/auth/datastore"
     );
-    const tokens = await listUserFcmTokens(fsToken, this.env, userId, true);
+    const isTest =
+      String(this.env?.STATS_TEST_MODE || "").toLowerCase() === "true" ||
+      this.env?.STATS_TEST_MODE === "1";
+    const tokens = await listUserFcmTokens(fsToken, this.env, userId, isTest);
     try {
       console.log(
         "[DO alarm] uid=",
@@ -2080,11 +2102,8 @@ function buildOpponentPairAggregates(games, pidToUid, meanMs, payload) {
 
   for (const g of games) {
     // Decide mode from RAW sides (before filtering to linked accounts).
-    console.log("game", g);
     const rawA = Array.isArray(g.sideA) ? g.sideA.length : 0;
     const rawB = Array.isArray(g.sideB) ? g.sideB.length : 0;
-    console.log("game2", rawA);
-    console.log("game3", rawB);
 
     const mode =
       g.mode === "singles" || g.mode === "doubles"
@@ -2684,8 +2703,8 @@ async function commitFriendEdgesAndMirrors({
     try {
       await commitWrites(token, env, writes);
     } catch (e) {
-      if (!isAlreadyApplied(e)) continue;
-      else console.log(e);
+      if (isAlreadyApplied(e)) continue;
+      console.log(e);
     }
   }
 }
@@ -2826,10 +2845,7 @@ async function commitOpponentEdgesAndMirrors({
         `${rootCol}/${u2}/opponents/${u1}`,
         [
           inc("against.singles.games", singles.games),
-          inc(
-            "against.singles.wins",
-            doubles.winsU2 ? singles.winsU2 : singles.winsU2
-          ),
+          inc("against.singles.wins", singles.winsU2),
           inc("against.singles.losses", singles.winsU1),
           inc("against.singles.durationMin", singles.durationMin),
           inc("against.doubles.games", doubles.games),
