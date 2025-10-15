@@ -1260,7 +1260,7 @@ async function claimTelegramLinkToken(env, token, chat) {
   } catch {}
   // Optional TTL check
   try {
-    const f = doc.fields || {};
+    const f = foundDoc.fields || {};
     const ttlField = f.telegram?.mapValue?.fields?.linkTokenExpiresAt;
     const expiresMs = ttlField
       ? "integerValue" in ttlField
