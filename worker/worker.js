@@ -298,12 +298,12 @@ export default {
         type === "session_meta_updated"
       ) {
         // Gate by optional flag under sessionCreated settings
-        const showList = !!(
-          telegram?.notifications?.sessionCreated?.showParticipantsOnJoin ===
-          true
-        );
-        if (!showList)
-          return withCors(new Response("no-op", { status: 202 }), req);
+        // const showList = !!(
+        //   telegram?.notifications?.sessionCreated?.showParticipantsOnJoin ===
+        //   true
+        // );
+        // if (!showList)
+        //   return withCors(new Response("no-op", { status: 202 }), req);
 
         const organizerUid = String(payload?.organizerUid || "").trim();
         const sessionId = String(payload?.sessionId || "").trim();
