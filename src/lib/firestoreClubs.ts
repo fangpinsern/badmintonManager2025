@@ -3,6 +3,7 @@ import {
   collection,
   doc,
   setDoc,
+  deleteDoc,
   getDoc,
   onSnapshot,
   query,
@@ -38,6 +39,14 @@ function clubSensitiveCollectionId(): string {
 
 function usernamesCollectionIdLocal(): string {
   return isTestMode ? "usernames_test" : "usernames";
+}
+
+function usersCollectionIdLocal(): string {
+  return isTestMode ? "users_test" : "users";
+}
+
+function userClubsIndexCollection(uid: string) {
+  return collection(db, usersCollectionIdLocal(), uid, "clubs");
 }
 
 function clubsCollection() {
@@ -155,27 +164,42 @@ export function subscribeMyClubs(
   uid: string,
   onChange: (clubs: FirestoreClub[]) => void
 ) {
-  // Query by membership; sort client-side to avoid composite index requirements
-  const qref = query(
-    clubsCollection(),
-    where("memberUids", "array-contains", uid)
-  );
+  // Subscribe to denormalized index: users/{uid}/clubs and resolve club docs
+  const idxCol = userClubsIndexCollection(uid);
   return onSnapshot(
-    qref,
-    (snap) => {
-      const result: FirestoreClub[] = [];
+    idxCol,
+    async (snap) => {
+      const clubIds: string[] = [];
       snap.forEach((d) => {
-        const data = d.data() as any;
-        result.push({ id: d.id, ...(data as any) });
+        const id = (d.id || "").trim();
+        if (id) clubIds.push(id);
       });
-      // Sort newest first using createdAt if present, otherwise by id
-      result.sort((a, b) => {
-        const ta = (a.createdAt as any)?.toMillis?.() || 0;
-        const tb = (b.createdAt as any)?.toMillis?.() || 0;
-        if (tb !== ta) return tb - ta;
-        return (b.id || "").localeCompare(a.id || "");
-      });
-      onChange(result);
+      if (!clubIds.length) {
+        onChange([]);
+        return;
+      }
+      try {
+        const docs = await Promise.all(
+          clubIds.map(async (cid) => {
+            const ref = clubDoc(cid);
+            const s = await getDoc(ref);
+            return s.exists()
+              ? ({ id: s.id, ...(s.data() as any) } as FirestoreClub)
+              : null;
+          })
+        );
+        const result = (docs.filter(Boolean) as FirestoreClub[]).slice();
+        // Sort newest first using createdAt if present, otherwise by id
+        result.sort((a, b) => {
+          const ta = (a.createdAt as any)?.toMillis?.() || 0;
+          const tb = (b.createdAt as any)?.toMillis?.() || 0;
+          if (tb !== ta) return tb - ta;
+          return (b.id || "").localeCompare(a.id || "");
+        });
+        onChange(result);
+      } catch {
+        onChange([]);
+      }
     },
     (err) => {
       console.error(err);
@@ -400,6 +424,24 @@ export async function createClubRemote(
       } as Omit<FirestoreClubFeed, "id">);
     }
   });
+  // Best-effort: index this club under each member's user doc for quick lookups
+  try {
+    const writes = Array.from(
+      new Set([ownerUid, ...resolved.map((r) => r.uid)])
+    ).map((u) => {
+      const idxRef = doc(userClubsIndexCollection(u), id);
+      return setDoc(
+        idxRef,
+        {
+          clubId: id,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      );
+    });
+    await Promise.all(writes);
+  } catch {}
   return id;
 }
 
@@ -435,6 +477,15 @@ export async function joinClubRemote(
       createdAt: serverTimestamp(),
     } as Omit<FirestoreClubFeed, "id">);
   });
+  // Best-effort: index club under the user
+  try {
+    const idxRef = doc(userClubsIndexCollection(uid), clubId);
+    await setDoc(
+      idxRef,
+      { clubId, createdAt: serverTimestamp(), updatedAt: serverTimestamp() },
+      { merge: true }
+    );
+  } catch {}
 }
 
 export async function leaveClubRemote(
@@ -480,6 +531,11 @@ export async function leaveClubRemote(
       createdAt: serverTimestamp(),
     } as Omit<FirestoreClubFeed, "id">);
   });
+  // Best-effort: remove index entry under the user
+  try {
+    const idxRef = doc(userClubsIndexCollection(uid), clubId);
+    await deleteDoc(idxRef);
+  } catch {}
 }
 
 export async function addMemberByUsernameRemote(
@@ -523,6 +579,17 @@ export async function addMemberByUsernameRemote(
       createdAt: serverTimestamp(),
     } as Omit<FirestoreClubFeed, "id">);
   });
+  // Best-effort: index club under the added member
+  try {
+    if (targetUid) {
+      const idxRef = doc(userClubsIndexCollection(targetUid), clubId);
+      await setDoc(
+        idxRef,
+        { clubId, createdAt: serverTimestamp(), updatedAt: serverTimestamp() },
+        { merge: true }
+      );
+    }
+  } catch {}
 }
 
 // Batch add multiple usernames as members in a single transaction.
@@ -604,6 +671,27 @@ export async function addMembersByUsernamesRemote(
       } as Omit<FirestoreClubFeed, "id">);
     }
   });
+  // Best-effort: index club under each newly added member
+  try {
+    const addedUids = resolved
+      .filter((r) => addedUsernames.includes(r.username))
+      .map((r) => r.uid);
+    if (addedUids.length) {
+      await Promise.all(
+        Array.from(new Set(addedUids)).map((u) =>
+          setDoc(
+            doc(userClubsIndexCollection(u), clubId),
+            {
+              clubId,
+              createdAt: serverTimestamp(),
+              updatedAt: serverTimestamp(),
+            },
+            { merge: true }
+          )
+        )
+      );
+    }
+  } catch {}
   return { added: addedUsernames, skipped };
 }
 
@@ -647,6 +735,11 @@ export async function kickMemberRemote(
       createdAt: serverTimestamp(),
     } as Omit<FirestoreClubFeed, "id">);
   });
+  // Best-effort: remove index entry for the removed member
+  try {
+    const idxRef = doc(userClubsIndexCollection(targetUid), clubId);
+    await deleteDoc(idxRef);
+  } catch {}
 }
 
 // Add a new common venue (owner-only). Returns venue id.
