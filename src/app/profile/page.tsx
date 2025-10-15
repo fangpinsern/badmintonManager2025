@@ -473,5 +473,3 @@ export default function ProfilePage() {
     </main>
   );
 }
-
-export const runtime = "edge";
