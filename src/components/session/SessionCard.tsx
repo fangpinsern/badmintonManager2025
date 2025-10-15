@@ -10,12 +10,10 @@ export function SessionCard({
   session,
   onOpen,
   rightActions,
-  variant = "compact",
 }: {
   session: Session;
   onOpen: (sessionId: string) => void;
   rightActions?: React.ReactNode;
-  variant?: "compact" | "standard" | "detailed";
 }) {
   const [showActions, setShowActions] = useState(false);
   const me = auth.currentUser?.uid || null;
@@ -47,102 +45,20 @@ export function SessionCard({
       : ""
   ) as string;
 
-  if (variant === "compact") {
-    return (
-      <Card>
-        <div className="flex items-center justify-between gap-3">
-          <div className="min-w-0 flex flex-col gap-1">
-            <div className="font-medium flex flex-col items-start">
-              <span className="font-bold">
-                {venueName ? `${venueName}` : ""}
-              </span>
-              <span className="truncate">{formatSessionTitle(session)}</span>
-            </div>
-            <div className="text-xs text-gray-500">
-              {session.numCourts} court{session.numCourts > 1 ? "s" : ""}
-              {courtSummary} · {session.players.length} player
-              {session.players.length !== 1 ? "s" : ""}
-            </div>
-            <div className="font-medium flex items-center gap-2">
-              {session.clubId ? (
-                <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[10px] text-gray-600">
-                  Club
-                </span>
-              ) : null}
-              {hasLimit && (
-                <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[10px] text-gray-700">
-                  {slotsLeft === 0 ? "Full" : `${slotsLeft} left`}
-                </span>
-              )}
-              {isToday && (
-                <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] text-emerald-700">
-                  Today
-                </span>
-              )}
-              {((session.players || []).some((p) => p.accountUid === me) ||
-                isOrganizer) && (
-                <span
-                  className={`rounded-full px-2 py-0.5 text-[10px] ${
-                    isOrganizer
-                      ? "bg-blue-50 text-blue-700"
-                      : (session.coOrganizerUids || []).includes(me || "")
-                      ? "bg-red-50 text-red-700"
-                      : "bg-gray-100 text-gray-600"
-                  }`}
-                >
-                  {isOrganizer
-                    ? "Organizer"
-                    : (session.coOrganizerUids || []).includes(me || "")
-                    ? "Co-organizer"
-                    : "Participant"}
-                </span>
-              )}
-            </div>
-            {session.ended && (
-              <div className="mt-1 text-[11px] text-emerald-700">
-                Ended
-                {session.endedAt
-                  ? ` · ${new Date(session.endedAt).toLocaleString()}`
-                  : ""}
-              </div>
-            )}
-          </div>
-          <div className="flex flex-col items-end gap-2 shrink-0">
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => onOpen(session.id)}
-                className="rounded-xl border border-gray-300 px-3 py-1.5"
-                aria-label="Open"
-              >
-                Open
-              </button>
-              {rightActions ? (
-                <button
-                  onClick={() => setShowActions((v) => !v)}
-                  className="rounded-xl border border-gray-300 px-3 py-1.5"
-                  aria-label="More"
-                >
-                  ⋯
-                </button>
-              ) : null}
-            </div>
-          </div>
-        </div>
-        {showActions && rightActions ? (
-          <div className="mt-2 flex justify-end gap-2 w-full">
-            {rightActions}
-          </div>
-        ) : null}
-      </Card>
-    );
-  }
-
   return (
     <Card>
       <div className="flex items-center justify-between gap-3">
-        <div>
+        <div className="min-w-0 flex flex-col gap-1">
+          <div className="font-medium flex flex-col items-start">
+            <span className="font-bold">{venueName ? `${venueName}` : ""}</span>
+            <span className="truncate">{formatSessionTitle(session)}</span>
+          </div>
+          <div className="text-xs text-gray-500">
+            {session.numCourts} court{session.numCourts > 1 ? "s" : ""}
+            {courtSummary} · {session.players.length} player
+            {session.players.length !== 1 ? "s" : ""}
+          </div>
           <div className="font-medium flex items-center gap-2">
-            <span>{formatSessionTitle(session)}</span>
             {session.clubId ? (
               <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[10px] text-gray-600">
                 Club
@@ -150,43 +66,32 @@ export function SessionCard({
             ) : null}
             {hasLimit && (
               <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[10px] text-gray-700">
-                {slotsLeft === 0
-                  ? "Session is full"
-                  : `${slotsLeft} slots left`}
+                {slotsLeft === 0 ? "Full" : `${slotsLeft} left`}
               </span>
             )}
-            <div className="flex flex-col items-end gap-1">
-              {isToday && (
-                <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] text-emerald-700">
-                  Today
-                </span>
-              )}
-              {((session.players || []).filter((p) => p.accountUid === me)
-                .length > 0 ||
-                isOrganizer) && (
-                <span
-                  className={`rounded-full px-2 py-0.5 text-[10px] ${
-                    isOrganizer
-                      ? "bg-blue-50 text-blue-700"
-                      : (session.coOrganizerUids || []).includes(me || "")
-                      ? "bg-red-50 text-red-700"
-                      : "bg-gray-100 text-gray-600"
-                  }`}
-                >
-                  {isOrganizer
-                    ? "Organizer"
+            {isToday && (
+              <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] text-emerald-700">
+                Today
+              </span>
+            )}
+            {((session.players || []).some((p) => p.accountUid === me) ||
+              isOrganizer) && (
+              <span
+                className={`rounded-full px-2 py-0.5 text-[10px] ${
+                  isOrganizer
+                    ? "bg-blue-50 text-blue-700"
                     : (session.coOrganizerUids || []).includes(me || "")
-                    ? "Co-organizer"
-                    : "Participant"}
-                </span>
-              )}
-            </div>
-          </div>
-          <div className="text-xs text-gray-500">
-            {session.numCourts} court{session.numCourts > 1 ? "s" : ""}
-            {courtSummary}· {session.players.length} player
-            {session.players.length !== 1 ? "s" : ""}
-            {venueName ? ` · ${venueName}` : ""}
+                    ? "bg-red-50 text-red-700"
+                    : "bg-gray-100 text-gray-600"
+                }`}
+              >
+                {isOrganizer
+                  ? "Organizer"
+                  : (session.coOrganizerUids || []).includes(me || "")
+                  ? "Co-organizer"
+                  : "Participant"}
+              </span>
+            )}
           </div>
           {session.ended && (
             <div className="mt-1 text-[11px] text-emerald-700">
@@ -197,16 +102,30 @@ export function SessionCard({
             </div>
           )}
         </div>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => onOpen(session.id)}
-            className="rounded-xl border border-gray-300 px-3 py-1.5"
-          >
-            Open
-          </button>
-          {rightActions}
+        <div className="flex flex-col items-end gap-2 shrink-0">
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => onOpen(session.id)}
+              className="rounded-xl border border-gray-300 px-3 py-1.5"
+              aria-label="Open"
+            >
+              Open
+            </button>
+            {rightActions ? (
+              <button
+                onClick={() => setShowActions((v) => !v)}
+                className="rounded-xl border border-gray-300 px-3 py-1.5"
+                aria-label="More"
+              >
+                ⋯
+              </button>
+            ) : null}
+          </div>
         </div>
       </div>
+      {showActions && rightActions ? (
+        <div className="mt-2 flex justify-end gap-2 w-full">{rightActions}</div>
+      ) : null}
     </Card>
   );
 }

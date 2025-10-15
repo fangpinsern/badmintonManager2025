@@ -897,7 +897,6 @@ function ClubSessionTabs({
             <UnifiedSessionCard
               session={ss}
               onOpen={(id) => router.push(`/session/${id}`)}
-              variant="compact"
             />
           </div>
         ))

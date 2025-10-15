@@ -510,9 +510,6 @@ function SessionList({ onOpen }: { onOpen: (id: string) => void }) {
   const endSession = useStore((s) => s.endSession);
   const [endFor, setEndFor] = useState<string | null>(null);
   const [shuttles, setShuttles] = useState<string>("0");
-  const [cardVariant, setCardVariant] = useState<
-    "compact" | "standard" | "detailed"
-  >("compact");
   const me = auth.currentUser?.uid || null;
 
   const nowIsoDate = new Date().toISOString().slice(0, 10);
@@ -567,39 +564,6 @@ function SessionList({ onOpen }: { onOpen: (id: string) => void }) {
             Closed
           </button>
         </div>
-        {/* <div className="flex items-center gap-2">
-          <span className="text-xs text-gray-500">View:</span>
-          <button
-            onClick={() => setCardVariant("compact")}
-            className={`rounded-xl border px-3 py-1.5 text-xs ${
-              cardVariant === "compact"
-                ? "border-blue-300 bg-blue-50 text-blue-700"
-                : "border-gray-300"
-            }`}
-          >
-            Compact
-          </button>
-          <button
-            onClick={() => setCardVariant("standard")}
-            className={`rounded-xl border px-3 py-1.5 text-xs ${
-              cardVariant === "standard"
-                ? "border-blue-300 bg-blue-50 text-blue-700"
-                : "border-gray-300"
-            }`}
-          >
-            Standard
-          </button>
-          <button
-            onClick={() => setCardVariant("detailed")}
-            className={`rounded-xl border px-3 py-1.5 text-xs ${
-              cardVariant === "detailed"
-                ? "border-blue-300 bg-blue-50 text-blue-700"
-                : "border-gray-300"
-            }`}
-          >
-            Detailed
-          </button>
-        </div> */}
       </div>
 
       {display.length == 0 ? (
@@ -617,7 +581,6 @@ function SessionList({ onOpen }: { onOpen: (id: string) => void }) {
               onOpen(id);
               router.push(`/session/${id}`);
             }}
-            variant={cardVariant}
             rightActions={(() => {
               const owner =
                 (window as any).__sessionOwners?.get?.(ss.id) || null;

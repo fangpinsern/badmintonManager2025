@@ -380,5 +380,3 @@ export default function PublicProfilePage() {
     </main>
   );
 }
-
-export const runtime = "edge";
