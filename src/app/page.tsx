@@ -9,26 +9,16 @@ import {
 } from "@/lib/firestoreSessions";
 import { subscribeLinkedSessions } from "@/lib/firestoreSessions";
 import { auth } from "@/lib/firebase";
-import { GoogleAuthProvider, onAuthStateChanged, signOut } from "firebase/auth";
+import { onAuthStateChanged, signOut } from "firebase/auth";
 import { signInWithGoogleSafe } from "@/lib/authClient";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Session, Player } from "@/types/player";
 import { useStore } from "@/lib/store";
-import {
-  downloadSessionJson,
-  formatDuration,
-  getPlayerCourtIndex,
-  formatSessionTitle,
-} from "@/lib/helper";
-import { Card, Label, Input, Select } from "@/components/layout";
+import { formatSessionTitle } from "@/lib/helper";
+import { Card, Input } from "@/components/layout";
 import { EndSessionModal } from "@/components/session/endSessionModal";
 import { triggerStatsRecalc, recordStatsRecalcFailure } from "@/lib/stats";
-import { AutoAssignSettingsButton } from "@/components/session/autoAssignSettingsButton";
-import { ShareClaimsButton } from "@/components/session/rowKebabMenu";
-import { RowKebabMenu } from "@/components/session/rowKebabMenu";
-import { AddCourtButton } from "@/components/session/addCourtButton";
-import { CourtCard } from "@/components/session/courtCard";
-import { GameEditModal } from "@/components/session/gameEditModal";
+
 import Link from "next/link";
 import { SessionCard as UnifiedSessionCard } from "@/components/session/SessionCard";
 import LoadingScreen from "@/components/LoadingScreen";

@@ -6,10 +6,8 @@ import { Card } from "@/components/layout";
 import {
   resolveUsernames,
   getTopDoublesWins,
-  getTopDoublesTime,
   getTopDoublesGames,
   getTopSinglesWins,
-  getTopSinglesTime,
   getTopSinglesGames,
 } from "@/lib/statsClient";
 

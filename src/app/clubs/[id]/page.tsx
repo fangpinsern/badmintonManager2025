@@ -27,7 +27,6 @@ import {
 } from "@/lib/firestoreSessions";
 import { addAndLinkPlayerByUsername } from "@/lib/firestoreSessions";
 import { useStore } from "@/lib/store";
-import { formatSessionTitle } from "@/lib/helper";
 import type { Session } from "@/types/player";
 import { createClubSessionFeedMessage } from "@/lib/firestoreClubs";
 import { subscribeClubVenues, type ClubVenue } from "@/lib/firestoreClubs";

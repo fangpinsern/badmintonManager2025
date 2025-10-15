@@ -4,7 +4,7 @@ import { useSearchParams, useRouter } from "next/navigation";
 import { Card } from "@/components/layout";
 import LoadingScreen from "@/components/LoadingScreen";
 import { auth } from "@/lib/firebase";
-import { GoogleAuthProvider, onAuthStateChanged } from "firebase/auth";
+import { onAuthStateChanged } from "firebase/auth";
 import { signInWithGoogleSafe } from "@/lib/authClient";
 import {
   linkAccountInOrganizerSession,

@@ -5,7 +5,6 @@ import { Card } from "@/components/layout";
 import GamesPlayedTiles from "@/components/profile/GamesPlayedTiles";
 import WinRateTiles from "@/components/profile/WinRateTiles";
 import RecentForm from "@/components/profile/RecentForm";
-import LineChartSelectable from "@/components/profile/LineChartSelectable";
 import InteractiveLineChart from "@/components/profile/InteractiveLineChart";
 import DurationTiles from "@/components/profile/DurationTiles";
 import UserInfoCard from "@/components/profile/UserInfoCard";
@@ -21,7 +20,6 @@ import {
   getOpponentMirror,
   resolveUsernames,
   getFriendEdgeMonthly,
-  getOpponentEdgeMonthly,
   getOpponentEdgeMonthlySplit,
 } from "@/lib/statsClient";
 import TopPartnersTable from "@/components/profile/TopPartnersTable";

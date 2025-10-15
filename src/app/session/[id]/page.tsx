@@ -36,7 +36,7 @@ import { subscribeMyClubs } from "@/lib/firestoreClubs";
 import { subscribeClubVenues, type ClubVenue } from "@/lib/firestoreClubs";
 import { subscribeClubSessions } from "@/lib/firestoreSessions";
 import { useParams, useRouter } from "next/navigation";
-import { GoogleAuthProvider, onAuthStateChanged } from "firebase/auth";
+import { onAuthStateChanged } from "firebase/auth";
 import { signInWithGoogleSafe } from "@/lib/authClient";
 
 function SessionManager({ onBack }: { onBack: () => void }) {
