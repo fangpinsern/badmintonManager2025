@@ -225,3 +225,5 @@ export default function ClubVenuesSettingsPage() {
     </main>
   );
 }
+
+export const runtime = "edge";

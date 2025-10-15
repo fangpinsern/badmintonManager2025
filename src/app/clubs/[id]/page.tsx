@@ -918,6 +918,8 @@ function ClubSessionTabs({
   );
 }
 
+export const runtime = "edge";
+
 function AddMembersModal({
   open,
   onClose,

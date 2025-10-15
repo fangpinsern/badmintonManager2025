@@ -1774,3 +1774,5 @@ export default function SessionPage() {
     </main>
   );
 }
+
+export const runtime = "edge";

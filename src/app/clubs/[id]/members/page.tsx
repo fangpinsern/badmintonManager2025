@@ -370,3 +370,5 @@ function InlineKickButton({
     </>
   );
 }
+
+export const runtime = "edge";
