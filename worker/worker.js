@@ -905,9 +905,7 @@ export default {
               const summaryText = composeSessionSummary({
                 date,
                 time,
-                uids,
-                perUser,
-                players: playersAll, // for label lookup only
+                players: playersAll,
                 games: gamesNonVoided,
                 avgMin,
               });
@@ -1939,65 +1937,51 @@ function formatReminderMessage(template, timeZone) {
 }
 
 // Compose a concise and comparable end-of-session summary for Telegram
-// Uses per-user aggregates to avoid deviation from stats used on the webpage
-function composeSessionSummary({ date, time, uids, perUser, players, avgMin }) {
+// Includes everyone in the session (not just linked accounts), similar to computeSessionStats
+function composeSessionSummary({ date, time, players, games, avgMin }) {
   try {
-    const playerCount = Array.isArray(uids) ? uids.length : 0;
+    const nonVoided = Array.isArray(games)
+      ? games.filter((g) => !g?.voided)
+      : [];
+    const playerCount = Array.isArray(players) ? players.length : 0;
 
-    // Aggregate from perUser so that totals match committed stats
-    let sumSinglesGames = 0,
-      sumDoublesGames = 0,
-      sumSinglesDurMin = 0,
-      sumDoublesDurMin = 0;
-
-    // For display names by uid
-    const uidToLabel = new Map();
+    // Build player label map by player id for consistency with UI labels
+    const pidToLabel = new Map();
     for (const p of Array.isArray(players) ? players : []) {
-      const uid = p?.accountUid || p?.accountUID || p?.uid;
-      if (!uid) continue;
-      const display = (p.accountUsername || p.name || "").toString().trim();
-      const uname = (p.accountUsername || "").toString().trim();
+      const display = (p?.accountUsername || p?.name || "").toString().trim();
+      const uname = (p?.accountUsername || "").toString().trim();
       const label = uname ? `@${uname}` : display;
-      if (label) uidToLabel.set(String(uid), label);
+      if (p?.id && label) pidToLabel.set(String(p.id), label);
     }
 
-    let mostActive = null; // { uid, count }
-    let best = null; // { uid, rate, games }
+    let singles = 0,
+      doubles = 0;
+    let sumGameDurationsMin = 0;
 
-    for (const uid of Array.isArray(uids) ? uids : []) {
-      const agg = perUser?.[uid];
-      if (!agg) continue;
-      const s = agg.singles || {};
-      const d = agg.doubles || {};
-      sumSinglesGames += Number(s.games || 0);
-      sumDoublesGames += Number(d.games || 0);
-      sumSinglesDurMin += Number(s.durationMin || 0);
-      sumDoublesDurMin += Number(d.durationMin || 0);
+    const playCount = new Map(); // pid -> games played
+    const winsCount = new Map(); // pid -> wins
 
-      const totalGames = Number(agg?.totals?.games || 0);
-      const totalWins = Number(agg?.totals?.wins || 0);
-      if (!mostActive || totalGames > mostActive.count)
-        mostActive = { uid, count: totalGames };
-      if (totalGames >= 3) {
-        const rate =
-          totalGames > 0 ? Math.round((totalWins * 100) / totalGames) : 0;
-        if (!best || rate > best.rate) best = { uid, rate, games: totalGames };
-      }
+    for (const g of nonVoided) {
+      const a = Array.isArray(g?.sideA) ? g.sideA : [];
+      const b = Array.isArray(g?.sideB) ? g.sideB : [];
+      if (a.length === 1 && b.length === 1) singles += 1;
+      else doubles += 1;
+
+      const durMs = Number(g?.durationMs || 0) > 0 ? Number(g.durationMs) : NaN;
+      const durMin = Number.isFinite(durMs) ? Math.round(durMs / 60000) : NaN;
+      if (Number.isFinite(durMin)) sumGameDurationsMin += durMin;
+
+      const winner = g?.winner;
+      const winners = winner === "A" ? a : winner === "B" ? b : [];
+      for (const pid of [...a, ...b])
+        playCount.set(pid, (playCount.get(pid) || 0) + 1);
+      for (const pid of winners)
+        winsCount.set(pid, (winsCount.get(pid) || 0) + 1);
     }
 
-    // Normalize counts back to game counts
-    const singles = Math.round(sumSinglesGames / 2);
-    const doubles = Math.round(sumDoublesGames / 4);
-    const totalGames = singles + doubles;
-
-    // Compute average game duration from aggregates, fallback to provided avgMin
-    const sumGameDurationsMin =
-      0.5 * sumSinglesDurMin + 0.25 * sumDoublesDurMin;
-    const avgMinFromAgg = totalGames
+    const totalGames = nonVoided.length;
+    const avgMinFinal = totalGames
       ? Math.round(sumGameDurationsMin / totalGames)
-      : undefined;
-    const avgMinFinal = Number.isFinite(avgMinFromAgg)
-      ? avgMinFromAgg
       : Math.max(1, Number.isFinite(avgMin) ? avgMin : 10);
 
     const header =
@@ -2011,16 +1995,30 @@ function composeSessionSummary({ date, time, uids, perUser, players, avgMin }) {
     const line2 = `Singles: ${singles} • Doubles: ${doubles}`;
 
     let line3 = "";
+    // Most active
+    let mostActive = null;
+    for (const [pid, cnt] of playCount.entries()) {
+      if (!mostActive || cnt > mostActive.count)
+        mostActive = { pid, count: cnt };
+    }
     if (mostActive) {
       const name = escapeHtml(
-        uidToLabel.get(String(mostActive.uid)) || "Player"
+        pidToLabel.get(String(mostActive.pid)) || "Player"
       );
       line3 = `Most active: ${name} (${mostActive.count})`;
     }
 
+    // Best win rate (≥3 games)
+    let best = null;
+    for (const [pid, cnt] of playCount.entries()) {
+      if (cnt < 3) continue;
+      const w = winsCount.get(pid) || 0;
+      const rate = cnt > 0 ? Math.round((w * 100) / cnt) : 0;
+      if (!best || rate > best.rate) best = { pid, rate, games: cnt };
+    }
     let line4 = "";
     if (best) {
-      const name = escapeHtml(uidToLabel.get(String(best.uid)) || "Player");
+      const name = escapeHtml(pidToLabel.get(String(best.pid)) || "Player");
       line4 = `Best win rate (≥3): ${name} (${best.rate}%)`;
     }
 
