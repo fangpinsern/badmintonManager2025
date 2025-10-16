@@ -859,6 +859,95 @@ export default {
 
       await notifyStatsUpdate({ uids, organizerUid, sessionId, env });
 
+      // Best-effort: edit the original Telegram message with a concise end-of-session summary
+      // This is additive and fully gated; failures are swallowed to avoid altering existing behavior
+      try {
+        const mid = Number(payload?.telegramMessageId || 0);
+        const clubIdForTelegram =
+          typeof payload?.clubId === "string" && payload.clubId
+            ? String(payload.clubId)
+            : "";
+        if (mid && clubIdForTelegram) {
+          // Read Telegram config from protected sensitive notifications doc
+          const sensitiveCol =
+            String(env?.STATS_TEST_MODE || "") === "1" ||
+            String(env?.STATS_TEST_MODE || "").toLowerCase() === "true"
+              ? "clubSensitive_test"
+              : "clubSensitive";
+          const notiRes = await fetch(
+            `${baseUrl}/${sensitiveCol}/${clubIdForTelegram}/sensitive/notifications`,
+            { headers: { authorization: `Bearer ${token}` } }
+          );
+          if (notiRes.ok) {
+            const notiDoc = await notiRes.json();
+            const nf = notiDoc.fields || {};
+            const telegram = jsonFromFields(nf.telegram) || {};
+            const linked =
+              !!telegram.enabled &&
+              String(telegram?.linkState || "") === "linked" &&
+              !!telegram.chatId;
+            const botToken = env.TELEGRAM_BOT_TOKEN;
+
+            if (linked && botToken) {
+              // Build concise, comparable summary body
+              const date = String(payload?.date || "");
+              const time = String(payload?.time || "");
+              const playersAll = Array.isArray(payload?.players)
+                ? payload.players
+                : [];
+              const gamesNonVoided = Array.isArray(gamesAll)
+                ? gamesAll.filter((g) => !g?.voided)
+                : [];
+              const avgMin = Math.round(
+                (meanMs || meanDurationMs(gamesNonVoided)) / 60000
+              );
+
+              const summaryText = composeSessionSummary({
+                date,
+                time,
+                uids,
+                perUser,
+                players: playersAll, // for label lookup only
+                games: gamesNonVoided,
+                avgMin,
+              });
+
+              // Keep link to session
+              const origin = req.headers.get("Origin") || "";
+              const allowOrigin = ALLOW_ORIGINS.has(origin)
+                ? origin
+                : String(env?.APP_BASE_URL || "");
+              const baseApp = allowOrigin || "https://bm25r.codingcrayons.com";
+              const sessionUrl = `${baseApp}/session/${sessionId}`;
+              const replyMarkup = {
+                inline_keyboard: [
+                  [{ text: "See session stats", url: sessionUrl }],
+                ],
+              };
+
+              try {
+                await editTelegramMessage({
+                  token: botToken,
+                  chatId: telegram.chatId,
+                  messageId: mid,
+                  text: summaryText,
+                  replyMarkup,
+                  parse: "HTML",
+                });
+              } catch (e) {
+                try {
+                  console.log("telegram end-summary edit failed", e);
+                } catch {}
+              }
+            }
+          }
+        }
+      } catch (e) {
+        try {
+          console.log("end-summary block error", e);
+        } catch {}
+      }
+
       return withCors(new Response("OK"), req);
     } catch (e) {
       console.log("error", e);
@@ -1846,6 +1935,102 @@ function formatReminderMessage(template, timeZone) {
     return String(template || "").replace(/\{date\}/g, dateStr);
   } catch {
     return String(template || "");
+  }
+}
+
+// Compose a concise and comparable end-of-session summary for Telegram
+// Uses per-user aggregates to avoid deviation from stats used on the webpage
+function composeSessionSummary({ date, time, uids, perUser, players, avgMin }) {
+  try {
+    const playerCount = Array.isArray(uids) ? uids.length : 0;
+
+    // Aggregate from perUser so that totals match committed stats
+    let sumSinglesGames = 0,
+      sumDoublesGames = 0,
+      sumSinglesDurMin = 0,
+      sumDoublesDurMin = 0;
+
+    // For display names by uid
+    const uidToLabel = new Map();
+    for (const p of Array.isArray(players) ? players : []) {
+      const uid = p?.accountUid || p?.accountUID || p?.uid;
+      if (!uid) continue;
+      const display = (p.accountUsername || p.name || "").toString().trim();
+      const uname = (p.accountUsername || "").toString().trim();
+      const label = uname ? `@${uname}` : display;
+      if (label) uidToLabel.set(String(uid), label);
+    }
+
+    let mostActive = null; // { uid, count }
+    let best = null; // { uid, rate, games }
+
+    for (const uid of Array.isArray(uids) ? uids : []) {
+      const agg = perUser?.[uid];
+      if (!agg) continue;
+      const s = agg.singles || {};
+      const d = agg.doubles || {};
+      sumSinglesGames += Number(s.games || 0);
+      sumDoublesGames += Number(d.games || 0);
+      sumSinglesDurMin += Number(s.durationMin || 0);
+      sumDoublesDurMin += Number(d.durationMin || 0);
+
+      const totalGames = Number(agg?.totals?.games || 0);
+      const totalWins = Number(agg?.totals?.wins || 0);
+      if (!mostActive || totalGames > mostActive.count)
+        mostActive = { uid, count: totalGames };
+      if (totalGames >= 3) {
+        const rate =
+          totalGames > 0 ? Math.round((totalWins * 100) / totalGames) : 0;
+        if (!best || rate > best.rate) best = { uid, rate, games: totalGames };
+      }
+    }
+
+    // Normalize counts back to game counts
+    const singles = Math.round(sumSinglesGames / 2);
+    const doubles = Math.round(sumDoublesGames / 4);
+    const totalGames = singles + doubles;
+
+    // Compute average game duration from aggregates, fallback to provided avgMin
+    const sumGameDurationsMin =
+      0.5 * sumSinglesDurMin + 0.25 * sumDoublesDurMin;
+    const avgMinFromAgg = totalGames
+      ? Math.round(sumGameDurationsMin / totalGames)
+      : undefined;
+    const avgMinFinal = Number.isFinite(avgMinFromAgg)
+      ? avgMinFromAgg
+      : Math.max(1, Number.isFinite(avgMin) ? avgMin : 10);
+
+    const header =
+      date && time
+        ? `✅ Session Summary — <b>${escapeHtml(date)}</b> at <b>${escapeHtml(
+            time
+          )}</b>`
+        : `✅ Session Summary`;
+
+    const line1 = `Games: ${totalGames} • Players: ${playerCount} • Avg: ${avgMinFinal}m`;
+    const line2 = `Singles: ${singles} • Doubles: ${doubles}`;
+
+    let line3 = "";
+    if (mostActive) {
+      const name = escapeHtml(
+        uidToLabel.get(String(mostActive.uid)) || "Player"
+      );
+      line3 = `Most active: ${name} (${mostActive.count})`;
+    }
+
+    let line4 = "";
+    if (best) {
+      const name = escapeHtml(uidToLabel.get(String(best.uid)) || "Player");
+      line4 = `Best win rate (≥3): ${name} (${best.rate}%)`;
+    }
+
+    const parts = [header, line1, line2];
+    if (line3) parts.push(line3);
+    if (line4) parts.push(line4);
+    return parts.join("\n");
+  } catch {
+    // Fallback minimal body to avoid failures
+    return `✅ Session Summary`;
   }
 }
 
