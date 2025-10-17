@@ -13,6 +13,15 @@ export default {
     }
 
     const url = new URL(req.url);
+    try {
+      console.log("worker.fetch:request", {
+        method: req.method,
+        path: url.pathname,
+        search: url.search,
+        origin: req.headers.get("Origin") || "",
+        ua: req.headers.get("User-Agent") || "",
+      });
+    } catch {}
 
     // ---- New: event ingestion endpoint ----
     // if (req.method === "POST" && url.pathname === "/push/events") {
@@ -1284,6 +1293,14 @@ function withCors(resp, req, opts) {
   const h = new Headers(resp.headers);
   const ch = corsHeaders(req, opts);
   for (const [k, v] of ch) h.set(k, v);
+  try {
+    const u = new URL(req.url);
+    console.log("worker.fetch:response", {
+      path: u.pathname,
+      search: u.search,
+      status: resp.status,
+    });
+  } catch {}
   return new Response(resp.body, { status: resp.status, headers: h });
 }
 function escapeHtml(s) {
