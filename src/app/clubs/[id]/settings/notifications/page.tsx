@@ -594,28 +594,29 @@ export default function ClubNotificationsSettingsPage() {
                   </button>
                 </div>
 
-                <div className="border-t pt-4">
-                  <div className="mb-2 font-medium">Event notifications</div>
-                  <div className="grid grid-cols-1 gap-3">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <div className="font-medium">Session created</div>
-                        <div className="text-[11px] text-gray-600">
-                          Send a message when a new session is created
+                {enabled && (
+                  <div className="border-t pt-4">
+                    <div className="mb-2 font-medium">Event notifications</div>
+                    <div className="grid grid-cols-1 gap-3">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <div className="font-medium">Session created</div>
+                          <div className="text-[11px] text-gray-600">
+                            Send a message when a new session is created
+                          </div>
                         </div>
+                        <button
+                          className={`rounded-full border px-3 py-1 text-xs ${
+                            sessionCreated ? "bg-blue-600 text-white" : ""
+                          }`}
+                          disabled={!isOwner}
+                          onClick={() => setSessionCreated((v) => !v)}
+                        >
+                          {sessionCreated ? "On" : "Off"}
+                        </button>
                       </div>
-                      <button
-                        className={`rounded-full border px-3 py-1 text-xs ${
-                          sessionCreated ? "bg-blue-600 text-white" : ""
-                        }`}
-                        disabled={!isOwner}
-                        onClick={() => setSessionCreated((v) => !v)}
-                      >
-                        {sessionCreated ? "On" : "Off"}
-                      </button>
-                    </div>
 
-                    {/* <div className="flex items-center justify-between">
+                      {/* <div className="flex items-center justify-between">
                       <div>
                         <div className="font-medium">Reminders</div>
                         <div className="text-[11px] text-gray-600">
@@ -633,152 +634,160 @@ export default function ClubNotificationsSettingsPage() {
                       </button>
                     </div> */}
 
-                    <div className="rounded border p-3">
-                      <div className="mb-2 flex items-center justify-between">
-                        <div>
-                          <div className="font-medium">
-                            Custom reminders (weekly)
+                      <div className="rounded border p-3">
+                        <div className="mb-2 flex items-center justify-between">
+                          <div>
+                            <div className="font-medium">
+                              Custom reminders (weekly)
+                            </div>
+                            <div className="text-[11px] text-gray-600">
+                              Scheduled weekly messages to your group (max 5)
+                            </div>
                           </div>
+                          <button
+                            className={`rounded-full border px-3 py-1 text-xs ${
+                              customRemindersEnabled
+                                ? "bg-blue-600 text-white"
+                                : ""
+                            }`}
+                            disabled={!isOwner}
+                            onClick={() => setCustomRemindersEnabled((v) => !v)}
+                          >
+                            {customRemindersEnabled ? "On" : "Off"}
+                          </button>
+                        </div>
+                        {customRemindersEnabled && (
+                          <>
+                            <div className="space-y-2">
+                              {customReminders.length === 0 && (
+                                <div className="text-[11px] text-gray-500">
+                                  No reminders yet.
+                                </div>
+                              )}
+                              {customReminders.map((r) => (
+                                <div
+                                  key={r.id}
+                                  className="flex items-center justify-between rounded border px-2 py-1"
+                                >
+                                  <div className="min-w-0">
+                                    <div className="truncate text-sm font-medium">
+                                      {r.name || "Reminder"}
+                                    </div>
+                                    <div className="truncate text-[11px] text-gray-600">
+                                      {dowName(Number(r.dow))}{" "}
+                                      {String(r.hour).padStart(2, "0")}:
+                                      {String(r.minute).padStart(2, "0")} ·{" "}
+                                      {r.message}
+                                    </div>
+                                  </div>
+                                  <div className="ml-2 flex items-center gap-2">
+                                    <button
+                                      className={`rounded-full border px-3 py-1 text-xs ${
+                                        r.enabled === false
+                                          ? ""
+                                          : "bg-blue-600 text-white"
+                                      }`}
+                                      disabled={!isOwner}
+                                      onClick={() => toggleReminder(r.id)}
+                                    >
+                                      {r.enabled === false ? "Off" : "On"}
+                                    </button>
+                                    <button
+                                      className="rounded border px-2 py-1 text-[11px]"
+                                      disabled={!isOwner}
+                                      onClick={() => openEditReminder(r)}
+                                    >
+                                      Edit
+                                    </button>
+                                    <button
+                                      className="rounded border px-2 py-1 text-[11px]"
+                                      disabled={!isOwner}
+                                      onClick={() => removeReminder(r.id)}
+                                    >
+                                      Remove
+                                    </button>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+
+                            <div className="mt-2">
+                              <button
+                                className="rounded border px-2 py-1 text-xs disabled:opacity-50"
+                                disabled={
+                                  !isOwner || customReminders.length >= 5
+                                }
+                                onClick={openAddReminder}
+                              >
+                                Add reminder
+                              </button>
+                              {customReminders.length >= 5 && (
+                                <span className="ml-2 text-[11px] text-gray-500">
+                                  Limit reached (5)
+                                </span>
+                              )}
+                            </div>
+                          </>
+                        )}
+                      </div>
+
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <div className="font-medium">Monthly summary</div>
                           <div className="text-[11px] text-gray-600">
-                            Scheduled weekly messages to your group (max 5)
+                            Post a monthly stats summary to the group
                           </div>
                         </div>
                         <button
                           className={`rounded-full border px-3 py-1 text-xs ${
-                            customRemindersEnabled
-                              ? "bg-blue-600 text-white"
-                              : ""
+                            monthlyEnabled ? "bg-blue-600 text-white" : ""
                           }`}
                           disabled={!isOwner}
-                          onClick={() => setCustomRemindersEnabled((v) => !v)}
+                          onClick={() => setMonthlyEnabled((v) => !v)}
                         >
-                          {customRemindersEnabled ? "On" : "Off"}
+                          {monthlyEnabled ? "On" : "Off"}
                         </button>
                       </div>
 
-                      <div className="space-y-2">
-                        {customReminders.length === 0 && (
-                          <div className="text-[11px] text-gray-500">
-                            No reminders yet.
-                          </div>
-                        )}
-                        {customReminders.map((r) => (
-                          <div
-                            key={r.id}
-                            className="flex items-center justify-between rounded border px-2 py-1"
-                          >
-                            <div className="min-w-0">
-                              <div className="truncate text-sm font-medium">
-                                {r.name || "Reminder"}
+                      {monthlyEnabled && (
+                        <div className="grid grid-cols-2 gap-3">
+                          <div>
+                            <Input
+                              type="number"
+                              label="Day of month"
+                              min={1}
+                              max={28}
+                              inputMode="numeric"
+                              value={monthDay}
+                              onChange={(e) => setMonthDay(e.target.value)}
+                            />
+                            {!dayValid && (
+                              <div className="mt-1 text-[11px] text-red-600">
+                                Enter a value between 1 and 28.
                               </div>
-                              <div className="truncate text-[11px] text-gray-600">
-                                {dowName(Number(r.dow))}{" "}
-                                {String(r.hour).padStart(2, "0")}:
-                                {String(r.minute).padStart(2, "0")} ·{" "}
-                                {r.message}
-                              </div>
-                            </div>
-                            <div className="ml-2 flex items-center gap-2">
-                              <button
-                                className={`rounded-full border px-3 py-1 text-xs ${
-                                  r.enabled === false
-                                    ? ""
-                                    : "bg-blue-600 text-white"
-                                }`}
-                                disabled={!isOwner}
-                                onClick={() => toggleReminder(r.id)}
-                              >
-                                {r.enabled === false ? "Off" : "On"}
-                              </button>
-                              <button
-                                className="rounded border px-2 py-1 text-[11px]"
-                                disabled={!isOwner}
-                                onClick={() => openEditReminder(r)}
-                              >
-                                Edit
-                              </button>
-                              <button
-                                className="rounded border px-2 py-1 text-[11px]"
-                                disabled={!isOwner}
-                                onClick={() => removeReminder(r.id)}
-                              >
-                                Remove
-                              </button>
-                            </div>
+                            )}
                           </div>
-                        ))}
-                      </div>
-
-                      <div className="mt-2">
-                        <button
-                          className="rounded border px-2 py-1 text-xs disabled:opacity-50"
-                          disabled={!isOwner || customReminders.length >= 5}
-                          onClick={openAddReminder}
-                        >
-                          Add reminder
-                        </button>
-                        {customReminders.length >= 5 && (
-                          <span className="ml-2 text-[11px] text-gray-500">
-                            Limit reached (5)
-                          </span>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <div className="font-medium">Monthly summary</div>
-                        <div className="text-[11px] text-gray-600">
-                          Post a monthly stats summary to the group
+                          <div>
+                            <Input
+                              type="number"
+                              label="Hour (0-23)"
+                              min={0}
+                              max={23}
+                              inputMode="numeric"
+                              value={monthHour}
+                              onChange={(e) => setMonthHour(e.target.value)}
+                            />
+                            {!hourValid && (
+                              <div className="mt-1 text-[11px] text-red-600">
+                                Enter a value between 0 and 23.
+                              </div>
+                            )}
+                          </div>
                         </div>
-                      </div>
-                      <button
-                        className={`rounded-full border px-3 py-1 text-xs ${
-                          monthlyEnabled ? "bg-blue-600 text-white" : ""
-                        }`}
-                        disabled={!isOwner}
-                        onClick={() => setMonthlyEnabled((v) => !v)}
-                      >
-                        {monthlyEnabled ? "On" : "Off"}
-                      </button>
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-3">
-                      <div>
-                        <Input
-                          type="number"
-                          label="Day of month"
-                          min={1}
-                          max={28}
-                          inputMode="numeric"
-                          value={monthDay}
-                          onChange={(e) => setMonthDay(e.target.value)}
-                        />
-                        {!dayValid && (
-                          <div className="mt-1 text-[11px] text-red-600">
-                            Enter a value between 1 and 28.
-                          </div>
-                        )}
-                      </div>
-                      <div>
-                        <Input
-                          type="number"
-                          label="Hour (0-23)"
-                          min={0}
-                          max={23}
-                          inputMode="numeric"
-                          value={monthHour}
-                          onChange={(e) => setMonthHour(e.target.value)}
-                        />
-                        {!hourValid && (
-                          <div className="mt-1 text-[11px] text-red-600">
-                            Enter a value between 0 and 23.
-                          </div>
-                        )}
-                      </div>
+                      )}
                     </div>
                   </div>
-                </div>
+                )}
 
                 <div className="border-t pt-4">
                   <div className="mb-2 font-medium">Connection</div>
