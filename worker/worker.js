@@ -657,6 +657,93 @@ export default {
         payload
       );
 
+      // Best-effort: edit the original Telegram message with a concise end-of-session summary
+      // This is additive and fully gated; failures are swallowed to avoid altering existing behavior
+      try {
+        const mid = Number(payload?.telegramMessageId || 0);
+        const clubIdForTelegram =
+          typeof payload?.clubId === "string" && payload.clubId
+            ? String(payload.clubId)
+            : "";
+        if (mid && clubIdForTelegram) {
+          // Read Telegram config from protected sensitive notifications doc
+          const sensitiveCol =
+            String(env?.STATS_TEST_MODE || "") === "1" ||
+            String(env?.STATS_TEST_MODE || "").toLowerCase() === "true"
+              ? "clubSensitive_test"
+              : "clubSensitive";
+          const notiRes = await fetch(
+            `${baseUrl}/${sensitiveCol}/${clubIdForTelegram}/sensitive/notifications`,
+            { headers: { authorization: `Bearer ${token}` } }
+          );
+          if (notiRes.ok) {
+            const notiDoc = await notiRes.json();
+            const nf = notiDoc.fields || {};
+            const telegram = jsonFromFields(nf.telegram) || {};
+            const linked =
+              !!telegram.enabled &&
+              String(telegram?.linkState || "") === "linked" &&
+              !!telegram.chatId;
+            const botToken = env.TELEGRAM_BOT_TOKEN;
+
+            if (linked && botToken) {
+              // Build concise, comparable summary body
+              const date = String(payload?.date || "");
+              const time = String(payload?.time || "");
+              const playersAll = Array.isArray(payload?.players)
+                ? payload.players
+                : [];
+              const gamesNonVoided = Array.isArray(gamesAll)
+                ? gamesAll.filter((g) => !g?.voided)
+                : [];
+              const avgMin = Math.round(
+                (meanMs || meanDurationMs(gamesNonVoided)) / 60000
+              );
+
+              const summaryText = composeSessionSummary({
+                date,
+                time,
+                players: playersAll,
+                games: gamesNonVoided,
+                avgMin,
+              });
+
+              // Keep link to session
+              const origin = req.headers.get("Origin") || "";
+              const allowOrigin = ALLOW_ORIGINS.has(origin)
+                ? origin
+                : String(env?.APP_BASE_URL || "");
+              const baseApp = allowOrigin || "https://bm25r.codingcrayons.com";
+              const sessionUrl = `${baseApp}/session/${sessionId}`;
+              const replyMarkup = {
+                inline_keyboard: [
+                  [{ text: "See session stats", url: sessionUrl }],
+                ],
+              };
+
+              try {
+                await editTelegramMessage({
+                  token: botToken,
+                  chatId: telegram.chatId,
+                  messageId: mid,
+                  text: summaryText,
+                  replyMarkup,
+                  parse: "HTML",
+                });
+              } catch (e) {
+                try {
+                  console.log("telegram end-summary edit failed", e);
+                } catch {}
+              }
+            }
+          }
+        }
+      } catch (e) {
+        try {
+          console.log("end-summary block error", e);
+        } catch {}
+      }
+
       const uids = Object.keys(perUser);
       if (!uids.length)
         return withCors(
@@ -859,93 +946,6 @@ export default {
 
       await notifyStatsUpdate({ uids, organizerUid, sessionId, env });
 
-      // Best-effort: edit the original Telegram message with a concise end-of-session summary
-      // This is additive and fully gated; failures are swallowed to avoid altering existing behavior
-      try {
-        const mid = Number(payload?.telegramMessageId || 0);
-        const clubIdForTelegram =
-          typeof payload?.clubId === "string" && payload.clubId
-            ? String(payload.clubId)
-            : "";
-        if (mid && clubIdForTelegram) {
-          // Read Telegram config from protected sensitive notifications doc
-          const sensitiveCol =
-            String(env?.STATS_TEST_MODE || "") === "1" ||
-            String(env?.STATS_TEST_MODE || "").toLowerCase() === "true"
-              ? "clubSensitive_test"
-              : "clubSensitive";
-          const notiRes = await fetch(
-            `${baseUrl}/${sensitiveCol}/${clubIdForTelegram}/sensitive/notifications`,
-            { headers: { authorization: `Bearer ${token}` } }
-          );
-          if (notiRes.ok) {
-            const notiDoc = await notiRes.json();
-            const nf = notiDoc.fields || {};
-            const telegram = jsonFromFields(nf.telegram) || {};
-            const linked =
-              !!telegram.enabled &&
-              String(telegram?.linkState || "") === "linked" &&
-              !!telegram.chatId;
-            const botToken = env.TELEGRAM_BOT_TOKEN;
-
-            if (linked && botToken) {
-              // Build concise, comparable summary body
-              const date = String(payload?.date || "");
-              const time = String(payload?.time || "");
-              const playersAll = Array.isArray(payload?.players)
-                ? payload.players
-                : [];
-              const gamesNonVoided = Array.isArray(gamesAll)
-                ? gamesAll.filter((g) => !g?.voided)
-                : [];
-              const avgMin = Math.round(
-                (meanMs || meanDurationMs(gamesNonVoided)) / 60000
-              );
-
-              const summaryText = composeSessionSummary({
-                date,
-                time,
-                players: playersAll,
-                games: gamesNonVoided,
-                avgMin,
-              });
-
-              // Keep link to session
-              const origin = req.headers.get("Origin") || "";
-              const allowOrigin = ALLOW_ORIGINS.has(origin)
-                ? origin
-                : String(env?.APP_BASE_URL || "");
-              const baseApp = allowOrigin || "https://bm25r.codingcrayons.com";
-              const sessionUrl = `${baseApp}/session/${sessionId}`;
-              const replyMarkup = {
-                inline_keyboard: [
-                  [{ text: "See session stats", url: sessionUrl }],
-                ],
-              };
-
-              try {
-                await editTelegramMessage({
-                  token: botToken,
-                  chatId: telegram.chatId,
-                  messageId: mid,
-                  text: summaryText,
-                  replyMarkup,
-                  parse: "HTML",
-                });
-              } catch (e) {
-                try {
-                  console.log("telegram end-summary edit failed", e);
-                } catch {}
-              }
-            }
-          }
-        }
-      } catch (e) {
-        try {
-          console.log("end-summary block error", e);
-        } catch {}
-      }
-
       return withCors(new Response("OK"), req);
     } catch (e) {
       console.log("error", e);
@@ -958,6 +958,7 @@ export default {
     }
   },
 };
+
 async function sendTelegram({
   token,
   chatId,
