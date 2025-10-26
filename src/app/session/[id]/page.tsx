@@ -35,12 +35,19 @@ import {
 import { subscribeMyClubs } from "@/lib/firestoreClubs";
 import { subscribeClubVenues, type ClubVenue } from "@/lib/firestoreClubs";
 import { subscribeClubSessions } from "@/lib/firestoreSessions";
-import { useParams, useRouter } from "next/navigation";
+import {
+  useParams,
+  useRouter,
+  usePathname,
+  useSearchParams,
+} from "next/navigation";
 import { onAuthStateChanged } from "firebase/auth";
-import { signInWithGoogleSafe } from "@/lib/authClient";
 
 function SessionManager({ onBack }: { onBack: () => void }) {
   const { id } = useParams<{ id: string }>();
+  const router = useRouter();
+  const pathname = usePathname();
+  const sp = useSearchParams();
   const addPlayer = useStore((s) => s.addPlayer);
   const addPlayersBulk = useStore((s) => s.addPlayersBulk);
   const removePlayer = useStore((s) => s.removePlayer);
@@ -405,35 +412,13 @@ function SessionManager({ onBack }: { onBack: () => void }) {
     return <LoadingScreen message="Loading…" />;
   }
   if (authReady && !user) {
-    return (
-      <div className="space-y-4">
-        <button
-          onClick={onBack}
-          aria-label="back-to-list"
-          className="text-sm text-gray-600"
-        >
-          ← Back
-        </button>
-        <Card>
-          <div className="flex items-center justify-between">
-            <div>
-              <h2 className="text-lg font-semibold">Sign in</h2>
-              <p className="text-xs text-gray-500">
-                Sign in to view this session.
-              </p>
-            </div>
-            <button
-              onClick={async () => {
-                await signInWithGoogleSafe(auth);
-              }}
-              className="rounded-xl bg-black px-4 py-2 text-white"
-            >
-              Continue with Google
-            </button>
-          </div>
-        </Card>
-      </div>
-    );
+    // Redirect to central auth page with returnTo set to the current URL
+    const qs = sp?.toString() || "";
+    const current = `${pathname}${qs ? `?${qs}` : ""}`;
+    try {
+      router.replace(`/auth?returnTo=${encodeURIComponent(current)}`);
+    } catch {}
+    return <LoadingScreen message="Loading…" />;
   }
   if (!session) {
     return <LoadingScreen message="Loading…" />;

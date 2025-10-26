@@ -1,11 +1,10 @@
 "use client";
 import { Suspense, useEffect, useMemo, useState } from "react";
-import { useSearchParams, useRouter } from "next/navigation";
+import { useSearchParams, useRouter, usePathname } from "next/navigation";
 import { Card } from "@/components/layout";
 import LoadingScreen from "@/components/LoadingScreen";
 import { auth } from "@/lib/firebase";
 import { onAuthStateChanged } from "firebase/auth";
-import { signInWithGoogleSafe } from "@/lib/authClient";
 import {
   linkAccountInOrganizerSession,
   getUserProfile,
@@ -16,6 +15,7 @@ import UsernameModal from "@/components/UsernameModal";
 function ClaimPageInner() {
   const sp = useSearchParams();
   const router = useRouter();
+  const pathname = usePathname();
   const [authReady, setAuthReady] = useState<boolean>(!!auth.currentUser);
   const [userUid, setUserUid] = useState<string | null>(
     auth.currentUser?.uid || null
@@ -104,26 +104,13 @@ function ClaimPageInner() {
     return <LoadingScreen message="Checking your sign-in status…" />;
 
   if (!userUid) {
-    return (
-      <main className="mx-auto max-w-md p-4 text-sm">
-        <Card>
-          <h1 className="text-lg font-semibold">
-            Link your player to your account
-          </h1>
-          <p className="mt-1 text-gray-600">Please sign in to continue.</p>
-          <div className="mt-3 flex items-center gap-2">
-            <button
-              onClick={async () => {
-                await signInWithGoogleSafe(auth);
-              }}
-              className="rounded-xl bg-black px-4 py-2 text-white"
-            >
-              Continue with Google
-            </button>
-          </div>
-        </Card>
-      </main>
-    );
+    // Redirect to central auth page with returnTo set to current claim URL
+    const qs = sp?.toString() || "";
+    const current = `${pathname}${qs ? `?${qs}` : ""}`;
+    try {
+      router.replace(`/auth?returnTo=${encodeURIComponent(current)}`);
+    } catch {}
+    return <LoadingScreen message="Checking your sign-in status…" />;
   }
 
   if (needsUsername) {

@@ -6,6 +6,8 @@ import LoadingScreen from "@/components/LoadingScreen";
 import { auth } from "@/lib/firebase";
 import { onAuthStateChanged } from "firebase/auth";
 import { signInWithGoogleSafe } from "@/lib/authClient";
+import UsernameModal from "@/components/UsernameModal";
+import { getUserProfile, claimUsername } from "@/lib/firestoreSessions";
 
 export default function AuthPage() {
   const router = useRouter();
@@ -30,6 +32,8 @@ export default function AuthPage() {
   const [userUid, setUserUid] = useState<string | null>(
     auth.currentUser?.uid || null
   );
+  const [needsUsername, setNeedsUsername] = useState<boolean>(false);
+  const [profileChecked, setProfileChecked] = useState<boolean>(false);
 
   useEffect(() => {
     return onAuthStateChanged(auth, (u) => {
@@ -38,17 +42,60 @@ export default function AuthPage() {
     });
   }, []);
 
+  // Check for required username after sign-in
+  useEffect(() => {
+    (async () => {
+      if (!authReady || !userUid) return;
+      try {
+        const p = await getUserProfile(userUid);
+        const has = p && typeof p.username === "string" && p.username.trim();
+        setNeedsUsername(!has);
+      } catch {
+        setNeedsUsername(true);
+      }
+      setProfileChecked(true);
+    })();
+  }, [authReady, userUid]);
+
   useEffect(() => {
     if (!authReady) return;
-    if (userUid) {
+    if (userUid && profileChecked && !needsUsername) {
       try {
         router.replace(returnTo || "/");
       } catch {}
     }
-  }, [authReady, userUid, returnTo, router]);
+  }, [authReady, userUid, profileChecked, needsUsername, returnTo, router]);
 
   if (!authReady)
     return <LoadingScreen message="Checking your sign-in status…" />;
+
+  // Gate on username if signed in but missing username
+  if (authReady && userUid && profileChecked && needsUsername) {
+    return (
+      <main className="mx-auto max-w-md p-4 text-sm">
+        <UsernameModal
+          open={true}
+          onClose={() => {}}
+          canCancel={false}
+          onSubmit={async (uname) => {
+            if (!userUid) return;
+            await claimUsername(userUid, uname);
+            // Wait briefly for profile to reflect the username
+            try {
+              for (let i = 0; i < 10; i++) {
+                const p = await getUserProfile(userUid);
+                const has =
+                  p && typeof p.username === "string" && p.username.trim();
+                if (has) break;
+                await new Promise((r) => setTimeout(r, 150));
+              }
+            } catch {}
+            setNeedsUsername(false);
+          }}
+        />
+      </main>
+    );
+  }
 
   return (
     <main className="mx-auto max-w-md p-4 text-sm">
