@@ -25,6 +25,7 @@ import LoadingScreen from "@/components/LoadingScreen";
 import UsernameModal from "@/components/UsernameModal";
 import { subscribeUserProfile, claimUsername } from "@/lib/firestoreSessions";
 import Leaderboard from "@/components/Leaderboard";
+import { deployedAtIso } from "../buildInfo";
 
 /**
  * Single-file Next.js page (drop into app/page.tsx)
@@ -399,6 +400,17 @@ function Page() {
               </button>
             </>
           ) : null}
+        </div>
+        <div className="mt-2">
+          {(() => {
+            try {
+              const d = new Date(deployedAtIso);
+              if (!isNaN(d.getTime())) {
+                return <span>Last deployed: {d.toLocaleString()}</span>;
+              }
+            } catch {}
+            return null;
+          })()}
         </div>
       </footer>
     </main>
