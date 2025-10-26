@@ -1,5 +1,10 @@
 "use client";
-import { useParams, useRouter } from "next/navigation";
+import {
+  useParams,
+  useRouter,
+  usePathname,
+  useSearchParams,
+} from "next/navigation";
 import Link from "next/link";
 import { useEffect, useMemo, useState, useRef } from "react";
 import { Card, Input } from "@/components/layout";
@@ -35,6 +40,8 @@ import { SessionCard as UnifiedSessionCard } from "@/components/session/SessionC
 export default function ClubDetailPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
+  const pathname = usePathname();
+  const sp = useSearchParams();
   const id = String(params?.id || "");
   const [club, setClub] = useState<FirestoreClub | null>(null);
   const [clubReady, setClubReady] = useState(false);
@@ -60,6 +67,18 @@ export default function ClubDetailPage() {
       }),
     []
   );
+
+  // Require authentication to view this page
+  useEffect(() => {
+    if (!authReady) return;
+    if (!user) {
+      const qs = sp?.toString() || "";
+      const current = `${pathname}${qs ? `?${qs}` : ""}`;
+      try {
+        router.replace(`/auth?returnTo=${encodeURIComponent(current)}`);
+      } catch {}
+    }
+  }, [authReady, user, pathname, sp, router]);
 
   const isMember = useMemo(
     () => !!club && !!user && (club.memberUids || []).includes(user.uid),

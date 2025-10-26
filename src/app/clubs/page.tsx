@@ -1,5 +1,6 @@
 "use client";
 import Link from "next/link";
+import { useRouter, usePathname, useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { Card, Input } from "@/components/layout";
 import LoadingScreen from "@/components/LoadingScreen";
@@ -13,6 +14,9 @@ import {
 import type { FirestoreClub } from "@/lib/firestoreClubs";
 
 export default function ClubsListPage() {
+  const router = useRouter();
+  const pathname = usePathname();
+  const sp = useSearchParams();
   const [user, setUser] = useState<{
     uid: string;
     displayName?: string | null;
@@ -30,6 +34,18 @@ export default function ClubsListPage() {
       }),
     []
   );
+
+  // Require authentication to view this page
+  useEffect(() => {
+    if (!authReady) return;
+    if (!user) {
+      const qs = sp?.toString() || "";
+      const current = `${pathname}${qs ? `?${qs}` : ""}`;
+      try {
+        router.replace(`/auth?returnTo=${encodeURIComponent(current)}`);
+      } catch {}
+    }
+  }, [authReady, user, pathname, sp, router]);
 
   const [myClubs, setMyClubs] = useState<FirestoreClub[]>([]);
   const [clubsReady, setClubsReady] = useState(false);
