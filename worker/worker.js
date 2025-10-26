@@ -78,12 +78,23 @@ export default {
             console.log("telegram claim token result", result);
             if (result && env.TELEGRAM_BOT_TOKEN) {
               try {
+                const origin = req.headers.get("origin") || "";
+                const allowOrigin = ALLOW_ORIGINS.has(origin) ? origin : "";
+                const baseApp =
+                  allowOrigin || "https://bm25r.codingcrayons.com";
+                const clubId = (result && result.id) || "";
+                const clubUrl = clubId ? `${baseApp}/clubs/${clubId}` : baseApp;
+                const replyMarkup = {
+                  inline_keyboard: [[{ text: "View club", url: clubUrl }]],
+                };
                 await sendTelegram({
                   token: env.TELEGRAM_BOT_TOKEN,
                   chatId: chat.id,
                   text: `✅ Linked to <b>${escapeHtml(
                     result.name || ""
                   )}</b>club.`,
+                  replyMarkup,
+                  parse: "HTML",
                 });
               } catch (e) {
                 try {
@@ -1441,10 +1452,11 @@ async function claimTelegramLinkToken(env, token, chat) {
   try {
     const f = foundDoc.fields || {};
     let clubName = jsonFromFields(f.name) || "your club";
+    let clubId = "";
     // Attempt to read public club document for a better name
     try {
       const parts = String(name || "").split("/");
-      const clubId = parts[parts.length - 1] || "";
+      clubId = parts[parts.length - 1] || "";
       if (clubId) {
         const clubsCol =
           String(env?.STATS_TEST_MODE || "").toLowerCase() === "true" ||
@@ -1464,9 +1476,9 @@ async function claimTelegramLinkToken(env, token, chat) {
     try {
       console.log("claim:success", { clubName });
     } catch {}
-    return { name: clubName };
+    return { name: clubName, id: clubId };
   } catch {
-    return { name: "your club" };
+    return { name: "your club", id: "" };
   }
 }
 
