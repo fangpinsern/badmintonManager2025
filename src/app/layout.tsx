@@ -4,6 +4,7 @@ import "./globals.css";
 import AppHeader from "@/components/AppHeader";
 import ServiceWorkerRegister from "@/components/ServiceWorkerRegister";
 import { PushProvider } from "@/app/push/PushProvider";
+import UsernameEnforcer from "@/components/UsernameEnforcer";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -41,6 +42,7 @@ export default function RootLayout({
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
         <AppHeader />
+        <UsernameEnforcer />
         <ServiceWorkerRegister />
         <PushProvider>{children}</PushProvider>
       </body>
