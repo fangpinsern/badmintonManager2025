@@ -37,6 +37,12 @@ import { createClubSessionFeedMessage } from "@/lib/firestoreClubs";
 import { subscribeClubVenues, type ClubVenue } from "@/lib/firestoreClubs";
 import { SessionCard as UnifiedSessionCard } from "@/components/session/SessionCard";
 
+const clubPermissionErrorMessages = {
+  "permission-denied":
+    "You don't have permission to view this club. Please request admin to add your username to the club.",
+  unknown: "Unable to load this club.",
+};
+
 export default function ClubDetailPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
@@ -166,12 +172,12 @@ export default function ClubDetailPage() {
             String(code).includes("permission") ||
             code === "permission-denied"
           ) {
-            setClubError("You don't have permission to view this club.");
+            setClubError(clubPermissionErrorMessages["permission-denied"]);
           } else {
-            setClubError("Unable to load this club.");
+            setClubError(clubPermissionErrorMessages["unknown"]);
           }
         } catch {
-          setClubError("Unable to load this club.");
+          setClubError(clubPermissionErrorMessages["unknown"]);
         }
         setClubReady(true);
       },
@@ -217,6 +223,20 @@ export default function ClubDetailPage() {
         setFeed(res.items);
         setFeedCursor(res.cursor);
         setFeedHasMore(res.hasMore);
+      } catch (e: any) {
+        try {
+          const code = (e && (e.code || e?.name)) || "unknown";
+          if (
+            String(code).includes("permission") ||
+            code === "permission-denied"
+          ) {
+            setClubError(clubPermissionErrorMessages["permission-denied"]);
+          } else {
+            setClubError(clubPermissionErrorMessages["unknown"]);
+          }
+        } catch {
+          setClubError(clubPermissionErrorMessages["unknown"]);
+        }
       } finally {
         setFeedBusy(false);
       }
@@ -297,7 +317,7 @@ export default function ClubDetailPage() {
     return (
       <main className="mx-auto max-w-md p-4 text-sm">
         <Card>
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-2">
             <div className="text-gray-600">
               {clubError ? clubError : "Club not found."}
             </div>

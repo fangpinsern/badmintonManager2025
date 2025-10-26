@@ -82,8 +82,8 @@ export default {
                   token: env.TELEGRAM_BOT_TOKEN,
                   chatId: chat.id,
                   text: `✅ Linked to <b>${escapeHtml(
-                    result.name || "your club"
-                  )}</b>.`,
+                    result.name || ""
+                  )}</b>club.`,
                 });
               } catch (e) {
                 try {
