@@ -1932,6 +1932,7 @@ function localTimeToUtcTs(timeZone, year, monthIdx, day, hour, minute) {
 
 // Simple token formatter for reminder messages
 // Supports {date} as YYYY-MM-DD in the reminder's timezone
+// Also supports offsets: {date+Nd} / {date-Nd} (days), {date+Nw} / {date-Nw} (weeks)
 function formatReminderMessage(template, timeZone) {
   try {
     const d = new Date();
@@ -1948,7 +1949,24 @@ function formatReminderMessage(template, timeZone) {
     const mm = parts.month;
     const dd = parts.day;
     const dateStr = `${yyyy}-${mm}-${dd}`;
-    return String(template || "").replace(/\{date\}/g, dateStr);
+
+    // Replace offset tokens first, then the base {date}
+    let out = String(template || "");
+    out = out.replace(/\{date([+-]\d+)([dw])\}/g, (_m, numStr, unit) => {
+      const n = parseInt(numStr, 10);
+      if (!Number.isFinite(n)) return _m;
+      const days = unit === "w" ? n * 7 : n; // 'd' for days, 'w' for weeks
+      const d2 = new Date(d.getTime() + days * 24 * 60 * 60 * 1000);
+      const parts2 = Object.fromEntries(
+        fmt.formatToParts(d2).map((p) => [p.type, p.value])
+      );
+      const yyyy2 = parts2.year;
+      const mm2 = parts2.month;
+      const dd2 = parts2.day;
+      return `${yyyy2}-${mm2}-${dd2}`;
+    });
+    out = out.replace(/\{date\}/g, dateStr);
+    return out;
   } catch {
     return String(template || "");
   }
