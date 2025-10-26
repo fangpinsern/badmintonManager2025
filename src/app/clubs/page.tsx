@@ -1,6 +1,7 @@
 "use client";
 import Link from "next/link";
 import { useRouter, usePathname, useSearchParams } from "next/navigation";
+import { Suspense } from "react";
 import { useEffect, useMemo, useState } from "react";
 import { Card, Input } from "@/components/layout";
 import LoadingScreen from "@/components/LoadingScreen";
@@ -13,7 +14,7 @@ import {
 } from "@/lib/firestoreClubs";
 import type { FirestoreClub } from "@/lib/firestoreClubs";
 
-export default function ClubsListPage() {
+function ClubsListPageInner() {
   const router = useRouter();
   const pathname = usePathname();
   const sp = useSearchParams();
@@ -450,5 +451,21 @@ export default function ClubsListPage() {
         </div>
       )}
     </main>
+  );
+}
+
+export default function ClubsListPage() {
+  return (
+    <Suspense
+      fallback={
+        <main className="mx-auto max-w-md p-4 text-sm">
+          <Card>
+            <LoadingScreen variant="skeleton" count={5} />
+          </Card>
+        </main>
+      }
+    >
+      <ClubsListPageInner />
+    </Suspense>
   );
 }

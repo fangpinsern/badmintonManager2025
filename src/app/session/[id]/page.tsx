@@ -42,6 +42,7 @@ import {
   useSearchParams,
 } from "next/navigation";
 import { onAuthStateChanged } from "firebase/auth";
+import { Suspense } from "react";
 
 function SessionManager({ onBack }: { onBack: () => void }) {
   const { id } = useParams<{ id: string }>();
@@ -1755,7 +1756,9 @@ export default function SessionPage() {
 
   return (
     <main className="mx-auto max-w-md md:max-w-3xl lg:max-w-5xl xl:max-w-6xl p-4 text-sm">
-      <SessionManager onBack={onBack} />
+      <Suspense fallback={<LoadingScreen message="Loading…" />}>
+        <SessionManager onBack={onBack} />
+      </Suspense>
     </main>
   );
 }

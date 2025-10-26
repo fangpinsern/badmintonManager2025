@@ -5,6 +5,7 @@ import {
   usePathname,
   useSearchParams,
 } from "next/navigation";
+import { Suspense } from "react";
 import Link from "next/link";
 import { useEffect, useMemo, useState, useRef } from "react";
 import { Card, Input } from "@/components/layout";
@@ -43,7 +44,7 @@ const clubPermissionErrorMessages = {
   unknown: "Unable to load this club.",
 };
 
-export default function ClubDetailPage() {
+function ClubDetailPageInner() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
   const pathname = usePathname();
@@ -880,6 +881,22 @@ export default function ClubDetailPage() {
         }}
       />
     </main>
+  );
+}
+
+export default function ClubDetailPage() {
+  return (
+    <Suspense
+      fallback={
+        <main className="mx-auto max-w-md p-4 text-sm">
+          <Card>
+            <LoadingScreen />
+          </Card>
+        </main>
+      }
+    >
+      <ClubDetailPageInner />
+    </Suspense>
   );
 }
 

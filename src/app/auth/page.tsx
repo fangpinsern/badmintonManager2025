@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import { Suspense } from "react";
 import { Card } from "@/components/layout";
 import LoadingScreen from "@/components/LoadingScreen";
 import { auth } from "@/lib/firebase";
@@ -9,7 +10,7 @@ import { signInWithGoogleSafe } from "@/lib/authClient";
 import UsernameModal from "@/components/UsernameModal";
 import { getUserProfile, claimUsername } from "@/lib/firestoreSessions";
 
-export default function AuthPage() {
+function AuthPageInner() {
   const router = useRouter();
   const sp = useSearchParams();
   const returnToRaw = sp.get("returnTo") || "/";
@@ -117,5 +118,15 @@ export default function AuthPage() {
         </div>
       </Card>
     </main>
+  );
+}
+
+export default function AuthPage() {
+  return (
+    <Suspense
+      fallback={<LoadingScreen message="Checking your sign-in status…" />}
+    >
+      <AuthPageInner />
+    </Suspense>
   );
 }
