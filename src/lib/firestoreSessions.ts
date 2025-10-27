@@ -542,6 +542,44 @@ export async function saveSession(sessionId: string, payload: unknown) {
       }
     }
   } catch {}
+  // Best-effort: trigger calendar upsert if key fields changed (participants/date/time/venue)
+  try {
+    const beforeP = (prevPayload as any) || {};
+    const afterP = sanitized || {};
+    const namesFrom = (p: any): string[] => {
+      try {
+        const arr: any[] = Array.isArray(p?.players) ? p.players : [];
+        return arr
+          .map((x) => (x && (x.accountUid || "").toString().trim()) || "")
+          .filter((s) => !!s)
+          .sort();
+      } catch {
+        return [];
+      }
+    };
+    const beforeNames = namesFrom(beforeP).join("|");
+    const afterNames = namesFrom(afterP).join("|");
+    const participantsChanged = beforeNames !== afterNames;
+    const normVenue = (v: any) =>
+      (v && v.venue && v.venue.name ? String(v.venue.name) : "")
+        .trim()
+        .toLowerCase() || "";
+    const venueChanged = normVenue(beforeP) !== normVenue(afterP);
+    const dateChanged =
+      String(beforeP?.date || "") !== String(afterP?.date || "");
+    const timeChanged =
+      String(beforeP?.time || "") !== String(afterP?.time || "");
+    if (participantsChanged || venueChanged || dateChanged || timeChanged) {
+      const endpoint = (process.env.NEXT_PUBLIC_WORKER_BASE_URL as any)
+        ? `${process.env.NEXT_PUBLIC_WORKER_BASE_URL}/calendar/session-upsert`
+        : "/api/calendar/session-upsert";
+      await fetch(endpoint, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ organizerUid: uid, sessionId }),
+      });
+    }
+  } catch {}
 }
 
 // Allow a non-organizer privileged user (e.g., co-organizer) to save into the organizer's session doc.
@@ -693,6 +731,17 @@ export async function createSessionDoc(sessionId: string, payload: unknown) {
   } catch (e) {
     console.error("Error creating session doc", e);
   }
+  // Best-effort: trigger calendar upsert for this session (idempotent on worker side)
+  try {
+    const endpoint = (process.env.NEXT_PUBLIC_WORKER_BASE_URL as any)
+      ? `${process.env.NEXT_PUBLIC_WORKER_BASE_URL}/calendar/session-upsert`
+      : "/api/calendar/session-upsert";
+    await fetch(endpoint, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ organizerUid: uid, sessionId }),
+    });
+  } catch {}
 }
 
 export async function deleteSessionDoc(sessionId: string) {

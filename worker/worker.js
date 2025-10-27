@@ -478,6 +478,310 @@ export default {
       }
     }
 
+    // Calendar upsert: app → worker to create/update shared calendar event for a session (idempotent)
+    if (req.method === "POST" && url.pathname === "/calendar/session-upsert") {
+      let payload;
+      try {
+        payload = await req.json();
+      } catch {
+        return withCors(new Response("Bad JSON", { status: 400 }), req);
+      }
+      const organizerUid = String(payload?.organizerUid || "").trim();
+      const sessionId = String(payload?.sessionId || "").trim();
+      if (!organizerUid || !sessionId) {
+        return withCors(
+          new Response("Missing organizer/session", { status: 400 }),
+          req
+        );
+      }
+
+      const calendarId = String(env?.CALENDAR_ID || "").trim();
+      if (!calendarId) {
+        return withCors(
+          new Response("Missing CALENDAR_ID", { status: 500 }),
+          req
+        );
+      }
+
+      try {
+        console.log("[calendar] upsert request", {
+          organizerUid,
+          sessionId,
+          calendarId,
+          tz: String(env?.CALENDAR_TIMEZONE || "Asia/Singapore"),
+        });
+      } catch {}
+
+      // Read session and build attendees list based on linked users' preferences
+      const fsToken = await getAccessTokenScoped(
+        env,
+        "https://www.googleapis.com/auth/datastore"
+      );
+      const { url: baseUrl } = fsBases(env.GCP_PROJECT_ID, env.FIRESTORE_DB);
+      const userCol =
+        String(env?.STATS_TEST_MODE || "").toLowerCase() === "true" ||
+        env?.STATS_TEST_MODE === "1"
+          ? "users_test"
+          : "users";
+      const sRes = await fetch(
+        `${baseUrl}/${userCol}/${organizerUid}/sessions/${sessionId}`,
+        { headers: { authorization: `Bearer ${fsToken}` } }
+      );
+      if (!sRes.ok) {
+        try {
+          console.log("[calendar] session read failed", sRes.status);
+        } catch {}
+        return withCors(
+          new Response("Session read failed", { status: 502 }),
+          req
+        );
+      }
+      const sdoc = await sRes.json();
+      const sfields = sdoc.fields || {};
+      const spayload = jsonFromFields(sfields.payload) || {};
+      try {
+        const dateDbg = String(spayload?.date || "");
+        const timeDbg = String(spayload?.time || "");
+        const playersDbg = Array.isArray(spayload?.players)
+          ? spayload.players.length
+          : 0;
+        console.log("[calendar] session loaded", {
+          date: dateDbg,
+          time: timeDbg,
+          players: playersDbg,
+        });
+      } catch {}
+
+      // Collect linked uids from root field when available; otherwise derive from players[].accountUid
+      let linkedUids = [];
+      try {
+        const arr = jsonFromFields(sfields.linkedUids) || [];
+        if (Array.isArray(arr))
+          linkedUids = arr.filter((x) => typeof x === "string" && x);
+      } catch {}
+      if (!linkedUids.length) {
+        try {
+          const players = Array.isArray(spayload?.players)
+            ? spayload.players
+            : [];
+          linkedUids = players
+            .map((p) => (p && p.accountUid ? String(p.accountUid) : "").trim())
+            .filter(Boolean);
+        } catch {}
+      }
+      try {
+        console.log("[calendar] linked uids", {
+          count: linkedUids.length,
+        });
+      } catch {}
+
+      // Load userSensitive for each linked uid and build attendees list
+      const userSensitiveCol =
+        String(env?.STATS_TEST_MODE || "") === "1" ||
+        String(env?.STATS_TEST_MODE || "").toLowerCase() === "true"
+          ? "userSensitive_test"
+          : "userSensitive";
+      const attendees = [];
+      const seenEmails = new Set();
+      await Promise.all(
+        linkedUids.slice(0, 500).map(async (uid) => {
+          try {
+            const uRes = await fetch(`${baseUrl}/${userSensitiveCol}/${uid}`, {
+              headers: { authorization: `Bearer ${fsToken}` },
+            });
+            if (!uRes.ok) return;
+            const udoc = await uRes.json();
+            const uf = udoc.fields || {};
+            const data = jsonFromFields(uf) || {};
+            const enabled = !!(
+              data?.notifications?.calendarInvites?.enabled === true
+            );
+            const email = (data?.email || "").trim();
+            if (enabled && email && !seenEmails.has(email.toLowerCase())) {
+              seenEmails.add(email.toLowerCase());
+              attendees.push({ email });
+            }
+          } catch {}
+        })
+      );
+      try {
+        console.log("[calendar] attendees derived", {
+          count: attendees.length,
+        });
+      } catch {}
+
+      // Build event payload
+      const tz = String(env?.CALENDAR_TIMEZONE || "Asia/Singapore");
+      const date = String(spayload?.date || "");
+      const time = String(spayload?.time || "");
+      // Default 2 hours duration if not specified
+      const defaultDurationMin = Number(
+        env?.CALENDAR_DEFAULT_DURATION_MIN || 120
+      );
+      // Build RFC3339 local times; pass timeZone separately so Google adjusts
+      const startDateTime = date && time ? `${date}T${time}:00` : undefined;
+      let endDateTime = undefined;
+      if (startDateTime) {
+        try {
+          const [Y, M, D] = date.split("-").map((x) => Number(x));
+          const [h, m] = time.split(":").map((x) => Number(x));
+          // Compute end in UTC via Date using tz offset is non-trivial in Workers; approximate by minutes add
+          // Since we pass timeZone, Google will interpret local time; we can format end as same pattern
+          const endMin = defaultDurationMin;
+          const endH = h + Math.floor(endMin / 60);
+          const endM = m + (endMin % 60);
+          const carryH = Math.floor(endM / 60);
+          const finalM = endM % 60;
+          const finalH = (endH + carryH) % 24; // naive day wrap
+          const pad = (n) => String(n).padStart(2, "0");
+          endDateTime = `${date}T${pad(finalH)}:${pad(finalM)}:00`;
+        } catch {}
+      }
+
+      // Optional: include club name in summary if available
+      let clubName = "";
+      try {
+        const clubId =
+          spayload && spayload.clubId ? String(spayload.clubId) : "";
+        if (clubId) {
+          const clubsCol =
+            String(env?.STATS_TEST_MODE || "").toLowerCase() === "true" ||
+            env?.STATS_TEST_MODE === "1"
+              ? "clubs_test"
+              : "clubs";
+          const cres = await fetch(`${baseUrl}/${clubsCol}/${clubId}`, {
+            headers: { authorization: `Bearer ${fsToken}` },
+          });
+          if (cres.ok) {
+            const cdoc = await cres.json();
+            const cf = cdoc.fields || {};
+            clubName = String(jsonFromFields(cf.name) || "");
+          }
+        }
+      } catch {}
+
+      const venueName =
+        spayload && spayload.venue && spayload.venue.name
+          ? String(spayload.venue.name).trim()
+          : "";
+
+      const summaryBase = clubName
+        ? `Badminton Session - ${clubName}`
+        : "Badminton Session";
+      const description = "Managed by Badminton Manager";
+
+      const body = {
+        id: `sess_${organizerUid}_${sessionId}`,
+        summary: summaryBase,
+        location: venueName || undefined,
+        description,
+        start: startDateTime
+          ? { dateTime: startDateTime, timeZone: tz }
+          : undefined,
+        end: endDateTime ? { dateTime: endDateTime, timeZone: tz } : undefined,
+        attendees,
+        extendedProperties: {
+          private: { sessionId, organizerUid },
+        },
+      };
+
+      // Idempotent upsert: PATCH first; if 404 then INSERT with fixed id
+      const gToken = await getAccessTokenScoped(
+        env,
+        "https://www.googleapis.com/auth/calendar.events"
+      );
+      const base = `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(
+        calendarId
+      )}/events`;
+      const eventId = body.id;
+      let patched = false;
+      try {
+        try {
+          console.log("[calendar] patch attempt", { eventId });
+        } catch {}
+        const pres = await fetch(
+          `${base}/${encodeURIComponent(eventId)}?sendUpdates=all`,
+          {
+            method: "PATCH",
+            headers: {
+              authorization: `Bearer ${gToken}`,
+              "content-type": "application/json",
+            },
+            body: JSON.stringify(body),
+          }
+        );
+        if (pres.ok) {
+          patched = true;
+          const result = await pres.json().catch(() => ({}));
+          return withCors(
+            new Response(
+              JSON.stringify({ status: "patched", id: result?.id || eventId }),
+              { status: 200, headers: { "content-type": "application/json" } }
+            ),
+            req
+          );
+        }
+        if (pres.status !== 404) {
+          const txt = await pres.text().catch(() => "");
+          try {
+            console.log(
+              "[calendar] patch failed",
+              pres.status,
+              txt.slice(0, 200)
+            );
+          } catch {}
+          return withCors(
+            new Response(`patch failed: ${pres.status} ${txt}`.slice(0, 2048), {
+              status: 502,
+            }),
+            req
+          );
+        }
+      } catch (e) {}
+
+      if (!patched) {
+        try {
+          try {
+            console.log("[calendar] insert attempt", { eventId });
+          } catch {}
+          const ires = await fetch(`${base}?sendUpdates=all`, {
+            method: "POST",
+            headers: {
+              authorization: `Bearer ${gToken}`,
+              "content-type": "application/json",
+            },
+            body: JSON.stringify(body),
+          });
+          if (!ires.ok) {
+            const txt = await ires.text().catch(() => "");
+            return withCors(
+              new Response(
+                `insert failed: ${ires.status} ${txt}`.slice(0, 2048),
+                { status: 502 }
+              ),
+              req
+            );
+          }
+          const result = await ires.json().catch(() => ({}));
+          try {
+            console.log("[calendar] inserted", { id: result?.id || eventId });
+          } catch {}
+          return withCors(
+            new Response(
+              JSON.stringify({ status: "inserted", id: result?.id || eventId }),
+              { status: 200, headers: { "content-type": "application/json" } }
+            ),
+            req
+          );
+        } catch (e) {
+          try {
+            console.log("[calendar] insert error", e);
+          } catch {}
+          return withCors(new Response("insert error", { status: 502 }), req);
+        }
+      }
+    }
+
     if (req.method !== "POST") {
       return withCors(new Response("Method Not Allowed", { status: 405 }), req);
     }
