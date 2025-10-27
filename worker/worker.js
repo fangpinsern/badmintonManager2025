@@ -612,6 +612,12 @@ export default {
 
       // Build event payload
       const tz = String(env?.CALENDAR_TIMEZONE || "Asia/Singapore");
+      const sendUpdates = String(
+        env?.CALENDAR_SEND_UPDATES || "none"
+      ).toLowerCase(); // 'none' | 'all' | 'externalOnly'
+      const allowAttendees =
+        String(env?.CALENDAR_ALLOW_ATTENDEES || "true").toLowerCase() ===
+        "true";
       const date = String(spayload?.date || "");
       const time = String(spayload?.time || "");
       // Default 2 hours duration if not specified
@@ -695,7 +701,7 @@ export default {
           ? { dateTime: startDateTime, timeZone: tz }
           : undefined,
         end: endDateTime ? { dateTime: endDateTime, timeZone: tz } : undefined,
-        attendees,
+        attendees: allowAttendees ? attendees : undefined,
         extendedProperties: {
           private: { sessionId, organizerUid },
         },
@@ -715,7 +721,9 @@ export default {
           console.log("[calendar] patch attempt", { eventId });
         } catch {}
         const pres = await fetch(
-          `${base}/${encodeURIComponent(eventId)}?sendUpdates=all`,
+          `${base}/${encodeURIComponent(
+            eventId
+          )}?sendUpdates=${encodeURIComponent(sendUpdates)}`,
           {
             method: "PATCH",
             headers: {
@@ -759,14 +767,17 @@ export default {
           try {
             console.log("[calendar] insert attempt", { eventId });
           } catch {}
-          const ires = await fetch(`${base}?sendUpdates=all`, {
-            method: "POST",
-            headers: {
-              authorization: `Bearer ${gToken}`,
-              "content-type": "application/json",
-            },
-            body: JSON.stringify(body),
-          });
+          const ires = await fetch(
+            `${base}?sendUpdates=${encodeURIComponent(sendUpdates)}`,
+            {
+              method: "POST",
+              headers: {
+                authorization: `Bearer ${gToken}`,
+                "content-type": "application/json",
+              },
+              body: JSON.stringify(body),
+            }
+          );
           if (!ires.ok) {
             const txt = await ires.text().catch(() => "");
             return withCors(
