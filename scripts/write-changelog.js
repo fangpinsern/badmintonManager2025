@@ -11,6 +11,19 @@ function safeExec(cmd) {
   }
 }
 
+function maybeExpandGitHistory(limit) {
+  try {
+    const isShallow = safeExec("git rev-parse --is-shallow-repository");
+    if (String(isShallow).toLowerCase().includes("true")) {
+      // Try to deepen or unshallow; ignore failures
+      safeExec("git fetch --tags --prune --deepen=" + limit);
+      safeExec("git fetch --unshallow --tags --prune");
+    }
+  } catch {
+    // ignore
+  }
+}
+
 function getBranchName() {
   return (
     process.env.GITHUB_REF_NAME || safeExec("git rev-parse --abbrev-ref HEAD")
@@ -48,13 +61,15 @@ function getCommits(limit) {
 
 function main() {
   try {
+    const limit = Number(process.env.CHANGELOG_LIMIT || 200);
+    maybeExpandGitHistory(limit);
     const publicDir = path.join(__dirname, "..", "public");
     fs.mkdirSync(publicDir, { recursive: true });
     const payload = {
       branch: getBranchName(),
       repository: getRepositorySlug(),
       generatedAtIso: new Date().toISOString(),
-      commits: getCommits(Number(process.env.CHANGELOG_LIMIT || 200)),
+      commits: getCommits(limit),
     };
     const outPath = path.join(publicDir, "changelog.json");
     fs.writeFileSync(outPath, JSON.stringify(payload, null, 2) + "\n", "utf8");

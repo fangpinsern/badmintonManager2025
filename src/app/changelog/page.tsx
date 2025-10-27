@@ -29,7 +29,9 @@ export default function ChangelogPage() {
     let cancelled = false;
     (async () => {
       try {
-        const res = await fetch("/changelog.json", { cache: "no-store" });
+        const res = await fetch(`/changelog.json?ts=${Date.now()}`, {
+          cache: "no-store",
+        });
         if (!res.ok) throw new Error("Failed to load changelog");
         const json = (await res.json()) as ChangelogPayload;
         if (!cancelled) setPayload(json);
