@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - "feature/**"
+      - "remote"
   workflow_dispatch: {}
 
 jobs:
