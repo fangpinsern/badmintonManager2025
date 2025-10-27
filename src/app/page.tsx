@@ -367,55 +367,6 @@ function Page() {
           onBack={() => setSelectedSessionId(null)}
         />
       )} */}
-
-      <footer className="mt-12 text-center text-xs text-gray-400">
-        <div className="flex items-center justify-center gap-3">
-          <a
-            href={
-              (process.env.NEXT_PUBLIC_TELEGRAM_URL as string) ||
-              "https://t.me/bm25r"
-            }
-            target="_blank"
-            rel="noopener noreferrer"
-            className="rounded border px-2 py-1 text-xs"
-          >
-            Subscribe for Updates
-          </a>
-          <Link href="/faq" className="rounded border px-2 py-1 text-xs">
-            FAQ
-          </Link>
-          <Link href="/changelog" className="rounded border px-2 py-1 text-xs">
-            Changelog
-          </Link>
-          {user ? (
-            <>
-              <Link
-                href="/profile"
-                className="rounded border px-2 py-1 text-xs"
-              >
-                Profile
-              </Link>
-              <button
-                onClick={() => signOut(auth)}
-                className="rounded border px-2 py-1 text-xs"
-              >
-                Sign out
-              </button>
-            </>
-          ) : null}
-        </div>
-        <div className="mt-2">
-          {(() => {
-            try {
-              const d = new Date(deployedAtIso);
-              if (!isNaN(d.getTime())) {
-                return <span>Last deployed: {d.toLocaleString()}</span>;
-              }
-            } catch {}
-            return null;
-          })()}
-        </div>
-      </footer>
     </main>
   );
 }

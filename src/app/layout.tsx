@@ -6,6 +6,7 @@ import ServiceWorkerRegister from "@/components/ServiceWorkerRegister";
 import { PushProvider } from "@/app/push/PushProvider";
 import UsernameEnforcer from "@/components/UsernameEnforcer";
 import { Suspense } from "react";
+import AppFooter from "@/components/AppFooter";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -48,6 +49,7 @@ export default function RootLayout({
         </Suspense>
         <ServiceWorkerRegister />
         <PushProvider>{children}</PushProvider>
+        <AppFooter />
       </body>
     </html>
   );
