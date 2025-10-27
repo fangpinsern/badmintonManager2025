@@ -592,390 +592,393 @@ export default {
       return withCors(resp, req);
     }
 
-    try {
-      let body;
+    // Stats recalculation endpoint (explicit path)
+    if (
+      req.method === "POST" &&
+      (url.pathname === "/stats/recalc" || url.pathname === "/") // keep "/" for backward compatibility
+    ) {
       try {
-        body = await req.json();
-      } catch {
-        return withCors(new Response("Bad JSON", { status: 400 }), req);
-      }
-
-      const url = new URL(req.url);
-      const dryRun = url.searchParams.get("dryRun") === "1" || !!body?.dryRun;
-      const isTest =
-        url.searchParams.get("test") === "1" ||
-        !!body?.test ||
-        String(env?.STATS_TEST_MODE || "").toLowerCase() === "true" ||
-        env?.STATS_TEST_MODE === "1";
-
-      const organizerUid = body?.organizerUid;
-      const sessionId = body?.sessionId;
-      if (!organizerUid || !sessionId) {
-        return withCors(new Response("Bad Request", { status: 400 }), req);
-      }
-
-      const token = await getAccessToken(env);
-      const { url: baseUrl } = fsBases(env.GCP_PROJECT_ID, env.FIRESTORE_DB);
-      const userCol = isTest ? "users_test" : "users";
-      const sessionRes = await fetch(
-        `${baseUrl}/${userCol}/${organizerUid}/sessions/${sessionId}`,
-        {
-          headers: { authorization: `Bearer ${token}` },
+        let body;
+        try {
+          body = await req.json();
+        } catch {
+          return withCors(new Response("Bad JSON", { status: 400 }), req);
         }
-      );
-      if (!sessionRes.ok) {
-        return withCors(
-          new Response("Session read failed", { status: 502 }),
-          req
+
+        const url = new URL(req.url);
+        const dryRun = url.searchParams.get("dryRun") === "1" || !!body?.dryRun;
+        const isTest =
+          url.searchParams.get("test") === "1" ||
+          !!body?.test ||
+          String(env?.STATS_TEST_MODE || "").toLowerCase() === "true" ||
+          env?.STATS_TEST_MODE === "1";
+
+        const organizerUid = body?.organizerUid;
+        const sessionId = body?.sessionId;
+        if (!organizerUid || !sessionId) {
+          return withCors(new Response("Bad Request", { status: 400 }), req);
+        }
+
+        const token = await getAccessToken(env);
+        const { url: baseUrl } = fsBases(env.GCP_PROJECT_ID, env.FIRESTORE_DB);
+        const userCol = isTest ? "users_test" : "users";
+        const sessionRes = await fetch(
+          `${baseUrl}/${userCol}/${organizerUid}/sessions/${sessionId}`,
+          {
+            headers: { authorization: `Bearer ${token}` },
+          }
         );
-      }
-      const sessionDoc = await sessionRes.json();
-
-      const payload = sessionDoc?.fields?.payload
-        ? jsonFromFields(sessionDoc.fields.payload)
-        : {};
-      if (!payload?.ended) {
-        return withCors(
-          new Response(
-            JSON.stringify({
-              error: "session_not_ended",
-              message: "Session has not ended yet.",
-            }),
-            { status: 400, headers: { "content-type": "application/json" } }
-          ),
-          req
-        );
-      }
-
-      const players = Array.isArray(payload.players) ? payload.players : [];
-      const gamesAll = Array.isArray(payload.games) ? payload.games : [];
-      const games = gamesAll.filter((g) => !g?.voided);
-      if (!games.length)
-        return withCors(new Response("No games", { status: 200 }), req);
-
-      const { pidToUid, perUser, meanMs } = buildPerUserAggregates(
-        players,
-        games,
-        payload
-      );
-
-      // --- Friendship (teammate) pair aggregation for this session ---
-      const pairAgg = buildFriendPairAggregates(
-        games,
-        pidToUid,
-        meanMs,
-        payload
-      );
-
-      // Opponent (head-to-head) pair aggregation (singles & doubles)
-      // For doubles, count cross-team pairs (every A vs every B).
-      // function canonicalPair(a, b) { return a < b ? [a, b] : [b, a]; }
-      const oppAgg = buildOpponentPairAggregates(
-        games,
-        pidToUid,
-        meanMs,
-        payload
-      );
-
-      // Best-effort: edit the original Telegram message with a concise end-of-session summary
-      // This is additive and fully gated; failures are swallowed to avoid altering existing behavior
-      try {
-        const mid = Number(payload?.telegramMessageId || 0);
-        const clubIdForTelegram =
-          typeof payload?.clubId === "string" && payload.clubId
-            ? String(payload.clubId)
-            : "";
-        if (mid && clubIdForTelegram) {
-          // Read Telegram config from protected sensitive notifications doc
-          const sensitiveCol =
-            String(env?.STATS_TEST_MODE || "") === "1" ||
-            String(env?.STATS_TEST_MODE || "").toLowerCase() === "true"
-              ? "clubSensitive_test"
-              : "clubSensitive";
-          const notiRes = await fetch(
-            `${baseUrl}/${sensitiveCol}/${clubIdForTelegram}/sensitive/notifications`,
-            { headers: { authorization: `Bearer ${token}` } }
+        if (!sessionRes.ok) {
+          return withCors(
+            new Response("Session read failed", { status: 502 }),
+            req
           );
-          if (notiRes.ok) {
-            const notiDoc = await notiRes.json();
-            const nf = notiDoc.fields || {};
-            const telegram = jsonFromFields(nf.telegram) || {};
-            const linked =
-              !!telegram.enabled &&
-              String(telegram?.linkState || "") === "linked" &&
-              !!telegram.chatId;
-            const botToken = env.TELEGRAM_BOT_TOKEN;
+        }
+        const sessionDoc = await sessionRes.json();
 
-            if (linked && botToken) {
-              // Build concise, comparable summary body
-              const date = String(payload?.date || "");
-              const time = String(payload?.time || "");
-              const playersAll = Array.isArray(payload?.players)
-                ? payload.players
-                : [];
-              const gamesNonVoided = Array.isArray(gamesAll)
-                ? gamesAll.filter((g) => !g?.voided)
-                : [];
-              const avgMin = Math.round(
-                (meanMs || meanDurationMs(gamesNonVoided)) / 60000
-              );
+        const payload = sessionDoc?.fields?.payload
+          ? jsonFromFields(sessionDoc.fields.payload)
+          : {};
+        if (!payload?.ended) {
+          return withCors(
+            new Response(
+              JSON.stringify({
+                error: "session_not_ended",
+                message: "Session has not ended yet.",
+              }),
+              { status: 400, headers: { "content-type": "application/json" } }
+            ),
+            req
+          );
+        }
 
-              const summaryText = composeSessionSummary({
-                date,
-                time,
-                players: playersAll,
-                games: gamesNonVoided,
-                avgMin,
-              });
+        const players = Array.isArray(payload.players) ? payload.players : [];
+        const gamesAll = Array.isArray(payload.games) ? payload.games : [];
+        const games = gamesAll.filter((g) => !g?.voided);
+        if (!games.length)
+          return withCors(new Response("No games", { status: 200 }), req);
 
-              // Keep link to session
-              const origin = req.headers.get("Origin") || "";
-              const allowOrigin = ALLOW_ORIGINS.has(origin)
-                ? origin
-                : String(env?.APP_BASE_URL || "");
-              const baseApp = allowOrigin || "https://bm25r.codingcrayons.com";
-              const sessionUrl = `${baseApp}/session/${sessionId}`;
-              const replyMarkup = {
-                inline_keyboard: [
-                  [{ text: "See session stats", url: sessionUrl }],
-                ],
-              };
+        const { pidToUid, perUser, meanMs } = buildPerUserAggregates(
+          players,
+          games,
+          payload
+        );
 
-              try {
-                await editTelegramMessage({
-                  token: botToken,
-                  chatId: telegram.chatId,
-                  messageId: mid,
-                  text: summaryText,
-                  replyMarkup,
-                  parse: "HTML",
+        // --- Friendship (teammate) pair aggregation for this session ---
+        const pairAgg = buildFriendPairAggregates(
+          games,
+          pidToUid,
+          meanMs,
+          payload
+        );
+
+        // Opponent (head-to-head) pair aggregation (singles & doubles)
+        // For doubles, count cross-team pairs (every A vs every B).
+        // function canonicalPair(a, b) { return a < b ? [a, b] : [b, a]; }
+        const oppAgg = buildOpponentPairAggregates(
+          games,
+          pidToUid,
+          meanMs,
+          payload
+        );
+
+        // Best-effort: edit the original Telegram message with a concise end-of-session summary
+        // This is additive and fully gated; failures are swallowed to avoid altering existing behavior
+        try {
+          const mid = Number(payload?.telegramMessageId || 0);
+          const clubIdForTelegram =
+            typeof payload?.clubId === "string" && payload.clubId
+              ? String(payload.clubId)
+              : "";
+          if (mid && clubIdForTelegram) {
+            // Read Telegram config from protected sensitive notifications doc
+            const sensitiveCol =
+              String(env?.STATS_TEST_MODE || "") === "1" ||
+              String(env?.STATS_TEST_MODE || "").toLowerCase() === "true"
+                ? "clubSensitive_test"
+                : "clubSensitive";
+            const notiRes = await fetch(
+              `${baseUrl}/${sensitiveCol}/${clubIdForTelegram}/sensitive/notifications`,
+              { headers: { authorization: `Bearer ${token}` } }
+            );
+            if (notiRes.ok) {
+              const notiDoc = await notiRes.json();
+              const nf = notiDoc.fields || {};
+              const telegram = jsonFromFields(nf.telegram) || {};
+              const linked =
+                !!telegram.enabled &&
+                String(telegram?.linkState || "") === "linked" &&
+                !!telegram.chatId;
+              const botToken = env.TELEGRAM_BOT_TOKEN;
+
+              if (linked && botToken) {
+                // Build concise, comparable summary body
+                const date = String(payload?.date || "");
+                const time = String(payload?.time || "");
+                const playersAll = Array.isArray(payload?.players)
+                  ? payload.players
+                  : [];
+                const gamesNonVoided = Array.isArray(gamesAll)
+                  ? gamesAll.filter((g) => !g?.voided)
+                  : [];
+                const avgMin = Math.round(
+                  (meanMs || meanDurationMs(gamesNonVoided)) / 60000
+                );
+
+                const summaryText = composeSessionSummary({
+                  date,
+                  time,
+                  players: playersAll,
+                  games: gamesNonVoided,
+                  avgMin,
                 });
-              } catch (e) {
+
+                // Keep link to session
+                const origin = req.headers.get("Origin") || "";
+                const allowOrigin = ALLOW_ORIGINS.has(origin)
+                  ? origin
+                  : String(env?.APP_BASE_URL || "");
+                const baseApp =
+                  allowOrigin || "https://bm25r.codingcrayons.com";
+                const sessionUrl = `${baseApp}/session/${sessionId}`;
+                const replyMarkup = {
+                  inline_keyboard: [
+                    [{ text: "See session stats", url: sessionUrl }],
+                  ],
+                };
+
                 try {
-                  console.log("telegram end-summary edit failed", e);
-                } catch {}
+                  await editTelegramMessage({
+                    token: botToken,
+                    chatId: telegram.chatId,
+                    messageId: mid,
+                    text: summaryText,
+                    replyMarkup,
+                    parse: "HTML",
+                  });
+                } catch (e) {
+                  try {
+                    console.log("telegram end-summary edit failed", e);
+                  } catch {}
+                }
               }
             }
           }
+        } catch (e) {
+          try {
+            console.log("end-summary block error", e);
+          } catch {}
         }
-      } catch (e) {
-        try {
-          console.log("end-summary block error", e);
-        } catch {}
-      }
 
-      const uids = Object.keys(perUser);
-      if (!uids.length)
-        return withCors(
-          new Response("No linked players", { status: 200 }),
-          req
-        );
+        const uids = Object.keys(perUser);
+        if (!uids.length)
+          return withCors(
+            new Response("No linked players", { status: 200 }),
+            req
+          );
 
-      // ----------------------------
-      // Elo ratings computation (background)
-      // ----------------------------
-      // Notes/assumptions:
-      // - We compute Elo for both modes; current UI does not display, we store under users/{uid}.elo
-      // - Trust weights follow docs/elo.md §2.4 using available links. No confirmation flags in payload, so verification multiplier=1.0.
-      // - MOV multiplier uses Math.log; all math fits raw JS (no special libraries needed).
-      // - Doubles chemistry is stored on friendEdges/{u1__u2}.chemistry.delta and updated with decay; requires reading current value once.
-      // - Idempotency: per-user gate under users/{uid}/gates/elo:session:{organizer_session} to prevent double-apply.
+        // ----------------------------
+        // Elo ratings computation (background)
+        // ----------------------------
+        const {
+          userElo,
+          updatedUsers,
+          chemistryByEdge,
+          updatedPairs,
+          allLinkedUids,
+        } = await computeEloAndChemistry({
+          games,
+          pidToUid,
+          isTest,
+          env,
+          baseUrl,
+          userCol,
+          token,
+          payload,
+        });
 
-      const {
-        userElo,
-        updatedUsers,
-        chemistryByEdge,
-        updatedPairs,
-        allLinkedUids,
-      } = await computeEloAndChemistry({
-        games,
-        pidToUid,
-        isTest,
-        env,
-        baseUrl,
-        userCol,
-        token,
-        payload,
-      });
+        console.log("uids", uids);
+        if (dryRun) {
+          const sessionKey = `${organizerUid}_${sessionId}`;
+          const endMonth = monthKey(
+            payload.endedAt || (games[games.length - 1] || {}).endedAt
+          );
+          const summary = Object.fromEntries(
+            Object.entries(perUser).map(([uid, v]) => [
+              uid,
+              {
+                singles: v.singles,
+                doubles: v.doubles,
+                totals: v.totals,
+                recentCount: v.recent.length,
+                recent: v.recent,
+              },
+            ])
+          );
+          const pairs = Array.from(pairAgg.values());
+          const opp = Array.from(oppAgg.values());
+          const eloPreview = Object.fromEntries(
+            Array.from(allLinkedUids).map((u) => [u, userElo.get(u)])
+          );
+          const chemPreview = Object.fromEntries(
+            Array.from(chemistryByEdge.entries())
+          );
+          return withCors(
+            new Response(
+              JSON.stringify(
+                {
+                  sessionKey,
+                  endMonth,
+                  users: summary,
+                  pairs,
+                  opp,
+                  eloPreview,
+                  chemPreview,
+                },
+                null,
+                2
+              ),
+              {
+                status: 200,
+                headers: { "content-type": "application/json" },
+              }
+            ),
+            req
+          );
+        }
 
-      console.log("uids", uids);
-      if (dryRun) {
         const sessionKey = `${organizerUid}_${sessionId}`;
         const endMonth = monthKey(
           payload.endedAt || (games[games.length - 1] || {}).endedAt
         );
-        const summary = Object.fromEntries(
-          Object.entries(perUser).map(([uid, v]) => [
-            uid,
-            {
-              singles: v.singles,
-              doubles: v.doubles,
-              totals: v.totals,
-              recentCount: v.recent.length,
-              recent: v.recent,
-            },
-          ])
-        );
-        const pairs = Array.from(pairAgg.values());
-        const opp = Array.from(oppAgg.values());
-        const eloPreview = Object.fromEntries(
-          Array.from(allLinkedUids).map((u) => [u, userElo.get(u)])
-        );
-        const chemPreview = Object.fromEntries(
-          Array.from(chemistryByEdge.entries())
-        );
-        return withCors(
-          new Response(
-            JSON.stringify(
-              {
+        const rootCol = isTest ? "userStats_test" : "userStats";
+
+        // ----------------------------
+        // Per-user writes (granular gates; split into two commits per user)
+        // ----------------------------
+        await commitPerUserStats({
+          uids,
+          perUser,
+          sessionKey,
+          endMonth,
+          rootCol,
+          env,
+          token,
+        });
+
+        await commitEloWrites({
+          updatedUsers,
+          userElo,
+          userCol,
+          organizerUid,
+          sessionId,
+          env,
+          token,
+        });
+
+        // ----------------------------
+        // Friendship graph + Global index (granular gates; one commit per edge)
+        // ----------------------------
+        await commitFriendEdgesAndMirrors({
+          pairAgg,
+          endMonth,
+          rootCol,
+          isTest,
+          sessionKey,
+          env,
+          token,
+          chemistryByEdge,
+        });
+
+        // Opponent edges and mirrors
+        await commitOpponentEdgesAndMirrors({
+          oppAgg,
+          endMonth,
+          rootCol,
+          isTest,
+          sessionKey,
+          env,
+          token,
+        });
+
+        // ----------------------------
+        // Club-scoped stats (in addition to global)
+        // ----------------------------
+        const clubId =
+          typeof payload?.clubId === "string" && payload.clubId
+            ? String(payload.clubId)
+            : "";
+        if (clubId) {
+          try {
+            const clubsCol = isTest ? "clubs_test" : "clubs";
+            const members = await fetchClubMembers({
+              clubId,
+              isTest,
+              baseUrl,
+              token,
+            });
+            if (members && members.size) {
+              // Per-user writes for club members only
+              await commitClubPerUserStats({
+                uids,
+                perUser,
+                memberSet: members,
+                clubsCol,
+                clubId,
                 sessionKey,
                 endMonth,
-                users: summary,
-                pairs,
-                opp,
-                eloPreview,
-                chemPreview,
-              },
-              null,
-              2
-            ),
-            {
-              status: 200,
-              headers: { "content-type": "application/json" },
+                env,
+                token,
+              });
+
+              // Club friend edges and mirrors: only if both users are members
+              await commitClubFriendEdgesAndMirrors({
+                pairAgg,
+                memberSet: members,
+                clubsCol,
+                clubId,
+                endMonth,
+                sessionKey,
+                env,
+                token,
+                chemistryByEdge,
+              });
+
+              // Club opponent edges and mirrors: only if both users are members
+              await commitClubOpponentEdgesAndMirrors({
+                oppAgg,
+                memberSet: members,
+                clubsCol,
+                clubId,
+                endMonth,
+                sessionKey,
+                env,
+                token,
+              });
             }
-          ),
+          } catch (e) {
+            try {
+              console.log("club-stats error", e);
+            } catch {}
+          }
+        }
+
+        await notifyStatsUpdate({ uids, organizerUid, sessionId, env });
+
+        return withCors(new Response("OK"), req);
+      } catch (e) {
+        console.log("error", e);
+        return withCors(
+          new Response(`Error: ${e?.message || "Internal Error"}`, {
+            status: 500,
+          }),
           req
         );
       }
-
-      const sessionKey = `${organizerUid}_${sessionId}`;
-      const endMonth = monthKey(
-        payload.endedAt || (games[games.length - 1] || {}).endedAt
-      );
-      const rootCol = isTest ? "userStats_test" : "userStats";
-
-      // ----------------------------
-      // Per-user writes (granular gates; split into two commits per user)
-      // ----------------------------
-      await commitPerUserStats({
-        uids,
-        perUser,
-        sessionKey,
-        endMonth,
-        rootCol,
-        env,
-        token,
-      });
-
-      await commitEloWrites({
-        updatedUsers,
-        userElo,
-        userCol,
-        organizerUid,
-        sessionId,
-        env,
-        token,
-      });
-
-      // ----------------------------
-      // Friendship graph + Global index (granular gates; one commit per edge)
-      // ----------------------------
-      await commitFriendEdgesAndMirrors({
-        pairAgg,
-        endMonth,
-        rootCol,
-        isTest,
-        sessionKey,
-        env,
-        token,
-        chemistryByEdge,
-      });
-
-      // Opponent edges and mirrors
-      await commitOpponentEdgesAndMirrors({
-        oppAgg,
-        endMonth,
-        rootCol,
-        isTest,
-        sessionKey,
-        env,
-        token,
-      });
-
-      // ----------------------------
-      // Club-scoped stats (in addition to global)
-      // ----------------------------
-      const clubId =
-        typeof payload?.clubId === "string" && payload.clubId
-          ? String(payload.clubId)
-          : "";
-      if (clubId) {
-        try {
-          const clubsCol = isTest ? "clubs_test" : "clubs";
-          const members = await fetchClubMembers({
-            clubId,
-            isTest,
-            baseUrl,
-            token,
-          });
-          if (members && members.size) {
-            // Per-user writes for club members only
-            await commitClubPerUserStats({
-              uids,
-              perUser,
-              memberSet: members,
-              clubsCol,
-              clubId,
-              sessionKey,
-              endMonth,
-              env,
-              token,
-            });
-
-            // Club friend edges and mirrors: only if both users are members
-            await commitClubFriendEdgesAndMirrors({
-              pairAgg,
-              memberSet: members,
-              clubsCol,
-              clubId,
-              endMonth,
-              sessionKey,
-              env,
-              token,
-              chemistryByEdge,
-            });
-
-            // Club opponent edges and mirrors: only if both users are members
-            await commitClubOpponentEdgesAndMirrors({
-              oppAgg,
-              memberSet: members,
-              clubsCol,
-              clubId,
-              endMonth,
-              sessionKey,
-              env,
-              token,
-            });
-          }
-        } catch (e) {
-          try {
-            console.log("club-stats error", e);
-          } catch {}
-        }
-      }
-
-      await notifyStatsUpdate({ uids, organizerUid, sessionId, env });
-
-      return withCors(new Response("OK"), req);
-    } catch (e) {
-      console.log("error", e);
-      return withCors(
-        new Response(`Error: ${e?.message || "Internal Error"}`, {
-          status: 500,
-        }),
-        req
-      );
     }
+
+    // If we reached here, POST path is not recognized
+    return withCors(new Response("Not Found", { status: 404 }), req);
   },
 };
 

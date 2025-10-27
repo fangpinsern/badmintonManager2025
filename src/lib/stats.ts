@@ -20,6 +20,9 @@ export async function triggerStatsRecalc(
       (process.env.NEXT_PUBLIC_STATS_WORKER_URL as string) ||
       "https://statscalc.techstufffang.workers.dev";
 
+    // Use explicit stats endpoint; remain compatible if caller already includes the path
+    const targetUrl = `${workerUrl}/stats/recalc`;
+
     const envTest = isTestMode();
 
     const body: any = {
@@ -37,7 +40,7 @@ export async function triggerStatsRecalc(
       body: JSON.stringify(body),
     };
 
-    const p = fetch(workerUrl, fetchInit);
+    const p = fetch(targetUrl, fetchInit);
     if (!fireAndForget) {
       const res = await p;
       return res;
