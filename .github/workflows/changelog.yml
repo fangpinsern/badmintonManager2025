@@ -33,13 +33,13 @@ jobs:
           CHANGELOG_LIMIT=400 node scripts/write-changelog.js
         working-directory: .
 
-      - name: Build
-        run: npm run build
-        working-directory: .
+      # - name: Build
+      #   run: npm run build
+      #   working-directory: .
 
-      # Upload the generated changelog JSON (optional artifact retention)
-      - name: Upload changelog artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: changelog-json
-          path: public/changelog.json
+      # # Upload the generated changelog JSON (optional artifact retention)
+      # - name: Upload changelog artifact
+      #   uses: actions/upload-artifact@v4
+      #   with:
+      #     name: changelog-json
+      #     path: public/changelog.json

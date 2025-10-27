@@ -13,6 +13,8 @@ type ChangelogPayload = {
     author: string;
     dateIso: string;
     message: string;
+    title?: string;
+    body?: string;
   }>;
 };
 
@@ -85,7 +87,18 @@ export default function ChangelogPage() {
               </span>
               <span className="text-[11px] text-gray-500">by {c.author}</span>
             </div>
-            <p className="mt-2 text-sm leading-6 text-gray-800">{c.message}</p>
+            <div className="mt-2 text-sm leading-6 text-gray-800">
+              <div className="font-medium">{c.title || c.message}</div>
+              {(() => {
+                const body = (c as any).body as string | undefined;
+                if (!body) return null;
+                return (
+                  <pre className="whitespace-pre-wrap break-words text-gray-700 mt-1 text-[13px]">
+                    {body}
+                  </pre>
+                );
+              })()}
+            </div>
             <div className="mt-3 flex gap-2 text-xs">
               <Link
                 className="rounded-full border px-3 py-1 text-gray-700 hover:bg-gray-100"

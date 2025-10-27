@@ -22,7 +22,7 @@ function getRepositorySlug() {
 }
 
 function getCommits(limit) {
-  const format = "%H%x1f%an%x1f%ad%x1f%s%x1e"; // record sep 0x1e, field sep 0x1f
+  const format = "%H%x1f%an%x1f%ad%x1f%s%x1f%b%x1e"; // record sep 0x1e, field sep 0x1f
   const raw = safeExec(
     `git log --date=iso --pretty=format:${format} -n ${limit}`
   );
@@ -32,13 +32,16 @@ function getCommits(limit) {
     .map((line) => line.trim())
     .filter(Boolean)
     .map((rec) => {
-      const [hash, author, dateIso, subject] = rec.split("\x1f");
+      const [hash, author, dateIso, subject, body] = rec.split("\x1f");
       return {
         commitFull: hash,
         commit: hash ? hash.slice(0, 7) : "",
         author: author || "",
         dateIso: dateIso || new Date().toISOString(),
+        // keep legacy 'message' as the subject/title for backwards compatibility
         message: subject || "",
+        title: subject || "",
+        body: (body || "").trim(),
       };
     });
 }
