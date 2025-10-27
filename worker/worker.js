@@ -670,8 +670,24 @@ export default {
         : "Badminton Session";
       const description = "Managed by Badminton Manager";
 
+      // Build deterministic, alphanumeric-only event id: 'sess' + sha256(organizerUid|sessionId)
+      async function sha256Hex(input) {
+        const buf = await crypto.subtle.digest(
+          "SHA-256",
+          new TextEncoder().encode(input)
+        );
+        return Array.from(new Uint8Array(buf))
+          .map((b) => b.toString(16).padStart(2, "0"))
+          .join("");
+      }
+      const computedId = await sha256Hex(`${organizerUid}|${sessionId}`);
+      const eventId = `sess${computedId}`; // letters+digits only
+      try {
+        console.log("[calendar] computed event id", { eventId });
+      } catch {}
+
       const body = {
-        id: `sess_${organizerUid}_${sessionId}`,
+        id: eventId,
         summary: summaryBase,
         location: venueName || undefined,
         description,
@@ -693,7 +709,6 @@ export default {
       const base = `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(
         calendarId
       )}/events`;
-      const eventId = body.id;
       let patched = false;
       try {
         try {
