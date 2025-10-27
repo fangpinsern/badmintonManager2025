@@ -384,6 +384,9 @@ function Page() {
           <Link href="/faq" className="rounded border px-2 py-1 text-xs">
             FAQ
           </Link>
+          <Link href="/changelog" className="rounded border px-2 py-1 text-xs">
+            Changelog
+          </Link>
           {user ? (
             <>
               <Link

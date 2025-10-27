@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev --turbopack",
-    "prebuild": "node scripts/write-build-info.js",
+    "prebuild": "node scripts/write-build-info.js && node scripts/write-changelog.js",
     "build": "next build",
     "start": "next start",
     "lint": "eslint"

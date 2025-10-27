@@ -1,0 +1,44 @@
+name: Build and Generate Changelog
+
+on:
+  push:
+    branches:
+      - main
+      - "feature/**"
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 200 # ensure enough history for changelog
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: badminton-manager
+
+      - name: Generate build info and changelog
+        run: |
+          node scripts/write-build-info.js
+          CHANGELOG_LIMIT=400 node scripts/write-changelog.js
+        working-directory: badminton-manager
+
+      - name: Build
+        run: npm run build
+        working-directory: badminton-manager
+
+      # Upload the generated changelog JSON (optional artifact retention)
+      - name: Upload changelog artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: changelog-json
+          path: badminton-manager/public/changelog.json
