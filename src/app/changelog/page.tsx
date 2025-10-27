@@ -105,7 +105,7 @@ export default function ChangelogPage() {
                 href={
                   payload?.repository
                     ? `https://github.com/${payload.repository}/commit/${c.commitFull}`
-                    : `https://github.com/commit/${c.commitFull}`
+                    : `https://github.com/fangpinsern/badmintonManager2025/commit/${c.commitFull}`
                 }
                 target="_blank"
               >
@@ -118,7 +118,9 @@ export default function ChangelogPage() {
                     ? `https://github.com/${payload.repository}/tree/${
                         payload.branch || "main"
                       }`
-                    : `https://github.com/tree/${payload?.branch || "main"}`
+                    : `https://github.com/fangpinsern/badmintonManager2025/tree/${
+                        payload?.branch || "main"
+                      }`
                 }
                 target="_blank"
               >
