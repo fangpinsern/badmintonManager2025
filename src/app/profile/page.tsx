@@ -31,6 +31,13 @@ import {
 } from "@/lib/statsClient";
 import TopPartnersTable from "@/components/profile/TopPartnersTable";
 import TopOpponentsTable from "@/components/profile/TopOpponentsTable";
+import NotificationSettingsModal from "@/components/profile/NotificationSettingsModal";
+import {
+  getUserSensitive,
+  saveUserSensitive,
+  subscribeUserSensitive,
+  type UserSensitive,
+} from "@/lib/firestoreUserSensitive";
 
 export default function ProfilePage() {
   const [user, setUser] = useState<{
@@ -74,6 +81,10 @@ export default function ProfilePage() {
   const [usernameError, setUsernameError] = useState<string>("");
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [changing, setChanging] = useState(false);
+  const [notiOpen, setNotiOpen] = useState(false);
+  const [notiEmail, setNotiEmail] = useState("");
+  const [allowInvites, setAllowInvites] = useState(false);
+  const [savingNoti, setSavingNoti] = useState(false);
 
   useEffect(() => {
     return onAuthStateChanged(auth, (u) => {
@@ -133,6 +144,22 @@ export default function ProfilePage() {
     void load();
     return () => {
       cancelled = true;
+    };
+  }, [user?.uid]);
+
+  // Load sensitive notification settings (email + toggles)
+  useEffect(() => {
+    if (!user?.uid) return;
+    const unsub = subscribeUserSensitive(user.uid, (data) => {
+      const email = typeof data?.email === "string" ? data?.email : "";
+      const allow = data?.notifications?.calendarInvites?.enabled ?? false;
+      setNotiEmail(email);
+      setAllowInvites(!!allow);
+    });
+    return () => {
+      try {
+        unsub && (unsub as any)();
+      } catch {}
     };
   }, [user?.uid]);
 
@@ -245,6 +272,22 @@ export default function ProfilePage() {
             >
               {editing ? "Cancel" : "Edit"}
             </button>
+          </div>
+          <div className="mt-2">
+            <div className="flex items-center justify-between rounded-xl border border-gray-200 p-2">
+              <div>
+                <div className="text-sm font-medium">Notification settings</div>
+                <div className="text-[11px] text-gray-600">
+                  Configure your email and preferences
+                </div>
+              </div>
+              <button
+                onClick={() => setNotiOpen(true)}
+                className="rounded border px-2 py-1 text-xs"
+              >
+                Open
+              </button>
+            </div>
           </div>
           <div className="mt-2">
             {editing ? (
@@ -469,6 +512,30 @@ export default function ProfilePage() {
             setChanging(false);
           }
         }}
+      />
+      <NotificationSettingsModal
+        open={notiOpen}
+        email={notiEmail}
+        onEmailChange={setNotiEmail}
+        allowCalendarInvites={allowInvites}
+        onToggleCalendarInvites={() => setAllowInvites((v) => !v)}
+        onCancel={() => setNotiOpen(false)}
+        onSave={async () => {
+          if (!user) return;
+          setSavingNoti(true);
+          try {
+            await saveUserSensitive(user.uid, {
+              email: (notiEmail || "").trim(),
+              notifications: {
+                calendarInvites: { enabled: !!allowInvites },
+              },
+            });
+            setNotiOpen(false);
+          } finally {
+            setSavingNoti(false);
+          }
+        }}
+        saving={savingNoti}
       />
     </main>
   );

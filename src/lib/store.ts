@@ -1107,6 +1107,36 @@ const useStore = create<StoreState>()((set, _get) => ({
       sessions: s.sessions.map((ss) => {
         if (ss.id !== sessionId) return ss;
         const next: Partial<Session> = {};
+        // Allow updating date (YYYY-MM-DD) when explicitly provided
+        if (Object.prototype.hasOwnProperty.call(partial, "date")) {
+          try {
+            const raw = String((partial as any).date || "").trim();
+            if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+              next.date = raw as any;
+            }
+          } catch {}
+        }
+        // Allow updating time (HH:mm 24h) when explicitly provided
+        if (Object.prototype.hasOwnProperty.call(partial, "time")) {
+          try {
+            const raw = String((partial as any).time || "").trim();
+            if (/^\d{2}:\d{2}$/.test(raw)) {
+              const [hh, mm] = raw.split(":");
+              const h = Number(hh);
+              const m = Number(mm);
+              if (
+                Number.isFinite(h) &&
+                Number.isFinite(m) &&
+                h >= 0 &&
+                h <= 23 &&
+                m >= 0 &&
+                m <= 59
+              ) {
+                next.time = raw as any;
+              }
+            }
+          } catch {}
+        }
         if (Object.prototype.hasOwnProperty.call(partial, "playerLimit")) {
           const raw: any = (partial as any).playerLimit;
           next.playerLimit =

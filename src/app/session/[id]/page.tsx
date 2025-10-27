@@ -79,6 +79,8 @@ function SessionManager({ onBack }: { onBack: () => void }) {
   const updateSessionMeta = useStore((s) => (s as any).updateSessionMeta);
   const [settingsPlayerLimit, setSettingsPlayerLimit] = useState<string>("");
   const [settingsVenueName, setSettingsVenueName] = useState<string>("");
+  const [settingsDate, setSettingsDate] = useState<string>("");
+  const [settingsTime, setSettingsTime] = useState<string>("");
   const [clubVenues, setClubVenues] = useState<ClubVenue[]>([]);
 
   useEffect(() => {
@@ -528,10 +530,13 @@ function SessionManager({ onBack }: { onBack: () => void }) {
                 <button
                   onClick={() => {
                     setSettingsOpen(true);
+                    // hydrate current values when opening modal
                     const v = session.playerLimit;
                     setSettingsPlayerLimit(
                       typeof v === "number" && v > 0 ? String(v) : ""
                     );
+                    setSettingsDate(String(session.date || ""));
+                    setSettingsTime(String(session.time || ""));
                   }}
                   title="Session settings"
                   aria-label="Session settings"
@@ -665,6 +670,18 @@ function SessionManager({ onBack }: { onBack: () => void }) {
             <div className="mb-2 text-base font-semibold">Session settings</div>
             <div className="space-y-2">
               <Input
+                type="date"
+                label="Date"
+                value={settingsDate}
+                onChange={(e) => setSettingsDate(e.target.value)}
+              />
+              <Input
+                type="time"
+                label="Time"
+                value={settingsTime}
+                onChange={(e) => setSettingsTime(e.target.value)}
+              />
+              <Input
                 type="number"
                 label="Player limit"
                 placeholder="leave empty for no limit"
@@ -732,9 +749,16 @@ function SessionManager({ onBack }: { onBack: () => void }) {
                       ? Math.floor(num)
                       : undefined;
                   const venueName = (settingsVenueName || "").trim();
+                  // pass only valid date/time if provided
+                  const dateStr = (settingsDate || "").trim();
+                  const timeStr = (settingsTime || "").trim();
+                  const dateValid = /^\d{4}-\d{2}-\d{2}$/.test(dateStr);
+                  const timeValid = /^\d{2}:\d{2}$/.test(timeStr);
                   updateSessionMeta(session.id, {
                     playerLimit: next,
                     venue: venueName ? { name: venueName } : undefined,
+                    ...(dateValid ? { date: dateStr } : {}),
+                    ...(timeValid ? { time: timeStr } : {}),
                   } as any);
                   setSettingsOpen(false);
                   // Best-effort: notify worker to update Telegram header if club session
