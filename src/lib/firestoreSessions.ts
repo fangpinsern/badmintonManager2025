@@ -381,6 +381,18 @@ export async function addAndLinkPlayerByUsername(
     }
   } catch {}
 
+  // Best-effort: trigger calendar upsert for attendee change (idempotent on worker side)
+  try {
+    const endpoint = (process.env.NEXT_PUBLIC_WORKER_BASE_URL as any)
+      ? `${process.env.NEXT_PUBLIC_WORKER_BASE_URL}/calendar/session-upsert`
+      : "/api/calendar/session-upsert";
+    await fetch(endpoint, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ organizerUid, sessionId }),
+    });
+  } catch {}
+
   return result;
 }
 
