@@ -7,6 +7,7 @@ import { PushProvider } from "@/app/push/PushProvider";
 import UsernameEnforcer from "@/components/UsernameEnforcer";
 import { Suspense } from "react";
 import AppFooter from "@/components/AppFooter";
+import AnalyticsListener from "@/components/AnalyticsListener";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -49,6 +50,9 @@ export default function RootLayout({
         </Suspense>
         <ServiceWorkerRegister />
         <PushProvider>{children}</PushProvider>
+        <Suspense fallback={null}>
+          <AnalyticsListener />
+        </Suspense>
         <AppFooter />
       </body>
     </html>

@@ -7,6 +7,7 @@ import LoadingScreen from "@/components/LoadingScreen";
 import { auth } from "@/lib/firebase";
 import { onAuthStateChanged } from "firebase/auth";
 import { signInWithGoogleSafe } from "@/lib/authClient";
+import { logAnalyticsEvent } from "@/lib/analytics";
 import UsernameModal from "@/components/UsernameModal";
 import { getUserProfile, claimUsername } from "@/lib/firestoreSessions";
 
@@ -108,6 +109,7 @@ function AuthPageInner() {
           </div>
           <button
             onClick={async () => {
+              await logAnalyticsEvent("login_start", { method: "google" });
               await signInWithGoogleSafe(auth);
               // Redirect will also be handled by auth state effect on success
             }}
