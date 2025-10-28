@@ -52,6 +52,124 @@ export default {
     //   return withCors(resp, req);
     // }
 
+    // OAuth (Google Calendar) - start authorization to obtain a refresh token (one-time setup)
+    if (
+      req.method === "GET" &&
+      url.pathname === "/oauth/google/calendar/start"
+    ) {
+      const oauthgate =
+        String(env?.ALLOW_OAUTH_CAL || "").toLowerCase() === "true";
+      if (!oauthgate) {
+        return withCors(
+          new Response("OAuth calendar not allowed", { status: 403 }),
+          req
+        );
+      }
+      const clientId = String(env?.OAUTH_CLIENT_ID || "").trim();
+      const redirectUri = String(env?.OAUTH_REDIRECT_URI || "").trim();
+      if (!clientId || !redirectUri) {
+        return withCors(
+          new Response("Missing OAUTH_CLIENT_ID/OAUTH_REDIRECT_URI", {
+            status: 500,
+          }),
+          req
+        );
+      }
+      const scope = "https://www.googleapis.com/auth/calendar.events";
+      const authUrl = new URL("https://accounts.google.com/o/oauth2/v2/auth");
+      authUrl.searchParams.set("client_id", clientId);
+      authUrl.searchParams.set("redirect_uri", redirectUri);
+      authUrl.searchParams.set("response_type", "code");
+      authUrl.searchParams.set("access_type", "offline");
+      authUrl.searchParams.set("prompt", "consent");
+      authUrl.searchParams.set("include_granted_scopes", "true");
+      authUrl.searchParams.set("scope", scope);
+      try {
+        console.log("[oauth] start redirect", authUrl.toString());
+      } catch {}
+      return withCors(
+        new Response(null, {
+          status: 302,
+          headers: { Location: authUrl.toString() },
+        }),
+        req
+      );
+    }
+
+    // OAuth (Google Calendar) - callback to exchange code for tokens; prints refresh_token for operator
+    if (
+      req.method === "GET" &&
+      url.pathname === "/oauth/google/calendar/callback"
+    ) {
+      const oauthgate =
+        String(env?.ALLOW_OAUTH_CAL || "").toLowerCase() === "true";
+      if (!oauthgate) {
+        return withCors(
+          new Response("OAuth calendar not allowed", { status: 403 }),
+          req
+        );
+      }
+      const code = String(url.searchParams.get("code") || "").trim();
+      const clientId = String(env?.OAUTH_CLIENT_ID || "").trim();
+      const clientSecret = String(env?.OAUTH_CLIENT_SECRET || "").trim();
+      const redirectUri = String(env?.OAUTH_REDIRECT_URI || "").trim();
+      if (!code || !clientId || !clientSecret || !redirectUri) {
+        return withCors(
+          new Response("Missing code or OAuth env", { status: 400 }),
+          req
+        );
+      }
+      const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "authorization_code",
+          code,
+          client_id: clientId,
+          client_secret: clientSecret,
+          redirect_uri: redirectUri,
+        }),
+      });
+      const txt = await tokenRes.text();
+      if (!tokenRes.ok) {
+        try {
+          console.log(
+            "[oauth] exchange failed",
+            tokenRes.status,
+            txt.slice(0, 200)
+          );
+        } catch {}
+        return withCors(
+          new Response(
+            `exchange failed: ${tokenRes.status} ${txt}`.slice(0, 2048),
+            { status: 502 }
+          ),
+          req
+        );
+      }
+      let parsed = {};
+      try {
+        parsed = JSON.parse(txt);
+      } catch {}
+      const refreshToken = (parsed && parsed.refresh_token) || "";
+      const accessToken = (parsed && parsed.access_token) || "";
+      const body = JSON.stringify(
+        { refresh_token: refreshToken, access_token: accessToken },
+        null,
+        2
+      );
+      try {
+        console.log("[oauth] obtained refresh token?", !!refreshToken);
+      } catch {}
+      return withCors(
+        new Response(body, {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+        req
+      );
+    }
+
     // Telegram webhook: bot updates (linking via /start <token> and chat id capture)
     if (req.method === "POST" && url.pathname === "/telegram/webhook") {
       try {
@@ -707,11 +825,53 @@ export default {
         },
       };
 
-      // Idempotent upsert: PATCH first; if 404 then INSERT with fixed id
-      const gToken = await getAccessTokenScoped(
-        env,
-        "https://www.googleapis.com/auth/calendar.events"
-      );
+      // Idempotent upsert with end-user OAuth access token or refresh-token exchange
+      let gToken = "";
+      // const bearerHeader = req.headers.get("authorization") || "";
+      // const bearerToken = bearerHeader.replace(/^Bearer\s+/i, "").trim();
+      // const bodyToken = String(payload?.oauthAccessToken || "").trim();
+      // gToken = bodyToken || bearerToken;
+      // If only a refresh token is provided via env, exchange it for an access token
+      if (!gToken) {
+        const rt = String(env?.OAUTH_REFRESH_TOKEN || "").trim();
+        const clientId = String(env?.OAUTH_CLIENT_ID || "").trim();
+        const clientSecret = String(env?.OAUTH_CLIENT_SECRET || "").trim();
+        if (rt && clientId && clientSecret) {
+          const tres = await fetch("https://oauth2.googleapis.com/token", {
+            method: "POST",
+            headers: { "content-type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams({
+              grant_type: "refresh_token",
+              refresh_token: rt,
+              client_id: clientId,
+              client_secret: clientSecret,
+            }),
+          });
+          const ttxt = await tres.text();
+          if (tres.ok) {
+            try {
+              gToken = (JSON.parse(ttxt) || {}).access_token || "";
+            } catch {}
+          } else {
+            try {
+              console.log(
+                "[oauth] refresh failed",
+                tres.status,
+                ttxt.slice(0, 200)
+              );
+            } catch {}
+          }
+        }
+      }
+      if (!gToken) {
+        try {
+          console.log("[calendar] missing end-user OAuth token");
+        } catch {}
+        return withCors(
+          new Response("Missing OAuth token", { status: 401 }),
+          req
+        );
+      }
       const base = `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(
         calendarId
       )}/events`;
