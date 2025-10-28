@@ -940,6 +940,54 @@ export default {
           );
           if (!ires.ok) {
             const txt = await ires.text().catch(() => "");
+            // Handle race: if event already created elsewhere, fallback to PATCH and treat as success
+            if (ires.status === 409) {
+              try {
+                console.log("[calendar] insert 409, retrying patch", {
+                  eventId,
+                });
+              } catch {}
+              const pres2 = await fetch(
+                `${base}/${encodeURIComponent(
+                  eventId
+                )}?sendUpdates=${encodeURIComponent(sendUpdates)}`,
+                {
+                  method: "PATCH",
+                  headers: {
+                    authorization: `Bearer ${gToken}`,
+                    "content-type": "application/json",
+                  },
+                  body: JSON.stringify(body),
+                }
+              );
+              if (pres2.ok) {
+                const r2 = await pres2.json().catch(() => ({}));
+                return withCors(
+                  new Response(
+                    JSON.stringify({
+                      status: "patched_after_409",
+                      id: r2?.id || eventId,
+                    }),
+                    {
+                      status: 200,
+                      headers: { "content-type": "application/json" },
+                    }
+                  ),
+                  req
+                );
+              }
+              const t2 = await pres2.text().catch(() => "");
+              return withCors(
+                new Response(
+                  `insert 409 but patch failed: ${pres2.status} ${t2}`.slice(
+                    0,
+                    2048
+                  ),
+                  { status: 502 }
+                ),
+                req
+              );
+            }
             return withCors(
               new Response(
                 `insert failed: ${ires.status} ${txt}`.slice(0, 2048),
