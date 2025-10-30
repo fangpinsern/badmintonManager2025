@@ -7,6 +7,7 @@ import {
   organizerUnlinkPlayer,
 } from "@/lib/firestoreSessions";
 import { QRCodeSVG } from "qrcode.react";
+import { logAnalyticsEvent } from "@/lib/analytics";
 import { doc, onSnapshot } from "firebase/firestore";
 
 function EndSessionModal({
@@ -254,13 +255,24 @@ function EndSessionModal({
         </div>
         <div className="mt-3 flex items-center justify-end gap-2">
           <button
-            onClick={onCancel}
+            onClick={() => {
+              logAnalyticsEvent("session_end_cancel");
+              onCancel();
+            }}
             className="rounded-xl border px-3 py-1.5 text-sm"
           >
             Cancel
           </button>
           <button
-            onClick={onConfirm}
+            onClick={() => {
+              logAnalyticsEvent("session_end_confirm", {
+                unlinked_count: Array.isArray(unlinkedPlayers)
+                  ? unlinkedPlayers.length
+                  : 0,
+                shuttles: Number(shuttles) || 0,
+              });
+              onConfirm();
+            }}
             className="rounded-xl bg-black px-3 py-1.5 text-sm text-white disabled:opacity-50"
             disabled={showReminder && !ackUnlinked}
           >

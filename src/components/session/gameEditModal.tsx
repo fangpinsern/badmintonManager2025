@@ -4,6 +4,7 @@ import { Session } from "@/types/player";
 import { useStore } from "@/lib/store";
 import { Input } from "@/components/layout";
 import { useMemo, useState, useEffect } from "react";
+import { logAnalyticsEvent } from "@/lib/analytics";
 
 function GameEditModal({
   session,
@@ -174,6 +175,11 @@ function GameEditModal({
                   duration.trim() === ""
                     ? undefined
                     : Math.max(0, Math.floor(Number(duration) * 1000)),
+              });
+              logAnalyticsEvent("game_edit_save", {
+                session_id: session.id,
+                game_id: game.id,
+                is_singles: isSingles,
               });
               onClose();
             }}

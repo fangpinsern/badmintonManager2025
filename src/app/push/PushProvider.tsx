@@ -12,6 +12,7 @@ import {
   detectInstalledPwa,
   detectPlatform,
 } from "@/lib/notifications";
+import { logAnalyticsEvent } from "@/lib/analytics";
 
 export function PushProvider({ children }: { children: React.ReactNode }) {
   const [supported, setSupported] = useState<boolean>(false);
@@ -41,6 +42,7 @@ export function PushProvider({ children }: { children: React.ReactNode }) {
         const messaging = getMessaging(app);
         onMessage(messaging, () => {
           // Foreground push received: app can show a toast or refresh data
+          logAnalyticsEvent("push_foreground_message");
         });
       } catch {}
 
@@ -63,6 +65,7 @@ export function PushProvider({ children }: { children: React.ReactNode }) {
           const installed = detectInstalledPwa();
           const platform = detectPlatform();
           await saveDeviceTokenDoc(user.uid, token, platform, installed);
+          logAnalyticsEvent("push_token_refreshed", { platform, installed });
           try {
             if (typeof localStorage !== "undefined") {
               localStorage.setItem("pushEnabled", "1");
@@ -80,6 +83,7 @@ export function PushProvider({ children }: { children: React.ReactNode }) {
           const ask = await Notification.requestPermission();
           setPermission(ask);
           if (ask !== "granted") return;
+          logAnalyticsEvent("push_permission_granted");
           const messaging = getMessaging(app);
           const vapidKey = process.env.NEXT_PUBLIC_FCM_VAPID_KEY as
             | string
@@ -95,11 +99,13 @@ export function PushProvider({ children }: { children: React.ReactNode }) {
           const user = auth.currentUser;
           if (!user) {
             alert("Please sign in to enable notifications.");
+            logAnalyticsEvent("push_enable_without_user");
             return;
           }
           const installed = detectInstalledPwa();
           const platform = detectPlatform();
           await saveDeviceTokenDoc(user.uid, token, platform, installed);
+          logAnalyticsEvent("push_subscribed", { platform, installed });
           try {
             if ("setAppBadge" in navigator && installed) {
               (navigator as any).setAppBadge(0).catch(() => {});
@@ -113,6 +119,7 @@ export function PushProvider({ children }: { children: React.ReactNode }) {
           } catch {}
         } catch (err) {
           // no-op
+          logAnalyticsEvent("push_subscribe_error");
         }
       }
 
