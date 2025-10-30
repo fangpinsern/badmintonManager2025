@@ -24,6 +24,7 @@ function GameRecorderOverlay({
   const [error, setError] = React.useState<string | null>(null);
   const [scoreA, setScoreA] = React.useState<number>(0);
   const [scoreB, setScoreB] = React.useState<number>(0);
+  const [paused, setPaused] = React.useState(false);
 
   const stopAndSave = React.useCallback(() => {
     try {
@@ -42,8 +43,18 @@ function GameRecorderOverlay({
       setScoreA(0);
       setScoreB(0);
       try {
+        const isPortrait =
+          typeof window !== "undefined"
+            ? window.matchMedia &&
+              window.matchMedia("(orientation: portrait)").matches
+            : false;
+        const targetAspect = isPortrait ? 9 / 16 : 16 / 9;
         stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: "environment" },
+          video: {
+            facingMode: "environment",
+            // Hint the camera to capture in 16:9 (or 9:16 for portrait). Browsers may ignore if unsupported.
+            aspectRatio: { ideal: targetAspect },
+          },
           audio: true,
         });
         if (cancelled) return;
@@ -101,15 +112,42 @@ function GameRecorderOverlay({
           const a = document.createElement("a");
           a.href = url;
           const ext = outType.includes("mp4") ? "mp4" : "webm";
-          a.download = `badminton-game-${new Date().toISOString()}.${ext}`;
-          document.body.appendChild(a);
-          a.click();
-          a.remove();
+          const filename = `badminton-game-${new Date().toISOString()}.${ext}`;
+
+          // Try system share sheet first (allows Save Video to Photos on iPhone)
+          const tryShare = async () => {
+            try {
+              const file = new File([blob], filename, { type: outType });
+              const canShare =
+                typeof (navigator as any).canShare === "function" &&
+                (navigator as any).canShare({ files: [file] });
+              if ((navigator as any).share && canShare) {
+                await (navigator as any).share({
+                  files: [file],
+                  title: "Badminton game",
+                });
+                return true;
+              }
+            } catch {}
+            return false;
+          };
+
+          (async () => {
+            const shared = await tryShare();
+            if (!shared) {
+              document.body.appendChild(a);
+              a.download = filename;
+              a.click();
+              a.remove();
+            }
+          })();
           setRecording(false);
+          setPaused(false);
           setTimeout(() => URL.revokeObjectURL(url), 30_000);
         };
         mr.start();
         setRecording(true);
+        setPaused(false);
       } catch (err: any) {
         console.error(err);
         setError(
@@ -136,6 +174,7 @@ function GameRecorderOverlay({
         } catch {}
       }
       setRecording(false);
+      setPaused(false);
     };
   }, [open]);
 
@@ -152,14 +191,58 @@ function GameRecorderOverlay({
             muted
           />
 
-          <div className="absolute top-0 left-0 right-0 p-3 flex items-center justify-start text-white text-sm">
+          <div className="absolute top-0 left-0 right-0 p-3 flex items-center justify-between text-white text-sm">
             <div className="flex items-center gap-2">
               <span
                 className={`inline-block h-2 w-2 rounded-full ${
-                  recording ? "bg-red-500" : "bg-gray-400"
+                  recording && !paused
+                    ? "bg-red-500"
+                    : recording && paused
+                    ? "bg-yellow-400"
+                    : "bg-gray-400"
                 }`}
               ></span>
-              <span>{recording ? "Recording" : "Not recording"}</span>
+              <span>
+                {recording
+                  ? paused
+                    ? "Paused"
+                    : "Recording"
+                  : "Not recording"}
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              {recording && !paused && (
+                <button
+                  onClick={() => {
+                    try {
+                      const rec = mediaRecorderRef.current;
+                      if (rec && rec.state === "recording") {
+                        rec.pause();
+                        setPaused(true);
+                      }
+                    } catch {}
+                  }}
+                  className="rounded-md bg-white/10 px-3 py-1 backdrop-blur border border-white/20"
+                >
+                  Pause
+                </button>
+              )}
+              {recording && paused && (
+                <button
+                  onClick={() => {
+                    try {
+                      const rec = mediaRecorderRef.current;
+                      if (rec && rec.state === "paused") {
+                        rec.resume();
+                        setPaused(false);
+                      }
+                    } catch {}
+                  }}
+                  className="rounded-md bg-white/10 px-3 py-1 backdrop-blur border border-white/20"
+                >
+                  Resume
+                </button>
+              )}
             </div>
           </div>
 
