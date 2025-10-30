@@ -294,11 +294,11 @@ function GameRecorderOverlay({
     <div className="fixed inset-0 z-[60] bg-black/90">
       <div className="absolute inset-0 flex flex-col">
         <div className="relative flex-1">
-          <video
-            ref={videoRef}
-            className="absolute inset-0 h-full w-full object-contain bg-black"
-            playsInline
-            muted
+          {/* Hidden raw camera preview; we display the composed canvas so the user sees exactly what's recorded */}
+          <video ref={videoRef} className="hidden" playsInline muted />
+          <canvas
+            ref={canvasRef}
+            className="absolute inset-0 m-auto max-h-full max-w-full bg-black"
           />
 
           <div className="absolute top-0 left-0 right-0 p-3 flex items-center justify-between text-white text-sm">
