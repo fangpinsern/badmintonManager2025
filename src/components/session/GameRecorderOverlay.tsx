@@ -31,10 +31,6 @@ function GameRecorderOverlay({
   const drawReqRef = React.useRef<number | null>(null);
   const scoreARef = React.useRef<number>(0);
   const scoreBRef = React.useRef<number>(0);
-  const [orientation, setOrientation] = React.useState<
-    "portrait" | "landscape"
-  >("landscape");
-  const orientationRef = React.useRef<"portrait" | "landscape">("landscape");
 
   React.useEffect(() => {
     scoreARef.current = scoreA;
@@ -42,21 +38,6 @@ function GameRecorderOverlay({
   React.useEffect(() => {
     scoreBRef.current = scoreB;
   }, [scoreB]);
-  React.useEffect(() => {
-    orientationRef.current = orientation;
-  }, [orientation]);
-
-  const resizeCanvasForOrientation = React.useCallback(
-    (orient: "portrait" | "landscape") => {
-      const canvas = canvasRef.current;
-      if (!canvas) return;
-      const baseW = orient === "portrait" ? 720 : 1280;
-      const baseH = orient === "portrait" ? 1280 : 720;
-      canvas.width = baseW;
-      canvas.height = baseH;
-    },
-    []
-  );
 
   const stopAndSave = React.useCallback(() => {
     try {
@@ -76,7 +57,11 @@ function GameRecorderOverlay({
       setScoreB(0);
       try {
         // Match device orientation at start so recording matches preview
-        const isPortrait = orientationRef.current === "portrait";
+        const isPortrait =
+          typeof window !== "undefined"
+            ? window.matchMedia &&
+              window.matchMedia("(orientation: portrait)").matches
+            : false;
         const targetAspect = isPortrait ? 9 / 16 : 16 / 9;
         stream = await navigator.mediaDevices.getUserMedia({
           video: {
@@ -94,7 +79,10 @@ function GameRecorderOverlay({
 
         // Setup canvas composition to embed overlays into recording
         const canvas = (canvasRef.current ||= document.createElement("canvas"));
-        resizeCanvasForOrientation(orientationRef.current);
+        const baseW = isPortrait ? 720 : 1280;
+        const baseH = isPortrait ? 1280 : 720;
+        canvas.width = baseW;
+        canvas.height = baseH;
         const ctx = canvas.getContext("2d");
 
         const draw = () => {
@@ -365,19 +353,6 @@ function GameRecorderOverlay({
                   Resume
                 </button>
               )}
-              <button
-                onClick={() => {
-                  const next =
-                    orientationRef.current === "portrait"
-                      ? "landscape"
-                      : "portrait";
-                  setOrientation(next);
-                  resizeCanvasForOrientation(next);
-                }}
-                className="rounded-md bg-white/10 px-3 py-1 backdrop-blur border border-white/20"
-              >
-                Rotate
-              </button>
             </div>
           </div>
 
