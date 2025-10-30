@@ -830,6 +830,11 @@ function CourtCard({
           (pid) =>
             session.players.find((pp) => pp.id === pid)?.name || "(deleted)"
         )}
+        gameLabel={`Session ${session.id} · Court ${idx + 1}${
+          court.startedAt
+            ? " · " + new Date(court.startedAt).toLocaleTimeString()
+            : ""
+        }`}
         onRequestClose={() => setRecOpen(false)}
         onRequestEndGame={(a, b) => {
           setRecOpen(false);

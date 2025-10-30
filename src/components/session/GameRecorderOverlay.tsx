@@ -8,6 +8,7 @@ type GameRecorderOverlayProps = {
   teamB: string[];
   onRequestClose: () => void;
   onRequestEndGame: (scoreA: number, scoreB: number) => void;
+  gameLabel?: string;
 };
 
 function GameRecorderOverlay({
@@ -16,8 +17,10 @@ function GameRecorderOverlay({
   teamB,
   onRequestClose: _onRequestClose,
   onRequestEndGame,
+  gameLabel,
 }: GameRecorderOverlayProps) {
   const videoRef = React.useRef<HTMLVideoElement | null>(null);
+  const canvasRef = React.useRef<HTMLCanvasElement | null>(null);
   const mediaRecorderRef = React.useRef<MediaRecorder | null>(null);
   const chunksRef = React.useRef<Blob[]>([]);
   const [recording, setRecording] = React.useState(false);
@@ -25,6 +28,7 @@ function GameRecorderOverlay({
   const [scoreA, setScoreA] = React.useState<number>(0);
   const [scoreB, setScoreB] = React.useState<number>(0);
   const [paused, setPaused] = React.useState(false);
+  const drawReqRef = React.useRef<number | null>(null);
 
   const stopAndSave = React.useCallback(() => {
     try {
@@ -48,7 +52,7 @@ function GameRecorderOverlay({
             ? window.matchMedia &&
               window.matchMedia("(orientation: portrait)").matches
             : false;
-        const targetAspect = isPortrait ? 9 / 16 : 16 / 9;
+        const targetAspect = isPortrait ? 16 / 9 : 9 / 16;
         stream = await navigator.mediaDevices.getUserMedia({
           video: {
             facingMode: "environment",
@@ -62,6 +66,96 @@ function GameRecorderOverlay({
           videoRef.current.srcObject = stream;
           await videoRef.current.play().catch(() => {});
         }
+
+        // Setup canvas composition to embed overlays into recording
+        const canvas = (canvasRef.current ||= document.createElement("canvas"));
+        const baseW = isPortrait ? 720 : 1280;
+        const baseH = isPortrait ? 1280 : 720;
+        canvas.width = baseW;
+        canvas.height = baseH;
+        const ctx = canvas.getContext("2d");
+
+        const draw = () => {
+          if (!ctx) return;
+          const vid = videoRef.current;
+          if (vid && vid.videoWidth && vid.videoHeight) {
+            // cover
+            const vw = vid.videoWidth;
+            const vh = vid.videoHeight;
+            const cw = canvas.width;
+            const ch = canvas.height;
+            const vr = vw / vh;
+            const cr = cw / ch;
+            let dw = cw;
+            let dh = cw / vr;
+            if (dh < ch) {
+              dh = ch;
+              dw = ch * vr;
+            }
+            const dx = (cw - dw) / 2;
+            const dy = (ch - dh) / 2;
+            ctx.drawImage(vid, dx, dy, dw, dh);
+          } else {
+            ctx.fillStyle = "#000";
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+          }
+
+          // Top bar with teams and game label
+          ctx.fillStyle = "rgba(0,0,0,0.4)";
+          ctx.fillRect(0, 0, canvas.width, 80);
+          ctx.fillStyle = "#fff";
+          ctx.font = "16px system-ui, -apple-system, Segoe UI, Roboto";
+          ctx.textBaseline = "top";
+          // Team A (left)
+          let y = 8;
+          ctx.textAlign = "left";
+          ctx.fillText("Team A", 12, y);
+          y += 20;
+          for (const n of teamA.length ? teamA : ["TBD"]) {
+            ctx.fillText(n, 12, y);
+            y += 18;
+          }
+          // Team B (right)
+          y = 8;
+          ctx.textAlign = "right";
+          const rx = canvas.width - 12;
+          ctx.fillText("Team B", rx, y);
+          y += 20;
+          for (const n of teamB.length ? teamB : ["TBD"]) {
+            ctx.fillText(n, rx, y);
+            y += 18;
+          }
+          // Game label center
+          ctx.textAlign = "center";
+          if (gameLabel) ctx.fillText(gameLabel, canvas.width / 2, 10);
+
+          // Score box bottom center
+          const boxW = 220;
+          const boxH = 56;
+          const bx = (canvas.width - boxW) / 2;
+          const by = canvas.height - boxH - 16;
+          ctx.fillStyle = "rgba(0,0,0,0.4)";
+          ctx.fillRect(bx, by, boxW, boxH);
+          ctx.fillStyle = "#fff";
+          ctx.font = "24px system-ui, -apple-system, Segoe UI, Roboto";
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.fillText(
+            `${scoreA} : ${scoreB}`,
+            canvas.width / 2,
+            by + boxH / 2
+          );
+
+          drawReqRef.current = requestAnimationFrame(draw);
+        };
+        drawReqRef.current = requestAnimationFrame(draw);
+
+        const canvasStream = canvas.captureStream(30);
+        const composedStream = new MediaStream();
+        canvasStream
+          .getVideoTracks()
+          .forEach((t) => composedStream.addTrack(t));
+        stream.getAudioTracks().forEach((t) => composedStream.addTrack(t));
 
         // Prefer MP4 (H.264/AAC) on Safari/iOS; fall back to WebM where supported
         let chosenMime = "";
@@ -93,10 +187,10 @@ function GameRecorderOverlay({
 
         let mr: MediaRecorder;
         try {
-          mr = new MediaRecorder(stream, mrOptions);
+          mr = new MediaRecorder(composedStream, mrOptions);
         } catch {
           // Fallback: let browser pick defaults
-          mr = new MediaRecorder(stream);
+          mr = new MediaRecorder(composedStream);
         }
         mediaRecorderRef.current = mr;
         chunksRef.current = [];
@@ -167,6 +261,10 @@ function GameRecorderOverlay({
       mediaRecorderRef.current = null;
       if (stream) {
         stream.getTracks().forEach((t) => t.stop());
+      }
+      if (drawReqRef.current != null) {
+        cancelAnimationFrame(drawReqRef.current);
+        drawReqRef.current = null;
       }
       if (videoRef.current) {
         try {
