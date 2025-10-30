@@ -6,6 +6,7 @@ import { useStore } from "@/lib/store";
 import { useState, useMemo } from "react";
 import { auth } from "@/lib/firebase";
 import { Select } from "@/components/layout";
+import { GameRecorderOverlay } from "@/components/session/GameRecorderOverlay";
 
 function CourtCard({
   session,
@@ -54,6 +55,7 @@ function CourtCard({
   const [removeOpen, setRemoveOpen] = useState(false);
   const [queueAdds, setQueueAdds] = useState<string[]>([]);
   const [queueOpen, setQueueOpen] = useState(false);
+  const [recOpen, setRecOpen] = useState(false);
 
   // Detect if any player on this court is currently in another ongoing match (other courts)
   const busyElsewhere = useMemo(() => {
@@ -211,13 +213,24 @@ function CourtCard({
               Start game
             </button>
           ) : (
-            <button
-              onClick={() => setOpen(true)}
-              disabled={!!session.ended || !isOrganizer}
-              className="rounded-lg border border-gray-300 px-2 py-1 text-xs disabled:opacity-50"
-            >
-              End game
-            </button>
+            <div className="flex items-center gap-2">
+              {isOrganizer && (
+                <button
+                  onClick={() => setRecOpen(true)}
+                  disabled={!!session.ended}
+                  className="rounded-lg border border-blue-300 bg-blue-50 px-2 py-1 text-xs text-blue-700 disabled:opacity-50"
+                >
+                  Record
+                </button>
+              )}
+              <button
+                onClick={() => setOpen(true)}
+                disabled={!!session.ended || !isOrganizer}
+                className="rounded-lg border border-gray-300 px-2 py-1 text-xs disabled:opacity-50"
+              >
+                End game
+              </button>
+            </div>
           )}
         </div>
       </div>
@@ -805,6 +818,25 @@ function CourtCard({
           (pid) =>
             session.players.find((pp) => pp.id === pid)?.name || "(deleted)"
         )}
+      />
+
+      <GameRecorderOverlay
+        open={recOpen}
+        teamA={pairA.map(
+          (pid) =>
+            session.players.find((pp) => pp.id === pid)?.name || "(deleted)"
+        )}
+        teamB={pairB.map(
+          (pid) =>
+            session.players.find((pp) => pp.id === pid)?.name || "(deleted)"
+        )}
+        onRequestClose={() => setRecOpen(false)}
+        onRequestEndGame={(a, b) => {
+          setRecOpen(false);
+          setScoreA(String(a));
+          setScoreB(String(b));
+          setOpen(true);
+        }}
       />
 
       <ConfirmModal
