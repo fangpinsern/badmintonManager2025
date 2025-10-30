@@ -85,7 +85,7 @@ function GameRecorderOverlay({
       } catch (err: any) {
         console.error(err);
         setError(
-          "Camera or microphone not available. You can still continue without recording."
+          `${err}, Camera or microphone not available. You can still continue without recording.`
         );
       }
     }
