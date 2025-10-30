@@ -56,9 +56,13 @@ function GameRecorderOverlay({
       setScoreA(0);
       setScoreB(0);
       try {
-        // Force landscape recording to avoid rotation crop issues
-        const isPortrait = false;
-        const targetAspect = 16 / 9;
+        // Match device orientation at start so recording matches preview
+        const isPortrait =
+          typeof window !== "undefined"
+            ? window.matchMedia &&
+              window.matchMedia("(orientation: portrait)").matches
+            : false;
+        const targetAspect = isPortrait ? 9 / 16 : 16 / 9;
         stream = await navigator.mediaDevices.getUserMedia({
           video: {
             facingMode: "environment",
@@ -75,8 +79,8 @@ function GameRecorderOverlay({
 
         // Setup canvas composition to embed overlays into recording
         const canvas = (canvasRef.current ||= document.createElement("canvas"));
-        const baseW = 1280;
-        const baseH = 720;
+        const baseW = isPortrait ? 720 : 1280;
+        const baseH = isPortrait ? 1280 : 720;
         canvas.width = baseW;
         canvas.height = baseH;
         const ctx = canvas.getContext("2d");
