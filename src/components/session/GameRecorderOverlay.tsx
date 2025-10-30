@@ -57,12 +57,13 @@ function GameRecorderOverlay({
       setScoreB(0);
       try {
         // Match device orientation at start so recording matches preview
-        const isPortrait =
-          typeof window !== "undefined"
-            ? window.matchMedia &&
-              window.matchMedia("(orientation: portrait)").matches
-            : false;
-        const targetAspect = isPortrait ? 9 / 16 : 16 / 9;
+        // const isPortrait =
+        //   typeof window !== "undefined"
+        //     ? window.matchMedia &&
+        //       window.matchMedia("(orientation: portrait)").matches
+        //     : false;
+        const isPortrait = false;
+        const targetAspect = 16 / 9;
         stream = await navigator.mediaDevices.getUserMedia({
           video: {
             facingMode: "environment",
@@ -356,37 +357,9 @@ function GameRecorderOverlay({
             </div>
           </div>
 
-          {/* Overlay for team labels moved to top */}
-          <div className="absolute left-0 right-0 top-10 p-3 grid grid-cols-2 gap-3 text-white">
-            <div className="rounded-lg bg-black/40 p-2 border border-white/10">
-              <div className="text-xs uppercase tracking-wide text-gray-200">
-                Team A
-              </div>
-              <div className="mt-1 text-sm font-medium leading-tight">
-                {teamA.length === 0 ? (
-                  <span className="text-gray-300">TBD</span>
-                ) : (
-                  teamA.map((n, i) => <div key={`a-${i}`}>{n}</div>)
-                )}
-              </div>
-            </div>
-            <div className="rounded-lg bg-black/40 p-2 border border-white/10 text-right">
-              <div className="text-xs uppercase tracking-wide text-gray-200">
-                Team B
-              </div>
-              <div className="mt-1 text-sm font-medium leading-tight">
-                {teamB.length === 0 ? (
-                  <span className="text-gray-300">TBD</span>
-                ) : (
-                  teamB.map((n, i) => <div key={`b-${i}`}>{n}</div>)
-                )}
-              </div>
-            </div>
-          </div>
-
-          {/* Score controls */}
-          <div className="absolute left-0 right-0 bottom-20 px-3 text-white">
-            <div className="mx-auto max-w-md rounded-xl bg-black/40 border border-white/10 p-3">
+          {/* Bottom controls container (score controls + end button) */}
+          <div className="pointer-events-none absolute left-0 right-0 bottom-0 p-3 pb-[calc(env(safe-area-inset-bottom)+12px)] flex flex-col items-center gap-2">
+            <div className="pointer-events-auto mx-auto max-w-md w-full rounded-xl bg-black/40 border border-white/10 p-3 text-white">
               <div className="grid grid-cols-3 items-center gap-2">
                 <div className="flex items-center justify-start gap-2">
                   <button
@@ -421,23 +394,21 @@ function GameRecorderOverlay({
                 </div>
               </div>
             </div>
-          </div>
-
-          {/* Bottom actions */}
-          <div className="absolute left-0 right-0 bottom-0 p-3 flex items-center justify-center">
-            <button
-              onClick={() => {
-                stopAndSave();
-                onRequestEndGame(scoreA, scoreB);
-              }}
-              className="rounded-xl bg-red-600 text-white px-5 py-2 text-sm shadow-lg"
-            >
-              End game
-            </button>
+            <div className="pointer-events-auto">
+              <button
+                onClick={() => {
+                  stopAndSave();
+                  onRequestEndGame(scoreA, scoreB);
+                }}
+                className="rounded-xl bg-red-600 text-white px-5 py-2 text-sm shadow-lg"
+              >
+                End game
+              </button>
+            </div>
           </div>
 
           {error ? (
-            <div className="absolute left-0 right-0 bottom-20 mx-3 rounded-md bg-red-500/90 text-white text-sm p-2 text-center">
+            <div className="absolute left-0 right-0 top-16 mx-3 rounded-md bg-red-500/90 text-white text-sm p-2 text-center">
               {error}
             </div>
           ) : null}
