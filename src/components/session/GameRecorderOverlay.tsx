@@ -358,7 +358,7 @@ function GameRecorderOverlay({
           </div>
 
           {/* Bottom controls container (score controls + end button) */}
-          <div className="pointer-events-none absolute left-0 right-0 bottom-0 p-3 pb-[calc(env(safe-area-inset-bottom)+12px)] flex flex-col items-center gap-2">
+          <div className="pointer-events-none fixed left-0 right-0 bottom-0 z-[5] p-3 pb-[calc(env(safe-area-inset-bottom)+12px)] flex flex-col items-center gap-2">
             <div className="pointer-events-auto mx-auto max-w-md w-full rounded-xl bg-black/40 border border-white/10 p-3 text-white">
               <div className="grid grid-cols-3 items-center gap-2">
                 <div className="flex items-center justify-start gap-2">
