@@ -52,28 +52,56 @@ function GameRecorderOverlay({
           await videoRef.current.play().catch(() => {});
         }
 
-        const mime =
-          typeof MediaRecorder !== "undefined" &&
-          MediaRecorder.isTypeSupported("video/webm;codecs=vp9,opus")
-            ? "video/webm;codecs=vp9,opus"
-            : MediaRecorder.isTypeSupported("video/webm;codecs=vp8,opus")
-            ? "video/webm;codecs=vp8,opus"
-            : "video/webm";
+        // Prefer MP4 (H.264/AAC) on Safari/iOS; fall back to WebM where supported
+        let chosenMime = "";
+        if (typeof MediaRecorder !== "undefined") {
+          if (MediaRecorder.isTypeSupported("video/mp4;codecs=h264,aac")) {
+            chosenMime = "video/mp4;codecs=h264,aac";
+          } else if (MediaRecorder.isTypeSupported("video/mp4")) {
+            chosenMime = "video/mp4";
+          } else if (
+            MediaRecorder.isTypeSupported("video/webm;codecs=vp9,opus")
+          ) {
+            chosenMime = "video/webm;codecs=vp9,opus";
+          } else if (
+            MediaRecorder.isTypeSupported("video/webm;codecs=vp8,opus")
+          ) {
+            chosenMime = "video/webm;codecs=vp8,opus";
+          } else if (MediaRecorder.isTypeSupported("video/webm")) {
+            chosenMime = "video/webm";
+          } else {
+            chosenMime = ""; // let browser decide
+          }
+        }
 
-        const mr = new MediaRecorder(stream, { mimeType: mime });
+        const mrOptions: MediaRecorderOptions = {
+          mimeType: chosenMime || undefined,
+          videoBitsPerSecond: 2_500_000, // ~2.5 Mbps for compact yet good quality
+          audioBitsPerSecond: 128_000,
+        };
+
+        let mr: MediaRecorder;
+        try {
+          mr = new MediaRecorder(stream, mrOptions);
+        } catch {
+          // Fallback: let browser pick defaults
+          mr = new MediaRecorder(stream);
+        }
         mediaRecorderRef.current = mr;
         chunksRef.current = [];
         mr.ondataavailable = (e) => {
           if (e.data && e.data.size > 0) chunksRef.current.push(e.data);
         };
         mr.onstop = () => {
-          const blob = new Blob(chunksRef.current, { type: mr.mimeType });
+          const outType = mr.mimeType || "video/webm";
+          const blob = new Blob(chunksRef.current, { type: outType });
           chunksRef.current = [];
           const url = URL.createObjectURL(blob);
           // auto prompt save
           const a = document.createElement("a");
           a.href = url;
-          a.download = `badminton-game-${new Date().toISOString()}.webm`;
+          const ext = outType.includes("mp4") ? "mp4" : "webm";
+          a.download = `badminton-game-${new Date().toISOString()}.${ext}`;
           document.body.appendChild(a);
           a.click();
           a.remove();
