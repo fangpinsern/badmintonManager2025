@@ -48,10 +48,6 @@ function GameRecorderOverlay({
   const hiddenVideoRef = React.useRef<HTMLVideoElement | null>(null);
   const hiddenCanvasRef = React.useRef<HTMLCanvasElement | null>(null);
   const hiddenRafRef = React.useRef<number | null>(null);
-  // Gesture tuning: minimum hand bounding box diagonal threshold
-  const [minHandBoxDiag, setMinHandBoxDiag] = React.useState(0.08);
-  const [showSizeGuide, setShowSizeGuide] = React.useState(false);
-  const sizeGuideTimerRef = React.useRef<number | null>(null);
 
   React.useEffect(() => {
     scoreARef.current = scoreA;
@@ -449,9 +445,9 @@ function GameRecorderOverlay({
     // Stability counters for consecutive frames
     let stableOneCount = 0;
     let stableTwoCount = 0;
-    const REQUIRED_STABLE_FRAMES = 5; // longer hold to avoid quick false triggers
+    const REQUIRED_STABLE_FRAMES = 4; // longer hold to avoid quick false triggers
     const COOLDOWN_MS = 1200;
-    const MIN_HAND_BOX_DIAGONAL = minHandBoxDiag; // use stateful threshold
+    const MIN_HAND_BOX_DIAGONAL = 0.08; // normalized diagonal threshold to ensure sufficient hand size
     // Latching: require release (gesture not seen) before next increment
     let armedOne = true; // for 1-finger → Team A
     let armedTwo = true; // for 2-fingers → Team B
@@ -459,18 +455,44 @@ function GameRecorderOverlay({
     let releaseTwoFrames = 0;
     const RELEASE_REQUIRED_FRAMES = 6;
 
+    function angleDeg(
+      ax: number,
+      ay: number,
+      az: number | undefined,
+      bx: number,
+      by: number,
+      bz: number | undefined
+    ) {
+      // angle between vectors a and b
+      const azv = typeof az === "number" ? az : 0;
+      const bzv = typeof bz === "number" ? bz : 0;
+      const dot = ax * bx + ay * by + azv * bzv;
+      const ma = Math.hypot(ax, ay, azv);
+      const mb = Math.hypot(bx, by, bzv);
+      if (ma === 0 || mb === 0) return 0;
+      const c = Math.max(-1, Math.min(1, dot / (ma * mb)));
+      return (Math.acos(c) * 180) / Math.PI;
+    }
+
+    function pipAngle(landmarks: any[], tip: number, pip: number, mcp: number) {
+      const t = landmarks[tip];
+      const p = landmarks[pip];
+      const m = landmarks[mcp];
+      if (!t || !p || !m) return 0;
+      const v1 = { x: t.x - p.x, y: t.y - p.y, z: (t.z ?? 0) - (p.z ?? 0) };
+      const v2 = { x: m.x - p.x, y: m.y - p.y, z: (m.z ?? 0) - (p.z ?? 0) };
+      return angleDeg(v1.x, v1.y, v1.z, v2.x, v2.y, v2.z);
+    }
+
     function isExtended(
       landmarks: any[],
       tip: number,
       pip: number,
       mcp: number
     ) {
-      // Heuristic: fingertip above PIP and PIP above MCP (smaller y is higher)
-      const t = landmarks[tip];
-      const p = landmarks[pip];
-      const m = landmarks[mcp];
-      if (!t || !p || !m) return false;
-      return t.y < p.y && p.y < m.y && Math.abs(t.y - m.y) > 0.05;
+      // Rotation-invariant: extended if PIP joint angle is large (nearly straight)
+      const ang = pipAngle(landmarks, tip, pip, mcp);
+      return ang >= 160; // threshold tunable
     }
 
     function countExtendedFingers(landmarks: any[]) {
@@ -515,38 +537,28 @@ function GameRecorderOverlay({
       const PINKY_TIP = 20,
         PINKY_PIP = 18,
         PINKY_MCP = 17;
-      const ringExt = isExtended(landmarks, RING_TIP, RING_PIP, RING_MCP);
-      const pinkyExt = isExtended(landmarks, PINKY_TIP, PINKY_PIP, PINKY_MCP);
-      return !ringExt && !pinkyExt;
+      const ringAng = pipAngle(landmarks, RING_TIP, RING_PIP, RING_MCP);
+      const pinkyAng = pipAngle(landmarks, PINKY_TIP, PINKY_PIP, PINKY_MCP);
+      // Consider curled if angle is small-ish
+      return ringAng <= 150 && pinkyAng <= 150;
     }
 
-    function inferIsRightHand(landmarks: any[]) {
-      // Compare index MCP (5) and pinky MCP (17) x positions: right hand has index.x < pinky.x
-      const indexMcp = landmarks[5];
-      const pinkyMcp = landmarks[17];
-      if (!indexMcp || !pinkyMcp) return true; // default
-      return indexMcp.x < pinkyMcp.x;
-    }
-
-    function isThumbExtended(landmarks: any[], isRight: boolean) {
+    function isThumbExtended(landmarks: any[]) {
+      // Use rotation-invariant angle at IP joint (tip-IP vs MCP-IP)
       const TIP = 4,
         IP = 3,
         MCP = 2;
-      const tip = landmarks[TIP];
-      const ip = landmarks[IP];
-      const mcp = landmarks[MCP];
-      if (!tip || !ip || !mcp) return false;
-      const eps = 0.02; // small threshold to avoid noise
-      if (isRight) {
-        // For right hand, thumb extends toward smaller x
-        return tip.x + eps < ip.x && ip.x + eps < mcp.x;
-      } else {
-        // For left hand, thumb extends toward larger x
-        return tip.x > ip.x + eps && ip.x > mcp.x + eps;
-      }
+      const t = landmarks[TIP];
+      const i = landmarks[IP];
+      const m = landmarks[MCP];
+      if (!t || !i || !m) return false;
+      const v1 = { x: t.x - i.x, y: t.y - i.y, z: (t.z ?? 0) - (i.z ?? 0) };
+      const v2 = { x: m.x - i.x, y: m.y - i.y, z: (m.z ?? 0) - (i.z ?? 0) };
+      const ang = angleDeg(v1.x, v1.y, v1.z, v2.x, v2.y, v2.z);
+      return ang >= 160; // extended if nearly straight
     }
 
-    function matchesOne(landmarks: any[], isRight: boolean) {
+    function matchesOne(landmarks: any[]) {
       if (boundingBoxDiagonal(landmarks) < MIN_HAND_BOX_DIAGONAL) return false;
       const INDEX_TIP = 8,
         INDEX_PIP = 6,
@@ -561,7 +573,7 @@ function GameRecorderOverlay({
         MIDDLE_PIP,
         MIDDLE_MCP
       );
-      const thumbExt = isThumbExtended(landmarks, isRight);
+      const thumbExt = isThumbExtended(landmarks);
       return (
         indexExt &&
         !middleExt &&
@@ -570,7 +582,7 @@ function GameRecorderOverlay({
       );
     }
 
-    function matchesTwo(landmarks: any[], isRight: boolean) {
+    function matchesTwo(landmarks: any[]) {
       if (boundingBoxDiagonal(landmarks) < MIN_HAND_BOX_DIAGONAL) return false;
       const INDEX_TIP = 8,
         INDEX_PIP = 6,
@@ -585,7 +597,7 @@ function GameRecorderOverlay({
         MIDDLE_PIP,
         MIDDLE_MCP
       );
-      const thumbExt = isThumbExtended(landmarks, isRight);
+      const thumbExt = isThumbExtended(landmarks);
       return (
         indexExt &&
         middleExt &&
@@ -650,14 +662,8 @@ function GameRecorderOverlay({
       let sawTwo = false;
       for (let i = 0; i < landmarksList.length; i++) {
         const lm = landmarksList[i];
-        const hd = handednesses && handednesses[i];
-        const handLabel =
-          (hd && hd.categories && hd.categories[0]?.categoryName) || null;
-        const isRight = handLabel
-          ? handLabel.toLowerCase() === "right"
-          : inferIsRightHand(lm);
-        if (matchesOne(lm, isRight)) sawOne = true;
-        else if (matchesTwo(lm, isRight)) sawTwo = true;
+        if (matchesOne(lm)) sawOne = true;
+        else if (matchesTwo(lm)) sawTwo = true;
       }
 
       // If both present simultaneously, treat as none this frame
@@ -769,7 +775,7 @@ function GameRecorderOverlay({
           handLandmarker.close();
       } catch {}
     };
-  }, [open, gestureEnabled, speechEnabled, minHandBoxDiag]);
+  }, [open, gestureEnabled, speechEnabled]);
 
   if (!open) return null;
 
@@ -831,54 +837,28 @@ function GameRecorderOverlay({
                     <span>Gesture scoring</span>
                   </label>
                   {gestureEnabled && (
-                    <>
-                      <div className="flex items-center gap-2">
-                        <label className="items-center gap-1">
-                          <input
-                            type="checkbox"
-                            checked={speechEnabled}
-                            onChange={(e) => {
-                              setSpeechEnabled(e.target.checked);
-                              if (e.target.checked) {
-                                // Toggle click counts as user gesture on iOS
-                                unlockAudioAndSpeech();
-                              }
-                            }}
-                          />
-                          <span>Voice</span>
-                        </label>
-                        <button
-                          onClick={testSpeak}
-                          className="rounded-md bg-white/10 px-3 py-1 backdrop-blur border border-white/20"
-                        >
-                          Test voice
-                        </button>
-                      </div>
-                      <div className="items-center gap-2">
-                        <label className="opacity-80">Min hand size</label>
+                    <div className="flex items-center gap-2">
+                      <label className="items-center gap-1">
                         <input
-                          type="range"
-                          min={0.04}
-                          max={0.4}
-                          step={0.005}
-                          value={minHandBoxDiag}
+                          type="checkbox"
+                          checked={speechEnabled}
                           onChange={(e) => {
-                            const v = Number(e.target.value);
-                            setMinHandBoxDiag(v);
-                            setShowSizeGuide(true);
-                            if (sizeGuideTimerRef.current)
-                              window.clearTimeout(sizeGuideTimerRef.current);
-                            sizeGuideTimerRef.current = window.setTimeout(
-                              () => setShowSizeGuide(false),
-                              12000
-                            );
+                            setSpeechEnabled(e.target.checked);
+                            if (e.target.checked) {
+                              // Toggle click counts as user gesture on iOS
+                              unlockAudioAndSpeech();
+                            }
                           }}
                         />
-                        <span className="tabular-nums">
-                          {minHandBoxDiag.toFixed(3)}
-                        </span>
-                      </div>
-                    </>
+                        <span>Voice</span>
+                      </label>
+                      <button
+                        onClick={testSpeak}
+                        className="rounded-md bg-white/10 px-3 py-1 backdrop-blur border border-white/20"
+                      >
+                        Test voice
+                      </button>
+                    </div>
                   )}
                 </div>
                 {recording && !paused && (
@@ -917,49 +897,31 @@ function GameRecorderOverlay({
             </div>
             {gestureEnabled && (
               <div className="rounded-full bg-black/40 border border-white/10 text-white text-xs px-3 py-1">
-                Gestures: show 1 finger → +1 Team A, 2 fingers → +1 Team B.
-                Toggle Voice for readout.
+                Gestures: show 1 finger → +1 Team A, 2 fingers → +1 Team B. Keep
+                hands around 1 racket away for best results. Toggle Voice for
+                readout.
               </div>
             )}
-            {gestureEnabled && showSizeGuide
-              ? (() => {
-                  const sideFrac = Math.max(
-                    0,
-                    Math.min(1, minHandBoxDiag / Math.SQRT2)
-                  );
-                  const sizeVmin = (sideFrac * 100).toFixed(3) + "vmin";
-                  const sizeStyle: React.CSSProperties = {
-                    width: sizeVmin,
-                    height: sizeVmin,
-                  };
-                  return (
-                    <div className="fixed inset-0 z-[7] flex items-center justify-center pointer-events-none">
-                      <div
-                        className="border border-red-500 bg-red-500/20"
-                        style={sizeStyle}
-                      />
-                    </div>
-                  );
-                })()
-              : null}
             {/* Team labels below help text */}
             <div className="w-full flex items-start justify-center">
-              <div className="w-full flex justify-between items-start gap-6 px-4">
-                <div>
-                  <div className="font-semibold mb-1 text-lg">Team A</div>
-                  {(teamA.length ? teamA : ["TBD"]).map((n, i) => (
-                    <div key={`ta-${i}`} className="text-sm font-semibold">
-                      {n}
-                    </div>
-                  ))}
-                </div>
-                <div>
-                  <div className="font-semibold mb-1 text-lg">Team B</div>
-                  {(teamB.length ? teamB : ["TBD"]).map((n, i) => (
-                    <div key={`tb-${i}`} className="text-sm font-semibold">
-                      {n}
-                    </div>
-                  ))}
+              <div className="w-full mt-2 rounded-lg bg-black/40 border border-white/10 text-white text-xs px-3 py-2">
+                <div className="flex justify-between items-start gap-6">
+                  <div>
+                    <div className="font-semibold mb-1 text-lg">Team A</div>
+                    {(teamA.length ? teamA : ["TBD"]).map((n, i) => (
+                      <div key={`ta-${i}`} className="text-sm font-semibold">
+                        {n}
+                      </div>
+                    ))}
+                  </div>
+                  <div>
+                    <div className="font-semibold mb-1 text-lg">Team B</div>
+                    {(teamB.length ? teamB : ["TBD"]).map((n, i) => (
+                      <div key={`tb-${i}`} className="text-sm font-semibold">
+                        {n}
+                      </div>
+                    ))}
+                  </div>
                 </div>
               </div>
             </div>
