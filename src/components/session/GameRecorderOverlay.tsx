@@ -376,7 +376,6 @@ function GameRecorderOverlay({
     const requestWakeLock = async () => {
       try {
         if (!("wakeLock" in navigator)) return;
-        // @ts-ignore
         wakeLock = await (navigator as any).wakeLock.request("screen");
         if (wakeLock && typeof wakeLock.addEventListener === "function") {
           wakeLock.addEventListener("release", () => {
