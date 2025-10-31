@@ -45,6 +45,9 @@ function GameRecorderOverlay({
   const lastIncAtBRef = React.useRef<number>(0);
   const audioCtxRef = React.useRef<AudioContext | null>(null);
   const speechUnlockedRef = React.useRef<boolean>(false);
+  const hiddenVideoRef = React.useRef<HTMLVideoElement | null>(null);
+  const hiddenCanvasRef = React.useRef<HTMLCanvasElement | null>(null);
+  const hiddenRafRef = React.useRef<number | null>(null);
 
   React.useEffect(() => {
     scoreARef.current = scoreA;
@@ -98,6 +101,70 @@ function GameRecorderOverlay({
       }
     } catch {}
   }, [unlockAudioAndSpeech]);
+
+  // Hidden keep-awake video helpers (fallback for iOS when wake lock unavailable)
+  function ensureHiddenKeepAwakeVideo() {
+    try {
+      if (!recording || paused) return;
+      const hv = (hiddenVideoRef.current ||= document.createElement("video"));
+      hv.muted = true;
+      (hv as any).playsInline = true;
+      hv.setAttribute("playsinline", "true");
+      hv.width = 1;
+      hv.height = 1;
+      hv.style.position = "fixed";
+      hv.style.width = "1px";
+      hv.style.height = "1px";
+      hv.style.opacity = "0";
+      hv.style.pointerEvents = "none";
+      hv.style.top = "-100px";
+      if (!hv.parentElement) document.body.appendChild(hv);
+
+      const canvas = (hiddenCanvasRef.current ||=
+        document.createElement("canvas"));
+      if (!canvas.width) {
+        canvas.width = 2;
+        canvas.height = 2;
+      }
+      const ctx = canvas.getContext("2d");
+      const stream = (canvas as any).captureStream?.(1);
+      if (stream && hv.srcObject !== stream) {
+        hv.srcObject = stream as any;
+      }
+      const tick = () => {
+        if (ctx) {
+          ctx.fillStyle = "#000";
+          ctx.fillRect(0, 0, 2, 2);
+        }
+        hiddenRafRef.current = requestAnimationFrame(tick);
+      };
+      if (hiddenRafRef.current == null)
+        hiddenRafRef.current = requestAnimationFrame(tick);
+      void hv.play().catch(() => {});
+    } catch {}
+  }
+
+  function teardownHiddenKeepAwakeVideo() {
+    try {
+      if (hiddenRafRef.current != null)
+        cancelAnimationFrame(hiddenRafRef.current);
+      hiddenRafRef.current = null;
+    } catch {}
+    try {
+      const hv = hiddenVideoRef.current;
+      if (hv) {
+        const so = hv.srcObject as MediaStream | null;
+        if (so) so.getTracks().forEach((t) => t.stop());
+        hv.pause();
+        (hv as any).srcObject = null;
+        if (hv.parentElement) hv.parentElement.removeChild(hv);
+      }
+      hiddenVideoRef.current = null;
+    } catch {}
+    try {
+      hiddenCanvasRef.current = null;
+    } catch {}
+  }
 
   React.useEffect(() => {
     let stream: MediaStream | null = null;
@@ -345,11 +412,13 @@ function GameRecorderOverlay({
     const handleVisibility = () => {
       if (document.visibilityState === "visible" && recording && !paused) {
         void requestWakeLock();
+        ensureHiddenKeepAwakeVideo();
       }
     };
 
     if (recording && !paused) {
       void requestWakeLock();
+      ensureHiddenKeepAwakeVideo();
       document.addEventListener("visibilitychange", handleVisibility);
     }
 
@@ -363,6 +432,7 @@ function GameRecorderOverlay({
           void wakeLock.release();
         }
       } catch {}
+      teardownHiddenKeepAwakeVideo();
     };
   }, [recording, paused]);
 
