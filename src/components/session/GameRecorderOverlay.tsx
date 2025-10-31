@@ -32,6 +32,16 @@ function GameRecorderOverlay({
   const scoreARef = React.useRef<number>(0);
   const scoreBRef = React.useRef<number>(0);
 
+  // Gesture scoring (V1) – fully optional and off by default
+  const [gestureEnabled, setGestureEnabled] = React.useState(false);
+  const [speechEnabled, setSpeechEnabled] = React.useState(true);
+  const [bubbleA, setBubbleA] = React.useState(false);
+  const [bubbleB, setBubbleB] = React.useState(false);
+  const bubbleTimerARef = React.useRef<number | null>(null);
+  const bubbleTimerBRef = React.useRef<number | null>(null);
+  const lastIncAtARef = React.useRef<number>(0);
+  const lastIncAtBRef = React.useRef<number>(0);
+
   React.useEffect(() => {
     scoreARef.current = scoreA;
   }, [scoreA]);
@@ -295,6 +305,337 @@ function GameRecorderOverlay({
     };
   }, [open]);
 
+  // Gesture detection loop (finger count: 1 -> Team A, 2 -> Team B)
+  React.useEffect(() => {
+    if (!open || !gestureEnabled) return;
+    let cancelled = false;
+    let rafId: number | null = null;
+    let handLandmarker: any = null;
+    // Stability counters for consecutive frames
+    let stableOneCount = 0;
+    let stableTwoCount = 0;
+    const REQUIRED_STABLE_FRAMES = 10; // longer hold to avoid quick false triggers
+    const COOLDOWN_MS = 1200;
+    const MIN_HAND_BOX_DIAGONAL = 0.16; // normalized diagonal threshold to ensure sufficient hand size
+    // Latching: require release (gesture not seen) before next increment
+    let armedOne = true; // for 1-finger → Team A
+    let armedTwo = true; // for 2-fingers → Team B
+    let releaseOneFrames = 0;
+    let releaseTwoFrames = 0;
+    const RELEASE_REQUIRED_FRAMES = 6;
+
+    function isExtended(
+      landmarks: any[],
+      tip: number,
+      pip: number,
+      mcp: number
+    ) {
+      // Heuristic: fingertip above PIP and PIP above MCP (smaller y is higher)
+      const t = landmarks[tip];
+      const p = landmarks[pip];
+      const m = landmarks[mcp];
+      if (!t || !p || !m) return false;
+      return t.y < p.y && p.y < m.y && Math.abs(t.y - m.y) > 0.05;
+    }
+
+    function countExtendedFingers(landmarks: any[]) {
+      const INDEX_TIP = 8,
+        INDEX_PIP = 6,
+        INDEX_MCP = 5;
+      const MIDDLE_TIP = 12,
+        MIDDLE_PIP = 10,
+        MIDDLE_MCP = 9;
+      const indexExt = isExtended(landmarks, INDEX_TIP, INDEX_PIP, INDEX_MCP);
+      const middleExt = isExtended(
+        landmarks,
+        MIDDLE_TIP,
+        MIDDLE_PIP,
+        MIDDLE_MCP
+      );
+      return (indexExt ? 1 : 0) + (middleExt ? 1 : 0);
+    }
+
+    function boundingBoxDiagonal(landmarks: any[]) {
+      let minX = 1,
+        maxX = 0,
+        minY = 1,
+        maxY = 0;
+      for (const p of landmarks) {
+        if (!p) continue;
+        if (p.x < minX) minX = p.x;
+        if (p.x > maxX) maxX = p.x;
+        if (p.y < minY) minY = p.y;
+        if (p.y > maxY) maxY = p.y;
+      }
+      const dx = Math.max(0, maxX - minX);
+      const dy = Math.max(0, maxY - minY);
+      return Math.hypot(dx, dy);
+    }
+
+    function areNonTargetFingersCurled(landmarks: any[]) {
+      // Ring and pinky must NOT be extended to avoid 5-finger being seen as 2
+      const RING_TIP = 16,
+        RING_PIP = 14,
+        RING_MCP = 13;
+      const PINKY_TIP = 20,
+        PINKY_PIP = 18,
+        PINKY_MCP = 17;
+      const ringExt = isExtended(landmarks, RING_TIP, RING_PIP, RING_MCP);
+      const pinkyExt = isExtended(landmarks, PINKY_TIP, PINKY_PIP, PINKY_MCP);
+      return !ringExt && !pinkyExt;
+    }
+
+    function inferIsRightHand(landmarks: any[]) {
+      // Compare index MCP (5) and pinky MCP (17) x positions: right hand has index.x < pinky.x
+      const indexMcp = landmarks[5];
+      const pinkyMcp = landmarks[17];
+      if (!indexMcp || !pinkyMcp) return true; // default
+      return indexMcp.x < pinkyMcp.x;
+    }
+
+    function isThumbExtended(landmarks: any[], isRight: boolean) {
+      const TIP = 4,
+        IP = 3,
+        MCP = 2;
+      const tip = landmarks[TIP];
+      const ip = landmarks[IP];
+      const mcp = landmarks[MCP];
+      if (!tip || !ip || !mcp) return false;
+      const eps = 0.02; // small threshold to avoid noise
+      if (isRight) {
+        // For right hand, thumb extends toward smaller x
+        return tip.x + eps < ip.x && ip.x + eps < mcp.x;
+      } else {
+        // For left hand, thumb extends toward larger x
+        return tip.x > ip.x + eps && ip.x > mcp.x + eps;
+      }
+    }
+
+    function matchesOne(landmarks: any[], isRight: boolean) {
+      if (boundingBoxDiagonal(landmarks) < MIN_HAND_BOX_DIAGONAL) return false;
+      const INDEX_TIP = 8,
+        INDEX_PIP = 6,
+        INDEX_MCP = 5;
+      const MIDDLE_TIP = 12,
+        MIDDLE_PIP = 10,
+        MIDDLE_MCP = 9;
+      const indexExt = isExtended(landmarks, INDEX_TIP, INDEX_PIP, INDEX_MCP);
+      const middleExt = isExtended(
+        landmarks,
+        MIDDLE_TIP,
+        MIDDLE_PIP,
+        MIDDLE_MCP
+      );
+      const thumbExt = isThumbExtended(landmarks, isRight);
+      return (
+        indexExt &&
+        !middleExt &&
+        areNonTargetFingersCurled(landmarks) &&
+        !thumbExt
+      );
+    }
+
+    function matchesTwo(landmarks: any[], isRight: boolean) {
+      if (boundingBoxDiagonal(landmarks) < MIN_HAND_BOX_DIAGONAL) return false;
+      const INDEX_TIP = 8,
+        INDEX_PIP = 6,
+        INDEX_MCP = 5;
+      const MIDDLE_TIP = 12,
+        MIDDLE_PIP = 10,
+        MIDDLE_MCP = 9;
+      const indexExt = isExtended(landmarks, INDEX_TIP, INDEX_PIP, INDEX_MCP);
+      const middleExt = isExtended(
+        landmarks,
+        MIDDLE_TIP,
+        MIDDLE_PIP,
+        MIDDLE_MCP
+      );
+      const thumbExt = isThumbExtended(landmarks, isRight);
+      return (
+        indexExt &&
+        middleExt &&
+        areNonTargetFingersCurled(landmarks) &&
+        !thumbExt
+      );
+    }
+
+    function teamForCount(count: number): "A" | "B" | null {
+      if (count === 1) return "A";
+      if (count === 2) return "B";
+      return null;
+    }
+
+    const speak = (text: string) => {
+      try {
+        if (!speechEnabled) return;
+        if (typeof window !== "undefined" && "speechSynthesis" in window) {
+          const utter = new SpeechSynthesisUtterance(text);
+          window.speechSynthesis.cancel();
+          window.speechSynthesis.speak(utter);
+        }
+      } catch {}
+    };
+
+    const showBubble = (team: "A" | "B") => {
+      if (team === "A") {
+        setBubbleA(true);
+        if (bubbleTimerARef.current)
+          window.clearTimeout(bubbleTimerARef.current);
+        bubbleTimerARef.current = window.setTimeout(
+          () => setBubbleA(false),
+          900
+        );
+      } else {
+        setBubbleB(true);
+        if (bubbleTimerBRef.current)
+          window.clearTimeout(bubbleTimerBRef.current);
+        bubbleTimerBRef.current = window.setTimeout(
+          () => setBubbleB(false),
+          900
+        );
+      }
+    };
+
+    const processResults = (
+      landmarksList: any[][] | undefined,
+      handednesses?: any[]
+    ) => {
+      if (!landmarksList || landmarksList.length === 0) {
+        // No hands seen: advance release for both
+        releaseOneFrames++;
+        releaseTwoFrames++;
+        if (releaseOneFrames >= RELEASE_REQUIRED_FRAMES) armedOne = true;
+        if (releaseTwoFrames >= RELEASE_REQUIRED_FRAMES) armedTwo = true;
+        stableOneCount = 0;
+        stableTwoCount = 0;
+        return;
+      }
+
+      let sawOne = false;
+      let sawTwo = false;
+      for (let i = 0; i < landmarksList.length; i++) {
+        const lm = landmarksList[i];
+        const hd = handednesses && handednesses[i];
+        const handLabel =
+          (hd && hd.categories && hd.categories[0]?.categoryName) || null;
+        const isRight = handLabel
+          ? handLabel.toLowerCase() === "right"
+          : inferIsRightHand(lm);
+        if (matchesOne(lm, isRight)) sawOne = true;
+        else if (matchesTwo(lm, isRight)) sawTwo = true;
+      }
+
+      // If both present simultaneously, treat as none this frame
+      const detOne = sawOne && !sawTwo;
+      const detTwo = sawTwo && !sawOne;
+
+      // Update stability and release counters with latching
+      if (detOne && armedOne) {
+        stableOneCount++;
+      } else {
+        stableOneCount = 0;
+      }
+      if (!detOne) {
+        releaseOneFrames++;
+        if (releaseOneFrames >= RELEASE_REQUIRED_FRAMES) armedOne = true;
+      } else {
+        releaseOneFrames = 0;
+      }
+
+      if (detTwo && armedTwo) {
+        stableTwoCount++;
+      } else {
+        stableTwoCount = 0;
+      }
+      if (!detTwo) {
+        releaseTwoFrames++;
+        if (releaseTwoFrames >= RELEASE_REQUIRED_FRAMES) armedTwo = true;
+      } else {
+        releaseTwoFrames = 0;
+      }
+
+      const now = performance.now();
+
+      if (detOne && armedOne && stableOneCount >= REQUIRED_STABLE_FRAMES) {
+        if (now - lastIncAtARef.current >= COOLDOWN_MS) {
+          lastIncAtARef.current = now;
+          setScoreA((s) => s + 1);
+          showBubble("A");
+          const a = scoreARef.current + 1;
+          const b = scoreBRef.current;
+          speak(`A ${a}, B ${b}`);
+        }
+        armedOne = false; // require release before next increment
+        stableOneCount = 0;
+        releaseOneFrames = 0;
+      } else if (
+        detTwo &&
+        armedTwo &&
+        stableTwoCount >= REQUIRED_STABLE_FRAMES
+      ) {
+        if (now - lastIncAtBRef.current >= COOLDOWN_MS) {
+          lastIncAtBRef.current = now;
+          setScoreB((s) => s + 1);
+          showBubble("B");
+          const a = scoreARef.current;
+          const b = scoreBRef.current + 1;
+          speak(`A ${a}, B ${b}`);
+        }
+        armedTwo = false; // require release before next increment
+        stableTwoCount = 0;
+        releaseTwoFrames = 0;
+      }
+    };
+
+    (async () => {
+      try {
+        const visionMod = await import("@mediapipe/tasks-vision");
+        const FilesetResolver = (visionMod as any).FilesetResolver;
+        const HandLandmarker = (visionMod as any).HandLandmarker;
+
+        const fileset = await FilesetResolver.forVisionTasks(
+          "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision/wasm"
+        );
+        handLandmarker = await HandLandmarker.createFromOptions(fileset, {
+          baseOptions: {
+            modelAssetPath:
+              "https://storage.googleapis.com/mediapipe-tasks/hand_landmarker/hand_landmarker.task",
+          },
+          runningMode: "VIDEO",
+          numHands: 2,
+          minHandDetectionConfidence: 0.6,
+          minHandPresenceConfidence: 0.6,
+          minTrackingConfidence: 0.6,
+        });
+
+        const loop = () => {
+          if (cancelled) return;
+          const vid = videoRef.current;
+          if (vid && vid.readyState >= 2 && handLandmarker) {
+            const res = handLandmarker.detectForVideo(vid, performance.now());
+            const anyRes: any = res as any;
+            processResults(anyRes?.landmarks, anyRes?.handednesses);
+          }
+          rafId = requestAnimationFrame(loop);
+        };
+        rafId = requestAnimationFrame(loop);
+      } catch (e) {
+        // If model fails to load, silently disable gesture loop for this session
+        console.warn("Gesture model init failed (tasks-vision)", e);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      if (rafId != null) cancelAnimationFrame(rafId);
+      rafId = null;
+      try {
+        if (handLandmarker && typeof handLandmarker.close === "function")
+          handLandmarker.close();
+      } catch {}
+    };
+  }, [open, gestureEnabled, speechEnabled]);
+
   if (!open) return null;
 
   return (
@@ -328,6 +669,24 @@ function GameRecorderOverlay({
               </span>
             </div>
             <div className="flex items-center gap-2">
+              <label className="flex items-center gap-1">
+                <input
+                  type="checkbox"
+                  checked={gestureEnabled}
+                  onChange={(e) => setGestureEnabled(e.target.checked)}
+                />
+                <span>Gesture scoring</span>
+              </label>
+              {gestureEnabled && (
+                <label className="hidden md:flex items-center gap-1">
+                  <input
+                    type="checkbox"
+                    checked={speechEnabled}
+                    onChange={(e) => setSpeechEnabled(e.target.checked)}
+                  />
+                  <span>Voice</span>
+                </label>
+              )}
               {recording && !paused && (
                 <button
                   onClick={() => {
@@ -411,6 +770,17 @@ function GameRecorderOverlay({
                 End game
               </button>
             </div>
+            {/* Text bubble feedback */}
+            {bubbleA && (
+              <div className="pointer-events-none absolute left-6 bottom-28 rounded-full bg-white/90 text-black px-3 py-2 text-sm shadow">
+                Team A +1
+              </div>
+            )}
+            {bubbleB && (
+              <div className="pointer-events-none absolute right-6 bottom-28 rounded-full bg-white/90 text-black px-3 py-2 text-sm shadow">
+                Team B +1
+              </div>
+            )}
           </div>
 
           {error ? (
