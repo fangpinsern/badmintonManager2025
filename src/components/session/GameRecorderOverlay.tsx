@@ -48,6 +48,10 @@ function GameRecorderOverlay({
   const hiddenVideoRef = React.useRef<HTMLVideoElement | null>(null);
   const hiddenCanvasRef = React.useRef<HTMLCanvasElement | null>(null);
   const hiddenRafRef = React.useRef<number | null>(null);
+  // Gesture tuning: minimum hand bounding box diagonal threshold
+  const [minHandBoxDiag, setMinHandBoxDiag] = React.useState(0.08);
+  const [showSizeGuide, setShowSizeGuide] = React.useState(false);
+  const sizeGuideTimerRef = React.useRef<number | null>(null);
 
   React.useEffect(() => {
     scoreARef.current = scoreA;
@@ -447,7 +451,7 @@ function GameRecorderOverlay({
     let stableTwoCount = 0;
     const REQUIRED_STABLE_FRAMES = 5; // longer hold to avoid quick false triggers
     const COOLDOWN_MS = 1200;
-    const MIN_HAND_BOX_DIAGONAL = 0.08; // normalized diagonal threshold to ensure sufficient hand size
+    const MIN_HAND_BOX_DIAGONAL = minHandBoxDiag; // use stateful threshold
     // Latching: require release (gesture not seen) before next increment
     let armedOne = true; // for 1-finger → Team A
     let armedTwo = true; // for 2-fingers → Team B
@@ -765,7 +769,7 @@ function GameRecorderOverlay({
           handLandmarker.close();
       } catch {}
     };
-  }, [open, gestureEnabled, speechEnabled]);
+  }, [open, gestureEnabled, speechEnabled, minHandBoxDiag]);
 
   if (!open) return null;
 
@@ -827,28 +831,54 @@ function GameRecorderOverlay({
                     <span>Gesture scoring</span>
                   </label>
                   {gestureEnabled && (
-                    <div className="flex items-center gap-2">
-                      <label className="items-center gap-1">
+                    <>
+                      <div className="flex items-center gap-2">
+                        <label className="items-center gap-1">
+                          <input
+                            type="checkbox"
+                            checked={speechEnabled}
+                            onChange={(e) => {
+                              setSpeechEnabled(e.target.checked);
+                              if (e.target.checked) {
+                                // Toggle click counts as user gesture on iOS
+                                unlockAudioAndSpeech();
+                              }
+                            }}
+                          />
+                          <span>Voice</span>
+                        </label>
+                        <button
+                          onClick={testSpeak}
+                          className="rounded-md bg-white/10 px-3 py-1 backdrop-blur border border-white/20"
+                        >
+                          Test voice
+                        </button>
+                      </div>
+                      <div className="items-center gap-2">
+                        <label className="opacity-80">Min hand size</label>
                         <input
-                          type="checkbox"
-                          checked={speechEnabled}
+                          type="range"
+                          min={0.04}
+                          max={0.4}
+                          step={0.005}
+                          value={minHandBoxDiag}
                           onChange={(e) => {
-                            setSpeechEnabled(e.target.checked);
-                            if (e.target.checked) {
-                              // Toggle click counts as user gesture on iOS
-                              unlockAudioAndSpeech();
-                            }
+                            const v = Number(e.target.value);
+                            setMinHandBoxDiag(v);
+                            setShowSizeGuide(true);
+                            if (sizeGuideTimerRef.current)
+                              window.clearTimeout(sizeGuideTimerRef.current);
+                            sizeGuideTimerRef.current = window.setTimeout(
+                              () => setShowSizeGuide(false),
+                              12000
+                            );
                           }}
                         />
-                        <span>Voice</span>
-                      </label>
-                      <button
-                        onClick={testSpeak}
-                        className="rounded-md bg-white/10 px-3 py-1 backdrop-blur border border-white/20"
-                      >
-                        Test voice
-                      </button>
-                    </div>
+                        <span className="tabular-nums">
+                          {minHandBoxDiag.toFixed(3)}
+                        </span>
+                      </div>
+                    </>
                   )}
                 </div>
                 {recording && !paused && (
@@ -891,26 +921,45 @@ function GameRecorderOverlay({
                 Toggle Voice for readout.
               </div>
             )}
+            {gestureEnabled && showSizeGuide
+              ? (() => {
+                  const sideFrac = Math.max(
+                    0,
+                    Math.min(1, minHandBoxDiag / Math.SQRT2)
+                  );
+                  const sizeVmin = (sideFrac * 100).toFixed(3) + "vmin";
+                  const sizeStyle: React.CSSProperties = {
+                    width: sizeVmin,
+                    height: sizeVmin,
+                  };
+                  return (
+                    <div className="fixed inset-0 z-[7] flex items-center justify-center pointer-events-none">
+                      <div
+                        className="border border-red-500 bg-red-500/20"
+                        style={sizeStyle}
+                      />
+                    </div>
+                  );
+                })()
+              : null}
             {/* Team labels below help text */}
             <div className="w-full flex items-start justify-center">
-              <div className="w-full mt-2 rounded-lg bg-black/40 border border-white/10 text-white text-xs px-3 py-2">
-                <div className="flex justify-between items-start gap-6">
-                  <div>
-                    <div className="font-semibold mb-1 text-lg">Team A</div>
-                    {(teamA.length ? teamA : ["TBD"]).map((n, i) => (
-                      <div key={`ta-${i}`} className="text-sm font-semibold">
-                        {n}
-                      </div>
-                    ))}
-                  </div>
-                  <div>
-                    <div className="font-semibold mb-1 text-lg">Team B</div>
-                    {(teamB.length ? teamB : ["TBD"]).map((n, i) => (
-                      <div key={`tb-${i}`} className="text-sm font-semibold">
-                        {n}
-                      </div>
-                    ))}
-                  </div>
+              <div className="w-full flex justify-between items-start gap-6 px-4">
+                <div>
+                  <div className="font-semibold mb-1 text-lg">Team A</div>
+                  {(teamA.length ? teamA : ["TBD"]).map((n, i) => (
+                    <div key={`ta-${i}`} className="text-sm font-semibold">
+                      {n}
+                    </div>
+                  ))}
+                </div>
+                <div>
+                  <div className="font-semibold mb-1 text-lg">Team B</div>
+                  {(teamB.length ? teamB : ["TBD"]).map((n, i) => (
+                    <div key={`tb-${i}`} className="text-sm font-semibold">
+                      {n}
+                    </div>
+                  ))}
                 </div>
               </div>
             </div>
