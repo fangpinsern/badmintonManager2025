@@ -89,7 +89,7 @@ function GameRecorderOverlay({
       unlockAudioAndSpeech();
       if (typeof window !== "undefined" && "speechSynthesis" in window) {
         const utter = new SpeechSynthesisUtterance(
-          `A ${scoreARef.current}, B ${scoreBRef.current}`
+          `A, ${scoreARef.current}, B, ${scoreBRef.current}`
         );
         window.speechSynthesis.cancel();
         window.speechSynthesis.speak(utter);
@@ -100,6 +100,7 @@ function GameRecorderOverlay({
   React.useEffect(() => {
     let stream: MediaStream | null = null;
     let cancelled = false;
+    let resizeHandler: ((this: Window, ev: Event) => any) | null = null;
 
     async function start() {
       if (!open) return;
@@ -108,12 +109,10 @@ function GameRecorderOverlay({
       setScoreB(0);
       try {
         // Match device orientation at start so recording matches preview
-        // const isPortrait =
-        //   typeof window !== "undefined"
-        //     ? window.matchMedia &&
-        //       window.matchMedia("(orientation: portrait)").matches
-        //     : false;
-        const isPortrait = false;
+        const isPortrait =
+          typeof window !== "undefined" &&
+          window.matchMedia &&
+          window.matchMedia("(orientation: portrait)").matches;
         const targetAspect = 16 / 9;
         stream = await navigator.mediaDevices.getUserMedia({
           video: {
@@ -131,10 +130,19 @@ function GameRecorderOverlay({
 
         // Setup canvas composition to embed overlays into recording
         const canvas = (canvasRef.current ||= document.createElement("canvas"));
-        const baseW = isPortrait ? 720 : 1280;
-        const baseH = isPortrait ? 1280 : 720;
-        canvas.width = baseW;
-        canvas.height = baseH;
+        const setCanvasSizeToOrientation = () => {
+          const portrait =
+            typeof window !== "undefined" &&
+            window.matchMedia &&
+            window.matchMedia("(orientation: portrait)").matches;
+          const bw = portrait ? 720 : 1280;
+          const bh = portrait ? 1280 : 720;
+          if (canvas.width !== bw || canvas.height !== bh) {
+            canvas.width = bw;
+            canvas.height = bh;
+          }
+        };
+        setCanvasSizeToOrientation();
         const ctx = canvas.getContext("2d");
 
         const draw = () => {
@@ -219,6 +227,14 @@ function GameRecorderOverlay({
           drawReqRef.current = requestAnimationFrame(draw);
         };
         drawReqRef.current = requestAnimationFrame(draw);
+
+        // Update canvas resolution on rotate/resize to avoid perceived zoom/crop jumps
+        const onResize = () => {
+          setCanvasSizeToOrientation();
+        };
+        window.addEventListener("orientationchange", onResize);
+        window.addEventListener("resize", onResize);
+        resizeHandler = onResize;
 
         const canvasStream = canvas.captureStream(30);
         const composedStream = new MediaStream();
@@ -341,10 +357,60 @@ function GameRecorderOverlay({
           (videoRef.current as any).srcObject = null;
         } catch {}
       }
+      try {
+        if (resizeHandler) {
+          window.removeEventListener("orientationchange", resizeHandler);
+          window.removeEventListener("resize", resizeHandler);
+        }
+      } catch {}
       setRecording(false);
       setPaused(false);
     };
   }, [open]);
+
+  // Keep screen awake while recording (if supported)
+  React.useEffect(() => {
+    let wakeLock: any = null;
+    let cancelled = false;
+
+    const requestWakeLock = async () => {
+      try {
+        if (!("wakeLock" in navigator)) return;
+        // @ts-ignore
+        wakeLock = await (navigator as any).wakeLock.request("screen");
+        if (wakeLock && typeof wakeLock.addEventListener === "function") {
+          wakeLock.addEventListener("release", () => {
+            // released
+          });
+        }
+      } catch (e) {
+        // Ignore if not allowed/available
+      }
+    };
+
+    const handleVisibility = () => {
+      if (document.visibilityState === "visible" && recording && !paused) {
+        void requestWakeLock();
+      }
+    };
+
+    if (recording && !paused) {
+      void requestWakeLock();
+      document.addEventListener("visibilitychange", handleVisibility);
+    }
+
+    return () => {
+      cancelled = true;
+      try {
+        document.removeEventListener("visibilitychange", handleVisibility);
+      } catch {}
+      try {
+        if (wakeLock && typeof wakeLock.release === "function") {
+          void wakeLock.release();
+        }
+      } catch {}
+    };
+  }, [recording, paused]);
 
   // Gesture detection loop (finger count: 1 -> Team A, 2 -> Team B)
   React.useEffect(() => {
@@ -355,7 +421,7 @@ function GameRecorderOverlay({
     // Stability counters for consecutive frames
     let stableOneCount = 0;
     let stableTwoCount = 0;
-    const REQUIRED_STABLE_FRAMES = 8; // longer hold to avoid quick false triggers
+    const REQUIRED_STABLE_FRAMES = 5; // longer hold to avoid quick false triggers
     const COOLDOWN_MS = 1200;
     const MIN_HAND_BOX_DIAGONAL = 0.08; // normalized diagonal threshold to ensure sufficient hand size
     // Latching: require release (gesture not seen) before next increment
