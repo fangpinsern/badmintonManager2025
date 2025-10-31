@@ -31,9 +31,11 @@ function GameRecorderOverlay({
   const drawReqRef = React.useRef<number | null>(null);
   const scoreARef = React.useRef<number>(0);
   const scoreBRef = React.useRef<number>(0);
+  const rawStreamRef = React.useRef<MediaStream | null>(null);
+  const composedStreamRef = React.useRef<MediaStream | null>(null);
 
-  // Gesture scoring (V1) – fully optional and off by default
-  const [gestureEnabled, setGestureEnabled] = React.useState(false);
+  // Gesture scoring
+  const [gestureEnabled, setGestureEnabled] = React.useState(true);
   const [speechEnabled, setSpeechEnabled] = React.useState(true);
   const [bubbleA, setBubbleA] = React.useState(false);
   const [bubbleB, setBubbleB] = React.useState(false);
@@ -123,6 +125,7 @@ function GameRecorderOverlay({
           audio: true,
         });
         if (cancelled) return;
+        rawStreamRef.current = stream;
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
           await videoRef.current.play().catch(() => {});
@@ -170,59 +173,7 @@ function GameRecorderOverlay({
             ctx.fillRect(0, 0, canvas.width, canvas.height);
           }
 
-          // Top bar with teams and game label (larger fonts)
-          ctx.fillStyle = "rgba(0,0,0,0.4)";
-          ctx.fillRect(0, 0, canvas.width, 100);
-          ctx.fillStyle = "#fff";
-          ctx.textBaseline = "top";
-          // Team A (left)
-          let y = 10;
-          ctx.textAlign = "left";
-          ctx.font = "20px system-ui, -apple-system, Segoe UI, Roboto";
-          ctx.fillText("Team A", 16, y);
-          y += 26;
-          ctx.font = "18px system-ui, -apple-system, Segoe UI, Roboto";
-          for (const n of teamA.length ? teamA : ["TBD"]) {
-            ctx.fillText(n, 16, y);
-            y += 22;
-          }
-          // Team B (right)
-          y = 10;
-          ctx.textAlign = "right";
-          const rx = canvas.width - 16;
-          ctx.font = "20px system-ui, -apple-system, Segoe UI, Roboto";
-          ctx.fillText("Team B", rx, y);
-          y += 26;
-          ctx.font = "18px system-ui, -apple-system, Segoe UI, Roboto";
-          for (const n of teamB.length ? teamB : ["TBD"]) {
-            ctx.fillText(n, rx, y);
-            y += 22;
-          }
-          // Game label center
-          ctx.textAlign = "center";
-          if (gameLabel) {
-            ctx.font = "20px system-ui, -apple-system, Segoe UI, Roboto";
-            ctx.fillText(gameLabel, canvas.width / 2, 12);
-          }
-
-          // Score box bottom center (larger)
-          const boxW = 300;
-          const boxH = 80;
-          const bx = (canvas.width - boxW) / 2;
-          const by = canvas.height - boxH - 16;
-          ctx.fillStyle = "rgba(0,0,0,0.4)";
-          ctx.fillRect(bx, by, boxW, boxH);
-          ctx.fillStyle = "#fff";
-          ctx.font = "36px system-ui, -apple-system, Segoe UI, Roboto";
-          ctx.textAlign = "center";
-          ctx.textBaseline = "middle";
-          const aScore = scoreARef.current;
-          const bScore = scoreBRef.current;
-          ctx.fillText(
-            `${aScore} : ${bScore}`,
-            canvas.width / 2,
-            by + boxH / 2
-          );
+          // No canvas overlays for now; only raw video drawn
 
           drawReqRef.current = requestAnimationFrame(draw);
         };
@@ -242,91 +193,8 @@ function GameRecorderOverlay({
           .getVideoTracks()
           .forEach((t) => composedStream.addTrack(t));
         stream.getAudioTracks().forEach((t) => composedStream.addTrack(t));
-
-        // Prefer MP4 (H.264/AAC) on Safari/iOS; fall back to WebM where supported
-        let chosenMime = "";
-        if (typeof MediaRecorder !== "undefined") {
-          if (MediaRecorder.isTypeSupported("video/mp4;codecs=h264,aac")) {
-            chosenMime = "video/mp4;codecs=h264,aac";
-          } else if (MediaRecorder.isTypeSupported("video/mp4")) {
-            chosenMime = "video/mp4";
-          } else if (
-            MediaRecorder.isTypeSupported("video/webm;codecs=vp9,opus")
-          ) {
-            chosenMime = "video/webm;codecs=vp9,opus";
-          } else if (
-            MediaRecorder.isTypeSupported("video/webm;codecs=vp8,opus")
-          ) {
-            chosenMime = "video/webm;codecs=vp8,opus";
-          } else if (MediaRecorder.isTypeSupported("video/webm")) {
-            chosenMime = "video/webm";
-          } else {
-            chosenMime = ""; // let browser decide
-          }
-        }
-
-        const mrOptions: MediaRecorderOptions = {
-          mimeType: chosenMime || undefined,
-          videoBitsPerSecond: 2_500_000, // ~2.5 Mbps for compact yet good quality
-          audioBitsPerSecond: 128_000,
-        };
-
-        let mr: MediaRecorder;
-        try {
-          mr = new MediaRecorder(composedStream, mrOptions);
-        } catch {
-          // Fallback: let browser pick defaults
-          mr = new MediaRecorder(composedStream);
-        }
-        mediaRecorderRef.current = mr;
-        chunksRef.current = [];
-        mr.ondataavailable = (e) => {
-          if (e.data && e.data.size > 0) chunksRef.current.push(e.data);
-        };
-        mr.onstop = () => {
-          const outType = mr.mimeType || "video/webm";
-          const blob = new Blob(chunksRef.current, { type: outType });
-          chunksRef.current = [];
-          const url = URL.createObjectURL(blob);
-          // auto prompt save
-          const a = document.createElement("a");
-          a.href = url;
-          const ext = outType.includes("mp4") ? "mp4" : "webm";
-          const filename = `badminton-game-${new Date().toISOString()}.${ext}`;
-
-          // Try system share sheet first (allows Save Video to Photos on iPhone)
-          const tryShare = async () => {
-            try {
-              const file = new File([blob], filename, { type: outType });
-              const canShare =
-                typeof (navigator as any).canShare === "function" &&
-                (navigator as any).canShare({ files: [file] });
-              if ((navigator as any).share && canShare) {
-                await (navigator as any).share({
-                  files: [file],
-                  title: "Badminton game",
-                });
-                return true;
-              }
-            } catch {}
-            return false;
-          };
-
-          (async () => {
-            const shared = await tryShare();
-            if (!shared) {
-              document.body.appendChild(a);
-              a.download = filename;
-              a.click();
-              a.remove();
-            }
-          })();
-          setRecording(false);
-          setPaused(false);
-          setTimeout(() => URL.revokeObjectURL(url), 30_000);
-        };
-        mr.start();
-        setRecording(true);
+        composedStreamRef.current = composedStream;
+        setRecording(false);
         setPaused(false);
       } catch (err: any) {
         console.error(err);
@@ -348,6 +216,8 @@ function GameRecorderOverlay({
       if (stream) {
         stream.getTracks().forEach((t) => t.stop());
       }
+      rawStreamRef.current = null;
+      composedStreamRef.current = null;
       if (drawReqRef.current != null) {
         cancelAnimationFrame(drawReqRef.current);
         drawReqRef.current = null;
@@ -367,6 +237,91 @@ function GameRecorderOverlay({
       setPaused(false);
     };
   }, [open]);
+
+  const startRecording = React.useCallback(() => {
+    try {
+      const composedStream = composedStreamRef.current;
+      if (!composedStream) return;
+      // Prefer MP4 (H.264/AAC) on Safari/iOS; fall back to WebM where supported
+      let chosenMime = "";
+      if (typeof MediaRecorder !== "undefined") {
+        if (MediaRecorder.isTypeSupported("video/mp4;codecs=h264,aac")) {
+          chosenMime = "video/mp4;codecs=h264,aac";
+        } else if (MediaRecorder.isTypeSupported("video/mp4")) {
+          chosenMime = "video/mp4";
+        } else if (
+          MediaRecorder.isTypeSupported("video/webm;codecs=vp9,opus")
+        ) {
+          chosenMime = "video/webm;codecs=vp9,opus";
+        } else if (
+          MediaRecorder.isTypeSupported("video/webm;codecs=vp8,opus")
+        ) {
+          chosenMime = "video/webm;codecs=vp8,opus";
+        } else if (MediaRecorder.isTypeSupported("video/webm")) {
+          chosenMime = "video/webm";
+        } else {
+          chosenMime = ""; // let browser decide
+        }
+      }
+      const mrOptions: MediaRecorderOptions = {
+        mimeType: chosenMime || undefined,
+        videoBitsPerSecond: 2_500_000,
+        audioBitsPerSecond: 128_000,
+      };
+      let mr: MediaRecorder;
+      try {
+        mr = new MediaRecorder(composedStream, mrOptions);
+      } catch {
+        mr = new MediaRecorder(composedStream);
+      }
+      mediaRecorderRef.current = mr;
+      chunksRef.current = [];
+      mr.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) chunksRef.current.push(e.data);
+      };
+      mr.onstop = () => {
+        const outType = mr.mimeType || "video/webm";
+        const blob = new Blob(chunksRef.current, { type: outType });
+        chunksRef.current = [];
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        const ext = outType.includes("mp4") ? "mp4" : "webm";
+        const filename = `badminton-game-${new Date().toISOString()}.${ext}`;
+        const tryShare = async () => {
+          try {
+            const file = new File([blob], filename, { type: outType });
+            const canShare =
+              typeof (navigator as any).canShare === "function" &&
+              (navigator as any).canShare({ files: [file] });
+            if ((navigator as any).share && canShare) {
+              await (navigator as any).share({
+                files: [file],
+                title: "Badminton game",
+              });
+              return true;
+            }
+          } catch {}
+          return false;
+        };
+        (async () => {
+          const shared = await tryShare();
+          if (!shared) {
+            document.body.appendChild(a);
+            a.download = filename;
+            a.click();
+            a.remove();
+          }
+        })();
+        setRecording(false);
+        setPaused(false);
+        setTimeout(() => URL.revokeObjectURL(url), 30_000);
+      };
+      mr.start();
+      setRecording(true);
+      setPaused(false);
+    } catch {}
+  }, []);
 
   // Keep screen awake while recording (if supported)
   React.useEffect(() => {
@@ -749,104 +704,157 @@ function GameRecorderOverlay({
       <div className="absolute inset-0 flex flex-col">
         <div className="relative flex-1">
           {/* Hidden raw camera preview; we display the composed canvas so the user sees exactly what's recorded */}
-          <video ref={videoRef} className="hidden" playsInline muted />
-          <canvas
-            ref={canvasRef}
+          <video
+            ref={videoRef}
             className="absolute inset-0 m-auto max-h-full max-w-full bg-black"
+            playsInline
+            muted
           />
+          <canvas ref={canvasRef} className="hidden" />
 
-          <div className="absolute top-0 left-0 right-0 p-3 flex items-center justify-between text-white text-sm">
-            <div className="flex items-center gap-2">
-              <span
-                className={`inline-block h-2 w-2 rounded-full ${
-                  recording && !paused
-                    ? "bg-red-500"
-                    : recording && paused
-                    ? "bg-yellow-400"
-                    : "bg-gray-400"
-                }`}
-              ></span>
-              <span>
-                {recording
-                  ? paused
-                    ? "Paused"
-                    : "Recording"
-                  : "Not recording"}
-              </span>
-            </div>
-            <div className="flex items-center gap-2">
-              <label className="flex items-center gap-1">
-                <input
-                  type="checkbox"
-                  checked={gestureEnabled}
-                  onChange={(e) => {
-                    setGestureEnabled(e.target.checked);
-                    if (e.target.checked && speechEnabled) {
-                      // User gesture present here; safe to unlock
-                      unlockAudioAndSpeech();
-                    }
-                  }}
-                />
-                <span>Gesture scoring</span>
-              </label>
-              {gestureEnabled && (
-                <>
-                  <label className="hidden md:flex items-center gap-1">
+          <div className="absolute top-0 left-0 right-0 p-3 flex flex-col gap-4 items-center justify-between text-white text-sm">
+            <div className="w-full flex justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <span
+                  className={`inline-block h-2 w-2 rounded-full ${
+                    recording && !paused
+                      ? "bg-red-500"
+                      : recording && paused
+                      ? "bg-yellow-400"
+                      : "bg-gray-400"
+                  }`}
+                ></span>
+                <span>
+                  {recording
+                    ? paused
+                      ? "Paused"
+                      : "Recording"
+                    : "Not recording"}
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                {/* {!recording && (
+                <button
+                  onClick={startRecording}
+                  className="rounded-md bg-white/10 px-3 py-1 backdrop-blur border border-white/20"
+                >
+                  Start
+                </button>
+              )} */}
+                <div className="flex flex-col items-start gap-2">
+                  <label className="flex items-center gap-1">
                     <input
                       type="checkbox"
-                      checked={speechEnabled}
+                      checked={gestureEnabled}
                       onChange={(e) => {
-                        setSpeechEnabled(e.target.checked);
-                        if (e.target.checked) {
-                          // Toggle click counts as user gesture on iOS
+                        setGestureEnabled(e.target.checked);
+                        if (e.target.checked && speechEnabled) {
+                          // User gesture present here; safe to unlock
                           unlockAudioAndSpeech();
                         }
                       }}
                     />
-                    <span>Voice</span>
+                    <span>Gesture scoring</span>
                   </label>
+                  {gestureEnabled && (
+                    <div className="flex items-center gap-2">
+                      <label className="items-center gap-1">
+                        <input
+                          type="checkbox"
+                          checked={speechEnabled}
+                          onChange={(e) => {
+                            setSpeechEnabled(e.target.checked);
+                            if (e.target.checked) {
+                              // Toggle click counts as user gesture on iOS
+                              unlockAudioAndSpeech();
+                            }
+                          }}
+                        />
+                        <span>Voice</span>
+                      </label>
+                      <button
+                        onClick={testSpeak}
+                        className="rounded-md bg-white/10 px-3 py-1 backdrop-blur border border-white/20"
+                      >
+                        Test voice
+                      </button>
+                    </div>
+                  )}
+                </div>
+                {recording && !paused && (
                   <button
-                    onClick={testSpeak}
+                    onClick={() => {
+                      try {
+                        const rec = mediaRecorderRef.current;
+                        if (rec && rec.state === "recording") {
+                          rec.pause();
+                          setPaused(true);
+                        }
+                      } catch {}
+                    }}
                     className="rounded-md bg-white/10 px-3 py-1 backdrop-blur border border-white/20"
                   >
-                    Test voice
+                    Pause
                   </button>
-                </>
-              )}
-              {recording && !paused && (
-                <button
-                  onClick={() => {
-                    try {
-                      const rec = mediaRecorderRef.current;
-                      if (rec && rec.state === "recording") {
-                        rec.pause();
-                        setPaused(true);
-                      }
-                    } catch {}
-                  }}
-                  className="rounded-md bg-white/10 px-3 py-1 backdrop-blur border border-white/20"
-                >
-                  Pause
-                </button>
-              )}
-              {recording && paused && (
-                <button
-                  onClick={() => {
-                    try {
-                      const rec = mediaRecorderRef.current;
-                      if (rec && rec.state === "paused") {
-                        rec.resume();
-                        setPaused(false);
-                      }
-                    } catch {}
-                  }}
-                  className="rounded-md bg-white/10 px-3 py-1 backdrop-blur border border-white/20"
-                >
-                  Resume
-                </button>
-              )}
+                )}
+                {recording && paused && (
+                  <button
+                    onClick={() => {
+                      try {
+                        const rec = mediaRecorderRef.current;
+                        if (rec && rec.state === "paused") {
+                          rec.resume();
+                          setPaused(false);
+                        }
+                      } catch {}
+                    }}
+                    className="rounded-md bg-white/10 px-3 py-1 backdrop-blur border border-white/20"
+                  >
+                    Resume
+                  </button>
+                )}
+              </div>
+            </div>
+            {gestureEnabled && (
+              <div className="rounded-full bg-black/40 border border-white/10 text-white text-xs px-3 py-1">
+                Gestures: show 1 finger → +1 Team A, 2 fingers → +1 Team B.
+                Toggle Voice for readout.
+              </div>
+            )}
+            {/* Team labels below help text */}
+            <div className="w-full flex items-start justify-center">
+              <div className="w-full mt-2 rounded-lg bg-black/40 border border-white/10 text-white text-xs px-3 py-2">
+                <div className="flex justify-between items-start gap-6">
+                  <div>
+                    <div className="font-semibold mb-1 text-lg">Team A</div>
+                    {(teamA.length ? teamA : ["TBD"]).map((n, i) => (
+                      <div key={`ta-${i}`} className="text-sm font-semibold">
+                        {n}
+                      </div>
+                    ))}
+                  </div>
+                  <div>
+                    <div className="font-semibold mb-1 text-lg">Team B</div>
+                    {(teamB.length ? teamB : ["TBD"]).map((n, i) => (
+                      <div key={`tb-${i}`} className="text-sm font-semibold">
+                        {n}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
+
+          {/* Help text for gestures
+          {gestureEnabled && (
+            <div className="absolute left-0 right-0 top-12 z-[6] flex justify-center pointer-events-none">
+              <div className="rounded-full bg-black/40 border border-white/10 text-white text-xs px-3 py-1">
+                Gestures: show 1 finger → +1 Team A, 2 fingers → +1 Team B.
+                Toggle Voice for readout.
+              </div>
+            </div>
+          )} */}
 
           {/* Bottom controls container (score controls + end button) */}
           <div className="pointer-events-none fixed left-0 right-0 bottom-0 z-[5] p-3 pb-[calc(env(safe-area-inset-bottom)+12px)] flex flex-col items-center gap-2">

@@ -220,7 +220,7 @@ function CourtCard({
                   disabled={!!session.ended}
                   className="rounded-lg border border-blue-300 bg-blue-50 px-2 py-1 text-xs text-blue-700 disabled:opacity-50"
                 >
-                  Record
+                  Umpire
                 </button>
               )}
               <button
