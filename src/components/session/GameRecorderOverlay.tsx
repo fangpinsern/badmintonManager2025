@@ -41,6 +41,8 @@ function GameRecorderOverlay({
   const bubbleTimerBRef = React.useRef<number | null>(null);
   const lastIncAtARef = React.useRef<number>(0);
   const lastIncAtBRef = React.useRef<number>(0);
+  const audioCtxRef = React.useRef<AudioContext | null>(null);
+  const speechUnlockedRef = React.useRef<boolean>(false);
 
   React.useEffect(() => {
     scoreARef.current = scoreA;
@@ -55,6 +57,45 @@ function GameRecorderOverlay({
       if (rec && rec.state !== "inactive") rec.stop();
     } catch {}
   }, []);
+
+  // Attempt to unlock audio/speech on a user gesture (needed on iOS)
+  const unlockAudioAndSpeech = React.useCallback(() => {
+    try {
+      if (typeof window === "undefined") return;
+      // WebAudio unlock
+      if (!audioCtxRef.current) {
+        const AC =
+          (window as any).AudioContext || (window as any).webkitAudioContext;
+        if (AC) audioCtxRef.current = new AC();
+      }
+      if (audioCtxRef.current && audioCtxRef.current.state === "suspended") {
+        void audioCtxRef.current.resume().catch(() => {});
+      }
+      // Speech unlock: speak a zero-length utterance once
+      if (!speechUnlockedRef.current && "speechSynthesis" in window) {
+        try {
+          const u = new SpeechSynthesisUtterance(" ");
+          u.volume = 0; // attempt to be inaudible
+          window.speechSynthesis.cancel();
+          window.speechSynthesis.speak(u);
+          speechUnlockedRef.current = true;
+        } catch {}
+      }
+    } catch {}
+  }, []);
+
+  const testSpeak = React.useCallback(() => {
+    try {
+      unlockAudioAndSpeech();
+      if (typeof window !== "undefined" && "speechSynthesis" in window) {
+        const utter = new SpeechSynthesisUtterance(
+          `A ${scoreARef.current}, B ${scoreBRef.current}`
+        );
+        window.speechSynthesis.cancel();
+        window.speechSynthesis.speak(utter);
+      }
+    } catch {}
+  }, [unlockAudioAndSpeech]);
 
   React.useEffect(() => {
     let stream: MediaStream | null = null;
@@ -314,9 +355,9 @@ function GameRecorderOverlay({
     // Stability counters for consecutive frames
     let stableOneCount = 0;
     let stableTwoCount = 0;
-    const REQUIRED_STABLE_FRAMES = 10; // longer hold to avoid quick false triggers
+    const REQUIRED_STABLE_FRAMES = 8; // longer hold to avoid quick false triggers
     const COOLDOWN_MS = 1200;
-    const MIN_HAND_BOX_DIAGONAL = 0.16; // normalized diagonal threshold to ensure sufficient hand size
+    const MIN_HAND_BOX_DIAGONAL = 0.08; // normalized diagonal threshold to ensure sufficient hand size
     // Latching: require release (gesture not seen) before next increment
     let armedOne = true; // for 1-finger → Team A
     let armedTwo = true; // for 2-fingers → Team B
@@ -673,19 +714,39 @@ function GameRecorderOverlay({
                 <input
                   type="checkbox"
                   checked={gestureEnabled}
-                  onChange={(e) => setGestureEnabled(e.target.checked)}
+                  onChange={(e) => {
+                    setGestureEnabled(e.target.checked);
+                    if (e.target.checked && speechEnabled) {
+                      // User gesture present here; safe to unlock
+                      unlockAudioAndSpeech();
+                    }
+                  }}
                 />
                 <span>Gesture scoring</span>
               </label>
               {gestureEnabled && (
-                <label className="hidden md:flex items-center gap-1">
-                  <input
-                    type="checkbox"
-                    checked={speechEnabled}
-                    onChange={(e) => setSpeechEnabled(e.target.checked)}
-                  />
-                  <span>Voice</span>
-                </label>
+                <>
+                  <label className="hidden md:flex items-center gap-1">
+                    <input
+                      type="checkbox"
+                      checked={speechEnabled}
+                      onChange={(e) => {
+                        setSpeechEnabled(e.target.checked);
+                        if (e.target.checked) {
+                          // Toggle click counts as user gesture on iOS
+                          unlockAudioAndSpeech();
+                        }
+                      }}
+                    />
+                    <span>Voice</span>
+                  </label>
+                  <button
+                    onClick={testSpeak}
+                    className="rounded-md bg-white/10 px-3 py-1 backdrop-blur border border-white/20"
+                  >
+                    Test voice
+                  </button>
+                </>
               )}
               {recording && !paused && (
                 <button
