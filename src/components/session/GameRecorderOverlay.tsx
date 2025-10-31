@@ -111,44 +111,50 @@ function GameRecorderOverlay({
             ctx.fillRect(0, 0, canvas.width, canvas.height);
           }
 
-          // Top bar with teams and game label
+          // Top bar with teams and game label (larger fonts)
           ctx.fillStyle = "rgba(0,0,0,0.4)";
-          ctx.fillRect(0, 0, canvas.width, 80);
+          ctx.fillRect(0, 0, canvas.width, 100);
           ctx.fillStyle = "#fff";
-          ctx.font = "16px system-ui, -apple-system, Segoe UI, Roboto";
           ctx.textBaseline = "top";
           // Team A (left)
-          let y = 8;
+          let y = 10;
           ctx.textAlign = "left";
-          ctx.fillText("Team A", 12, y);
-          y += 20;
+          ctx.font = "20px system-ui, -apple-system, Segoe UI, Roboto";
+          ctx.fillText("Team A", 16, y);
+          y += 26;
+          ctx.font = "18px system-ui, -apple-system, Segoe UI, Roboto";
           for (const n of teamA.length ? teamA : ["TBD"]) {
-            ctx.fillText(n, 12, y);
-            y += 18;
+            ctx.fillText(n, 16, y);
+            y += 22;
           }
           // Team B (right)
-          y = 8;
+          y = 10;
           ctx.textAlign = "right";
-          const rx = canvas.width - 12;
+          const rx = canvas.width - 16;
+          ctx.font = "20px system-ui, -apple-system, Segoe UI, Roboto";
           ctx.fillText("Team B", rx, y);
-          y += 20;
+          y += 26;
+          ctx.font = "18px system-ui, -apple-system, Segoe UI, Roboto";
           for (const n of teamB.length ? teamB : ["TBD"]) {
             ctx.fillText(n, rx, y);
-            y += 18;
+            y += 22;
           }
           // Game label center
           ctx.textAlign = "center";
-          if (gameLabel) ctx.fillText(gameLabel, canvas.width / 2, 10);
+          if (gameLabel) {
+            ctx.font = "20px system-ui, -apple-system, Segoe UI, Roboto";
+            ctx.fillText(gameLabel, canvas.width / 2, 12);
+          }
 
-          // Score box bottom center
-          const boxW = 220;
-          const boxH = 56;
+          // Score box bottom center (larger)
+          const boxW = 300;
+          const boxH = 80;
           const bx = (canvas.width - boxW) / 2;
           const by = canvas.height - boxH - 16;
           ctx.fillStyle = "rgba(0,0,0,0.4)";
           ctx.fillRect(bx, by, boxW, boxH);
           ctx.fillStyle = "#fff";
-          ctx.font = "24px system-ui, -apple-system, Segoe UI, Roboto";
+          ctx.font = "36px system-ui, -apple-system, Segoe UI, Roboto";
           ctx.textAlign = "center";
           ctx.textBaseline = "middle";
           const aScore = scoreARef.current;
@@ -359,35 +365,35 @@ function GameRecorderOverlay({
 
           {/* Bottom controls container (score controls + end button) */}
           <div className="pointer-events-none fixed left-0 right-0 bottom-0 z-[5] p-3 pb-[calc(env(safe-area-inset-bottom)+12px)] flex flex-col items-center gap-2">
-            <div className="pointer-events-auto mx-auto max-w-md w-full rounded-xl bg-black/40 border border-white/10 p-3 text-white">
-              <div className="grid grid-cols-3 items-center gap-2">
-                <div className="flex items-center justify-start gap-2">
+            <div className="pointer-events-auto mx-auto max-w-md w-full rounded-xl bg-black/40 border border-white/10 p-4 text-white">
+              <div className="grid grid-cols-3 items-center gap-3">
+                <div className="flex items-center justify-start gap-3">
                   <button
                     onClick={() => setScoreA((s) => Math.max(0, s - 1))}
-                    className="rounded-md border border-white/20 bg-white/10 px-2 py-1"
+                    className="rounded-md border border-white/20 bg-white/10 px-4 py-3 text-2xl"
                   >
                     −
                   </button>
                   <button
                     onClick={() => setScoreA((s) => s + 1)}
-                    className="rounded-md border border-white/20 bg-white/10 px-2 py-1"
+                    className="rounded-md border border-white/20 bg-white/10 px-4 py-3 text-2xl"
                   >
                     +
                   </button>
                 </div>
-                <div className="text-center text-lg font-semibold tracking-wide">
+                <div className="text-center text-2xl md:text-3xl font-semibold tracking-wide">
                   {scoreA} : {scoreB}
                 </div>
-                <div className="flex items-center justify-end gap-2">
+                <div className="flex items-center justify-end gap-3">
                   <button
                     onClick={() => setScoreB((s) => Math.max(0, s - 1))}
-                    className="rounded-md border border-white/20 bg-white/10 px-2 py-1"
+                    className="rounded-md border border-white/20 bg-white/10 px-4 py-3 text-2xl"
                   >
                     −
                   </button>
                   <button
                     onClick={() => setScoreB((s) => s + 1)}
-                    className="rounded-md border border-white/20 bg-white/10 px-2 py-1"
+                    className="rounded-md border border-white/20 bg-white/10 px-4 py-3 text-2xl"
                   >
                     +
                   </button>
@@ -400,7 +406,7 @@ function GameRecorderOverlay({
                   stopAndSave();
                   onRequestEndGame(scoreA, scoreB);
                 }}
-                className="rounded-xl bg-red-600 text-white px-5 py-2 text-sm shadow-lg"
+                className="rounded-xl bg-red-600 text-white px-6 py-3 text-base font-semibold shadow-lg"
               >
                 End game
               </button>
