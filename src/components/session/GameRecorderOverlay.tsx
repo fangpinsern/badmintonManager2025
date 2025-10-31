@@ -89,7 +89,7 @@ function GameRecorderOverlay({
       unlockAudioAndSpeech();
       if (typeof window !== "undefined" && "speechSynthesis" in window) {
         const utter = new SpeechSynthesisUtterance(
-          `A, ${scoreARef.current}, B, ${scoreBRef.current}`
+          `${scoreARef.current}, ${scoreBRef.current}`
         );
         window.speechSynthesis.cancel();
         window.speechSynthesis.speak(utter);
@@ -670,7 +670,7 @@ function GameRecorderOverlay({
           showBubble("A");
           const a = scoreARef.current + 1;
           const b = scoreBRef.current;
-          speak(`A ${a}, B ${b}`);
+          speak(`${a}, ${b}`);
         }
         armedOne = false; // require release before next increment
         stableOneCount = 0;
@@ -686,7 +686,7 @@ function GameRecorderOverlay({
           showBubble("B");
           const a = scoreARef.current;
           const b = scoreBRef.current + 1;
-          speak(`A ${a}, B ${b}`);
+          speak(`${b}, ${a}`);
         }
         armedTwo = false; // require release before next increment
         stableTwoCount = 0;
