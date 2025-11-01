@@ -1905,6 +1905,12 @@ async function batchWriteIgnoreIdempotentErrors(
     }
   }
 }
+async function commitWritesChunked(token, env, writes, chunkSize = 450) {
+  for (let i = 0; i < writes.length; i += chunkSize) {
+    const chunk = writes.slice(i, i + chunkSize);
+    await commitWrites(token, env, chunk);
+  }
+}
 function isAlreadyApplied(e) {
   return /FAILED_PRECONDITION|ALREADY_EXISTS/i.test(String(e?.message || ""));
 }
@@ -3274,6 +3280,7 @@ async function commitPerUserStats({
   env,
   token,
 }) {
+  const gateWrites = [];
   const writes = [];
   for (const uid of uids) {
     const agg = perUser[uid];
@@ -3281,7 +3288,7 @@ async function commitPerUserStats({
     const sumPath = `${rootCol}/${uid}`;
 
     const monthlyTaskKey = `stats:monthly:${endMonth}:${uid}:${sessionKey}`;
-    writes.push(
+    gateWrites.push(
       makeUpdatePrecondCreate(
         `${rootCol}/${uid}/gates/${monthlyTaskKey}`,
         {
@@ -3322,7 +3329,7 @@ async function commitPerUserStats({
     );
 
     const summaryTaskKey = `stats:summary:${uid}:${sessionKey}`;
-    writes.push(
+    gateWrites.push(
       makeUpdatePrecondCreate(
         `${rootCol}/${uid}/gates/${summaryTaskKey}`,
         {
@@ -3356,7 +3363,9 @@ async function commitPerUserStats({
       )
     );
   }
-  await batchWriteIgnoreIdempotentErrors(token, env, writes);
+  if (gateWrites.length)
+    await batchWriteIgnoreIdempotentErrors(token, env, gateWrites);
+  if (writes.length) await commitWritesChunked(token, env, writes);
 }
 
 async function commitEloWrites({
@@ -3368,12 +3377,13 @@ async function commitEloWrites({
   env,
   token,
 }) {
+  const gateWrites = [];
   const writes = [];
   for (const uid of updatedUsers) {
     const pr = userElo.get(uid);
     if (!pr) continue;
     const eloTaskKey = `elo:session:${organizerUid}_${sessionId}`;
-    writes.push(
+    gateWrites.push(
       makeUpdatePrecondCreate(
         `${userCol}/${uid}/gates/${eloTaskKey}`,
         {
@@ -3401,7 +3411,9 @@ async function commitEloWrites({
       )
     );
   }
-  await batchWriteIgnoreIdempotentErrors(token, env, writes);
+  if (gateWrites.length)
+    await batchWriteIgnoreIdempotentErrors(token, env, gateWrites);
+  if (writes.length) await commitWritesChunked(token, env, writes);
 }
 
 async function commitFriendEdgesAndMirrors({
@@ -3415,10 +3427,11 @@ async function commitFriendEdgesAndMirrors({
   chemistryByEdge,
 }) {
   const friendEdgeCol = isTest ? "friendEdges_test" : "friendEdges";
+  const gateWrites = [];
   const writes = [];
   for (const [edgeKey, agg] of pairAgg) {
     const { u1, u2, games, wins, durationMin, lastEndedAt } = agg;
-    writes.push(
+    gateWrites.push(
       makeUpdatePrecondCreate(
         `${friendEdgeCol}/${edgeKey}/bySession/${sessionKey}`,
         { sessionKey, month: endMonth, createdAt: { __ts: true } },
@@ -3538,7 +3551,9 @@ async function commitFriendEdgesAndMirrors({
       )
     );
   }
-  await batchWriteIgnoreIdempotentErrors(token, env, writes);
+  if (gateWrites.length)
+    await batchWriteIgnoreIdempotentErrors(token, env, gateWrites);
+  if (writes.length) await commitWritesChunked(token, env, writes);
 }
 
 async function commitOpponentEdgesAndMirrors({
@@ -3551,10 +3566,11 @@ async function commitOpponentEdgesAndMirrors({
   token,
 }) {
   const opponentEdgeCol = isTest ? "opponentEdges_test" : "opponentEdges";
+  const gateWrites = [];
   const writes = [];
   for (const [pairKey, agg] of oppAgg) {
     const { u1, u2, singles, doubles, totals, lastEndedAt } = agg;
-    writes.push(
+    gateWrites.push(
       makeUpdatePrecondCreate(
         `${opponentEdgeCol}/${pairKey}/bySession/${sessionKey}`,
         { sessionKey, month: endMonth, createdAt: { __ts: true } },
@@ -3694,7 +3710,9 @@ async function commitOpponentEdgesAndMirrors({
       )
     );
   }
-  await batchWriteIgnoreIdempotentErrors(token, env, writes);
+  if (gateWrites.length)
+    await batchWriteIgnoreIdempotentErrors(token, env, gateWrites);
+  if (writes.length) await commitWritesChunked(token, env, writes);
 }
 
 async function notifyStatsUpdate({ uids, organizerUid, sessionId, env }) {
@@ -3752,6 +3770,7 @@ async function commitClubPerUserStats({
   env,
   token,
 }) {
+  const gateWrites = [];
   const writes = [];
   for (const uid of uids) {
     if (!memberSet.has(uid)) continue;
@@ -3760,7 +3779,7 @@ async function commitClubPerUserStats({
     const monthPath = `${basePath}/monthly/${endMonth}`;
 
     const monthlyTaskKey = `stats:monthly:${endMonth}:${uid}:${sessionKey}`;
-    writes.push(
+    gateWrites.push(
       makeUpdatePrecondCreate(
         `${basePath}/gates/${monthlyTaskKey}`,
         {
@@ -3801,7 +3820,7 @@ async function commitClubPerUserStats({
     );
 
     const summaryTaskKey = `stats:summary:${uid}:${sessionKey}`;
-    writes.push(
+    gateWrites.push(
       makeUpdatePrecondCreate(
         `${basePath}/gates/${summaryTaskKey}`,
         {
@@ -3839,7 +3858,9 @@ async function commitClubPerUserStats({
       )
     );
   }
-  await batchWriteIgnoreIdempotentErrors(token, env, writes);
+  if (gateWrites.length)
+    await batchWriteIgnoreIdempotentErrors(token, env, gateWrites);
+  if (writes.length) await commitWritesChunked(token, env, writes);
 }
 
 async function commitClubFriendEdgesAndMirrors({
@@ -3853,13 +3874,14 @@ async function commitClubFriendEdgesAndMirrors({
   token,
   chemistryByEdge,
 }) {
+  const gateWrites = [];
   const writes = [];
   for (const [edgeKey, agg] of pairAgg) {
     const { u1, u2, games, wins, durationMin, lastEndedAt } = agg;
     if (!memberSet.has(u1) || !memberSet.has(u2)) continue;
 
     const edgePath = `${clubsCol}/${clubId}/friendEdges/${edgeKey}`;
-    writes.push(
+    gateWrites.push(
       makeUpdatePrecondCreate(
         `${edgePath}/bySession/${sessionKey}`,
         { sessionKey, month: endMonth, createdAt: { __ts: true } },
@@ -3984,7 +4006,9 @@ async function commitClubFriendEdgesAndMirrors({
       )
     );
   }
-  await batchWriteIgnoreIdempotentErrors(token, env, writes);
+  if (gateWrites.length)
+    await batchWriteIgnoreIdempotentErrors(token, env, gateWrites);
+  if (writes.length) await commitWritesChunked(token, env, writes);
 }
 
 async function commitClubOpponentEdgesAndMirrors({
@@ -3997,13 +4021,14 @@ async function commitClubOpponentEdgesAndMirrors({
   env,
   token,
 }) {
+  const gateWrites = [];
   const writes = [];
   for (const [pairKey, agg] of oppAgg) {
     const { u1, u2, singles, doubles, totals, lastEndedAt } = agg;
     if (!memberSet.has(u1) || !memberSet.has(u2)) continue;
 
     const edgePath = `${clubsCol}/${clubId}/opponentEdges/${pairKey}`;
-    writes.push(
+    gateWrites.push(
       makeUpdatePrecondCreate(
         `${edgePath}/bySession/${sessionKey}`,
         { sessionKey, month: endMonth, createdAt: { __ts: true } },
@@ -4148,7 +4173,9 @@ async function commitClubOpponentEdgesAndMirrors({
       )
     );
   }
-  await batchWriteIgnoreIdempotentErrors(token, env, writes);
+  if (gateWrites.length)
+    await batchWriteIgnoreIdempotentErrors(token, env, gateWrites);
+  if (writes.length) await commitWritesChunked(token, env, writes);
 }
 
 // Aggregates club-level monthly participation and session count.
@@ -4212,6 +4239,7 @@ async function commitClubPerUserAttendance({
   env,
   token,
 }) {
+  const gateWrites = [];
   const writes = [];
   for (const uid of Array.isArray(attendeeUids) ? attendeeUids : []) {
     const basePath = `${clubsCol}/${clubId}/userStats/${uid}`;
@@ -4219,7 +4247,7 @@ async function commitClubPerUserAttendance({
 
     // Monthly attendance gate and increment
     const monthlyKey = `attendance:${endMonth}:${uid}:${sessionKey}`;
-    writes.push(
+    gateWrites.push(
       makeUpdatePrecondCreate(
         `${basePath}/gates/${monthlyKey}`,
         {
@@ -4245,7 +4273,7 @@ async function commitClubPerUserAttendance({
 
     // Summary attendance gate and increment
     const summaryKey = `attendance:summary:${uid}:${sessionKey}`;
-    writes.push(
+    gateWrites.push(
       makeUpdatePrecondCreate(
         `${basePath}/gates/${summaryKey}`,
         {
@@ -4270,5 +4298,7 @@ async function commitClubPerUserAttendance({
       )
     );
   }
-  await batchWriteIgnoreIdempotentErrors(token, env, writes);
+  if (gateWrites.length)
+    await batchWriteIgnoreIdempotentErrors(token, env, gateWrites);
+  if (writes.length) await commitWritesChunked(token, env, writes);
 }
