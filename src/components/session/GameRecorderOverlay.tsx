@@ -1,6 +1,6 @@
 "use client";
 
-import React from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 
 type GameRecorderOverlayProps = {
   open: boolean;
@@ -19,44 +19,44 @@ function GameRecorderOverlay({
   onRequestEndGame,
   gameLabel,
 }: GameRecorderOverlayProps) {
-  const videoRef = React.useRef<HTMLVideoElement | null>(null);
-  const canvasRef = React.useRef<HTMLCanvasElement | null>(null);
-  const mediaRecorderRef = React.useRef<MediaRecorder | null>(null);
-  const chunksRef = React.useRef<Blob[]>([]);
-  const [recording, setRecording] = React.useState(false);
-  const [error, setError] = React.useState<string | null>(null);
-  const [scoreA, setScoreA] = React.useState<number>(0);
-  const [scoreB, setScoreB] = React.useState<number>(0);
-  const [paused, setPaused] = React.useState(false);
-  const drawReqRef = React.useRef<number | null>(null);
-  const scoreARef = React.useRef<number>(0);
-  const scoreBRef = React.useRef<number>(0);
-  const rawStreamRef = React.useRef<MediaStream | null>(null);
-  const composedStreamRef = React.useRef<MediaStream | null>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
+  const [recording, setRecording] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [scoreA, setScoreA] = useState<number>(0);
+  const [scoreB, setScoreB] = useState<number>(0);
+  const [paused, setPaused] = useState(false);
+  const drawReqRef = useRef<number | null>(null);
+  const scoreARef = useRef<number>(0);
+  const scoreBRef = useRef<number>(0);
+  const rawStreamRef = useRef<MediaStream | null>(null);
+  const composedStreamRef = useRef<MediaStream | null>(null);
 
   // Gesture scoring
-  const [gestureEnabled, setGestureEnabled] = React.useState(true);
-  const [speechEnabled, setSpeechEnabled] = React.useState(true);
-  const [bubbleA, setBubbleA] = React.useState(false);
-  const [bubbleB, setBubbleB] = React.useState(false);
-  const bubbleTimerARef = React.useRef<number | null>(null);
-  const bubbleTimerBRef = React.useRef<number | null>(null);
-  const lastIncAtARef = React.useRef<number>(0);
-  const lastIncAtBRef = React.useRef<number>(0);
-  const audioCtxRef = React.useRef<AudioContext | null>(null);
-  const speechUnlockedRef = React.useRef<boolean>(false);
-  const hiddenVideoRef = React.useRef<HTMLVideoElement | null>(null);
-  const hiddenCanvasRef = React.useRef<HTMLCanvasElement | null>(null);
-  const hiddenRafRef = React.useRef<number | null>(null);
+  const [gestureEnabled, setGestureEnabled] = useState(true);
+  const [speechEnabled, setSpeechEnabled] = useState(true);
+  const [bubbleA, setBubbleA] = useState(false);
+  const [bubbleB, setBubbleB] = useState(false);
+  const bubbleTimerARef = useRef<number | null>(null);
+  const bubbleTimerBRef = useRef<number | null>(null);
+  const lastIncAtARef = useRef<number>(0);
+  const lastIncAtBRef = useRef<number>(0);
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const speechUnlockedRef = useRef<boolean>(false);
+  const hiddenVideoRef = useRef<HTMLVideoElement | null>(null);
+  const hiddenCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const hiddenRafRef = useRef<number | null>(null);
 
-  React.useEffect(() => {
+  useEffect(() => {
     scoreARef.current = scoreA;
   }, [scoreA]);
-  React.useEffect(() => {
+  useEffect(() => {
     scoreBRef.current = scoreB;
   }, [scoreB]);
 
-  const stopAndSave = React.useCallback(() => {
+  const stopAndSave = useCallback(() => {
     try {
       const rec = mediaRecorderRef.current;
       if (rec && rec.state !== "inactive") rec.stop();
@@ -64,7 +64,7 @@ function GameRecorderOverlay({
   }, []);
 
   // Attempt to unlock audio/speech on a user gesture (needed on iOS)
-  const unlockAudioAndSpeech = React.useCallback(() => {
+  const unlockAudioAndSpeech = useCallback(() => {
     try {
       if (typeof window === "undefined") return;
       // WebAudio unlock
@@ -89,7 +89,7 @@ function GameRecorderOverlay({
     } catch {}
   }, []);
 
-  const testSpeak = React.useCallback(() => {
+  const testSpeak = useCallback(() => {
     try {
       unlockAudioAndSpeech();
       if (typeof window !== "undefined" && "speechSynthesis" in window) {
@@ -166,7 +166,7 @@ function GameRecorderOverlay({
     } catch {}
   }
 
-  React.useEffect(() => {
+  useEffect(() => {
     let stream: MediaStream | null = null;
     let cancelled = false;
     let resizeHandler: ((this: Window, ev: Event) => any) | null = null;
@@ -305,7 +305,7 @@ function GameRecorderOverlay({
     };
   }, [open]);
 
-  const startRecording = React.useCallback(() => {
+  const startRecording = useCallback(() => {
     try {
       const composedStream = composedStreamRef.current;
       if (!composedStream) return;
@@ -391,7 +391,7 @@ function GameRecorderOverlay({
   }, []);
 
   // Keep screen awake while recording (if supported)
-  React.useEffect(() => {
+  useEffect(() => {
     let wakeLock: any = null;
     let cancelled = false;
 
@@ -437,7 +437,7 @@ function GameRecorderOverlay({
   }, [recording, paused]);
 
   // Gesture detection loop (finger count: 1 -> Team A, 2 -> Team B)
-  React.useEffect(() => {
+  useEffect(() => {
     if (!open || !gestureEnabled) return;
     let cancelled = false;
     let rafId: number | null = null;
