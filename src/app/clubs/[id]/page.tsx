@@ -6,6 +6,7 @@ import {
   useSearchParams,
 } from "next/navigation";
 import { Suspense } from "react";
+import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useEffect, useMemo, useState, useRef } from "react";
 import { Card, Input } from "@/components/layout";
@@ -43,6 +44,10 @@ const clubPermissionErrorMessages = {
     "You don't have permission to view this club. Please request admin to add your username to the club.",
   unknown: "Unable to load this club.",
 };
+
+const ClubStats = dynamic(() => import("@/components/clubs/ClubStats"), {
+  ssr: false,
+});
 
 function ClubDetailPageInner() {
   const params = useParams<{ id: string }>();
@@ -443,6 +448,13 @@ function ClubDetailPageInner() {
             const closed = clubSessions.filter((s) => !!s.ended);
             return <ClubSessionTabs upcoming={upcoming} closed={closed} />;
           })()}
+        </Card>
+      </section>
+
+      {/* Club stats */}
+      <section className="mb-4">
+        <Card>
+          <ClubStats clubId={id} memberUids={(club.memberUids || []) as any} />
         </Card>
       </section>
 

@@ -1456,6 +1456,45 @@ export default {
               token,
             });
             if (members && members.size) {
+              // Compute club participation and attendance for this session using current membership snapshot
+              try {
+                const memberCountTotal = members.size;
+                let memberAttendeeCount = 0;
+                const attendeeSet = new Set();
+                for (const p of Array.isArray(players) ? players : []) {
+                  const uid = p && p.accountUid ? String(p.accountUid) : "";
+                  if (uid && members.has(uid)) {
+                    memberAttendeeCount += 1;
+                    attendeeSet.add(uid);
+                  }
+                }
+                await commitClubMonthlyAggregate({
+                  clubsCol,
+                  clubId,
+                  endMonth,
+                  sessionKey,
+                  memberCount: memberCountTotal,
+                  memberAttendeeCount,
+                  env,
+                  token,
+                });
+                if (attendeeSet.size) {
+                  await commitClubPerUserAttendance({
+                    clubsCol,
+                    clubId,
+                    endMonth,
+                    sessionKey,
+                    attendeeUids: Array.from(attendeeSet),
+                    env,
+                    token,
+                  });
+                }
+              } catch (e) {
+                try {
+                  console.log("club-monthly aggregate error", e);
+                } catch {}
+              }
+
               // Per-user writes for club members only
               await commitClubPerUserStats({
                 uids,
@@ -4121,6 +4160,142 @@ async function commitClubOpponentEdgesAndMirrors({
     } catch (e) {
       if (isAlreadyApplied(e)) continue;
       console.log(e);
+    }
+  }
+}
+
+// Aggregates club-level monthly participation and session count.
+// Idempotent per session via create-only gate under monthly/{YYYY-MM}/bySession/{sessionKey}
+async function commitClubMonthlyAggregate({
+  clubsCol,
+  clubId,
+  endMonth,
+  sessionKey,
+  memberCount,
+  memberAttendeeCount,
+  env,
+  token,
+}) {
+  const monthPath = `${clubsCol}/${clubId}/monthly/${endMonth}`;
+  const gatePath = `${monthPath}/bySession/${sessionKey}`;
+  const writes = [];
+  writes.push(
+    makeUpdatePrecondCreate(
+      gatePath,
+      { sessionKey, createdAt: { __ts: true } },
+      env
+    )
+  );
+  writes.push(
+    makeUpdateMaskWrite(monthPath, { month: endMonth }, ["month"], env)
+  );
+  const participationRate =
+    Number(memberCount) > 0
+      ? Number(memberAttendeeCount || 0) / Number(memberCount)
+      : 0;
+  writes.push(
+    makeTransformWrite(
+      monthPath,
+      [
+        inc("sessionsCount", 1),
+        inc("participationSampleCount", 1),
+        inc("memberAttendeeSum", Number(memberAttendeeCount || 0)),
+        inc("memberCountSum", Number(memberCount || 0)),
+        inc("participationRateSum", participationRate),
+        reqTime("updatedAt"),
+      ],
+      env
+    )
+  );
+  try {
+    await commitWrites(token, env, writes);
+  } catch (e) {
+    if (!isAlreadyApplied(e)) console.log(e);
+  }
+}
+
+// Increments per-user club attendance (once per session), both monthly and summary.
+// Idempotent per user+session via gates under userStats/{uid}/gates
+async function commitClubPerUserAttendance({
+  clubsCol,
+  clubId,
+  endMonth,
+  sessionKey,
+  attendeeUids,
+  env,
+  token,
+}) {
+  for (const uid of Array.isArray(attendeeUids) ? attendeeUids : []) {
+    const basePath = `${clubsCol}/${clubId}/userStats/${uid}`;
+    const monthPath = `${basePath}/monthly/${endMonth}`;
+
+    // Monthly attendance gate and increment
+    {
+      const monthlyKey = `attendance:${endMonth}:${uid}:${sessionKey}`;
+      const writes = [];
+      writes.push(
+        makeUpdatePrecondCreate(
+          `${basePath}/gates/${monthlyKey}`,
+          {
+            taskKey: monthlyKey,
+            sessionKey,
+            scope: { uid, month: endMonth, clubId },
+            workerVersion: WORKER_VERSION,
+            createdAt: { __ts: true },
+          },
+          env
+        )
+      );
+      writes.push(
+        makeUpdateMaskWrite(monthPath, { month: endMonth }, ["month"], env)
+      );
+      writes.push(
+        makeTransformWrite(
+          monthPath,
+          [inc("attendance.sessions", 1), reqTime("updatedAt")],
+          env
+        )
+      );
+      try {
+        await commitWrites(token, env, writes);
+      } catch (e) {
+        if (!isAlreadyApplied(e)) console.log(e);
+      }
+    }
+
+    // Summary attendance gate and increment
+    {
+      const summaryKey = `attendance:summary:${uid}:${sessionKey}`;
+      const writes = [];
+      writes.push(
+        makeUpdatePrecondCreate(
+          `${basePath}/gates/${summaryKey}`,
+          {
+            taskKey: summaryKey,
+            sessionKey,
+            scope: { uid, clubId },
+            workerVersion: WORKER_VERSION,
+            createdAt: { __ts: true },
+          },
+          env
+        )
+      );
+      // ensure summary doc exists
+      writes.push(
+        makeUpdateMaskWrite(basePath, { uid, clubId }, ["uid", "clubId"], env)
+      );
+      writes.push(
+        makeTransformWrite(
+          basePath,
+          [inc("attendance.sessions", 1), reqTime("updatedAt")],
+          env
+        )
+      );
+      try {
+        await commitWrites(token, env, writes);
+      } catch (e) {
+        if (!isAlreadyApplied(e)) console.log(e);
+      }
     }
   }
 }

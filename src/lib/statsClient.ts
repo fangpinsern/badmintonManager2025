@@ -242,6 +242,50 @@ function fieldPathFor(mode: LeaderboardMode, metric: LeaderboardMetric) {
   return `totals.${mode}.${metric}`;
 }
 
+// ---- Club-scoped reads ----
+
+export async function getClubMonthlyAggregate(
+  clubId: string,
+  month: string,
+  test?: boolean
+) {
+  const clubsRoot = test ?? isTestMode() ? "clubs_test" : "clubs";
+  const ref = doc(db as any, clubsRoot, clubId, "monthly", month);
+  const snap = await getDoc(ref);
+  return snap.exists() ? (snap.data() as any) : null;
+}
+
+export async function getClubUserMonthly(
+  clubId: string,
+  uid: string,
+  month: string,
+  test?: boolean
+) {
+  const clubsRoot = test ?? isTestMode() ? "clubs_test" : "clubs";
+  const ref = doc(
+    db as any,
+    clubsRoot,
+    clubId,
+    "userStats",
+    uid,
+    "monthly",
+    month
+  );
+  const snap = await getDoc(ref);
+  return snap.exists() ? (snap.data() as any) : null;
+}
+
+export async function getClubUserSummary(
+  clubId: string,
+  uid: string,
+  test?: boolean
+) {
+  const clubsRoot = test ?? isTestMode() ? "clubs_test" : "clubs";
+  const ref = doc(db as any, clubsRoot, clubId, "userStats", uid);
+  const snap = await getDoc(ref);
+  return snap.exists() ? (snap.data() as any) : null;
+}
+
 // Returns top users by the chosen metric, optionally split by mode. Prioritizes doubles by passing mode="doubles".
 export async function getTopUsersBy(
   metric: LeaderboardMetric,
