@@ -58,7 +58,8 @@ export default function ClubStats({
         const prSum = Number(agg?.participationRateSum || 0);
         const prSamples = Number(agg?.participationSampleCount || 0);
         setSessionsThisMonth(sessCount);
-        setParticipationAvg(prSamples > 0 ? prSum / prSamples : 0);
+        // participationRateSum is stored as an integer scaled by 100
+        setParticipationAvg(prSamples > 0 ? prSum / prSamples / 100 : 0);
 
         const uids = (memberUids || []).filter(Boolean);
         if (!uids.length) {

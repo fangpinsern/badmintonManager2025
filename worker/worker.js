@@ -4207,6 +4207,9 @@ async function commitClubMonthlyAggregate({
     Number(memberCount) > 0
       ? Number(memberAttendeeCount || 0) / Number(memberCount)
       : 0;
+  const participationRateX100 = Math.floor(
+    Number(participationRate * 100) || 0
+  );
   writes.push(
     makeTransformWrite(
       monthPath,
@@ -4215,7 +4218,7 @@ async function commitClubMonthlyAggregate({
         inc("participationSampleCount", 1),
         inc("memberAttendeeSum", Number(memberAttendeeCount || 0)),
         inc("memberCountSum", Number(memberCount || 0)),
-        inc("participationRateSum", participationRate),
+        inc("participationRateSum", participationRateX100),
         reqTime("updatedAt"),
       ],
       env
@@ -4224,7 +4227,7 @@ async function commitClubMonthlyAggregate({
   try {
     await commitWrites(token, env, writes);
   } catch (e) {
-    if (!isAlreadyApplied(e)) console.log(e);
+    if (!isAlreadyApplied(e)) console.log("monthly aggregate error", e);
   }
 }
 
