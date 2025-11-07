@@ -28,6 +28,9 @@ function GameRecorderOverlay({
   const [scoreA, setScoreA] = useState<number>(0);
   const [scoreB, setScoreB] = useState<number>(0);
   const [paused, setPaused] = useState(false);
+  const [facingMode, setFacingMode] = useState<"environment" | "user">(
+    "environment"
+  );
   const drawReqRef = useRef<number | null>(null);
   const scoreARef = useRef<number>(0);
   const scoreBRef = useRef<number>(0);
@@ -39,6 +42,10 @@ function GameRecorderOverlay({
   const [speechEnabled, setSpeechEnabled] = useState(true);
   const [bubbleA, setBubbleA] = useState(false);
   const [bubbleB, setBubbleB] = useState(false);
+  const [debugEnabled, setDebugEnabled] = useState(false);
+  const [debugRects, setDebugRects] = useState<
+    { x0: number; y0: number; x1: number; y1: number; label: string }[]
+  >([]);
   const bubbleTimerARef = useRef<number | null>(null);
   const bubbleTimerBRef = useRef<number | null>(null);
   const lastIncAtARef = useRef<number>(0);
@@ -185,9 +192,12 @@ function GameRecorderOverlay({
         const targetAspect = 16 / 9;
         stream = await navigator.mediaDevices.getUserMedia({
           video: {
-            facingMode: "environment",
+            facingMode,
             // Hint the camera to capture in 16:9 (or 9:16 for portrait). Browsers may ignore if unsupported.
             aspectRatio: { ideal: targetAspect },
+            width: { ideal: 1920 },
+            height: { ideal: 1080 },
+            frameRate: { ideal: 30 },
           },
           audio: true,
         });
@@ -303,7 +313,7 @@ function GameRecorderOverlay({
       setRecording(false);
       setPaused(false);
     };
-  }, [open]);
+  }, [open, facingMode]);
 
   const startRecording = useCallback(() => {
     try {
@@ -436,16 +446,16 @@ function GameRecorderOverlay({
     };
   }, [recording, paused]);
 
-  // Gesture detection loop (finger count: 1 -> Team A, 2 -> Team B)
+  // Gesture detection loop (open palm -> Team A, closed fist -> Team B)
   useEffect(() => {
     if (!open || !gestureEnabled) return;
     let cancelled = false;
     let rafId: number | null = null;
     let handLandmarker: any = null;
     // Stability counters for consecutive frames
-    let stableOneCount = 0;
-    let stableTwoCount = 0;
-    const REQUIRED_STABLE_FRAMES = 4; // longer hold to avoid quick false triggers
+    let stableOneCount = 0; // open palm
+    let stableTwoCount = 0; // closed fist
+    const REQUIRED_STABLE_FRAMES = 4; // hold to avoid quick false triggers
     const COOLDOWN_MS = 1200;
     const MIN_HAND_BOX_DIAGONAL = 0.08; // normalized diagonal threshold to ensure sufficient hand size
     // Latching: require release (gesture not seen) before next increment
@@ -530,7 +540,7 @@ function GameRecorderOverlay({
     }
 
     function areNonTargetFingersCurled(landmarks: any[]) {
-      // Ring and pinky must NOT be extended to avoid 5-finger being seen as 2
+      // For closed fist, ring and pinky should be curled (small angle)
       const RING_TIP = 16,
         RING_PIP = 14,
         RING_MCP = 13;
@@ -558,52 +568,29 @@ function GameRecorderOverlay({
       return ang >= 160; // extended if nearly straight
     }
 
-    function matchesOne(landmarks: any[]) {
+    function matchesOpenPalm(landmarks: any[]) {
       if (boundingBoxDiagonal(landmarks) < MIN_HAND_BOX_DIAGONAL) return false;
-      const INDEX_TIP = 8,
-        INDEX_PIP = 6,
-        INDEX_MCP = 5;
-      const MIDDLE_TIP = 12,
-        MIDDLE_PIP = 10,
-        MIDDLE_MCP = 9;
-      const indexExt = isExtended(landmarks, INDEX_TIP, INDEX_PIP, INDEX_MCP);
-      const middleExt = isExtended(
-        landmarks,
-        MIDDLE_TIP,
-        MIDDLE_PIP,
-        MIDDLE_MCP
-      );
-      const thumbExt = isThumbExtended(landmarks);
-      return (
-        indexExt &&
-        !middleExt &&
-        areNonTargetFingersCurled(landmarks) &&
-        !thumbExt
-      );
+      // Require extended fingers for index, middle, ring, pinky (thumb optional)
+      const extIndex = isExtended(landmarks, 8, 6, 5);
+      const extMiddle = isExtended(landmarks, 12, 10, 9);
+      const extRing = isExtended(landmarks, 16, 14, 13);
+      const extPinky = isExtended(landmarks, 20, 18, 17);
+      const extendedCount = [extIndex, extMiddle, extRing, extPinky].filter(
+        Boolean
+      ).length;
+      return extendedCount >= 3; // tolerate one finger slightly bent
     }
 
-    function matchesTwo(landmarks: any[]) {
+    function matchesClosedFist(landmarks: any[]) {
       if (boundingBoxDiagonal(landmarks) < MIN_HAND_BOX_DIAGONAL) return false;
-      const INDEX_TIP = 8,
-        INDEX_PIP = 6,
-        INDEX_MCP = 5;
-      const MIDDLE_TIP = 12,
-        MIDDLE_PIP = 10,
-        MIDDLE_MCP = 9;
-      const indexExt = isExtended(landmarks, INDEX_TIP, INDEX_PIP, INDEX_MCP);
-      const middleExt = isExtended(
-        landmarks,
-        MIDDLE_TIP,
-        MIDDLE_PIP,
-        MIDDLE_MCP
-      );
+      const extIndex = isExtended(landmarks, 8, 6, 5);
+      const extMiddle = isExtended(landmarks, 12, 10, 9);
+      const extRing = isExtended(landmarks, 16, 14, 13);
+      const extPinky = isExtended(landmarks, 20, 18, 17);
       const thumbExt = isThumbExtended(landmarks);
-      return (
-        indexExt &&
-        middleExt &&
-        areNonTargetFingersCurled(landmarks) &&
-        !thumbExt
-      );
+      const anyExt = extIndex || extMiddle || extRing || extPinky || thumbExt;
+      // Also require ring/pinky curled to reduce false positives
+      return !anyExt && areNonTargetFingersCurled(landmarks);
     }
 
     function teamForCount(count: number): "A" | "B" | null {
@@ -655,16 +642,42 @@ function GameRecorderOverlay({
         if (releaseTwoFrames >= RELEASE_REQUIRED_FRAMES) armedTwo = true;
         stableOneCount = 0;
         stableTwoCount = 0;
+        if (debugEnabled) setDebugRects([]);
         return;
       }
 
-      let sawOne = false;
-      let sawTwo = false;
+      let sawOne = false; // open palm
+      let sawTwo = false; // closed fist
+      const rects: {
+        x0: number;
+        y0: number;
+        x1: number;
+        y1: number;
+        label: string;
+      }[] = [];
       for (let i = 0; i < landmarksList.length; i++) {
         const lm = landmarksList[i];
-        if (matchesOne(lm)) sawOne = true;
-        else if (matchesTwo(lm)) sawTwo = true;
+        const open = matchesOpenPalm(lm);
+        const closed = !open && matchesClosedFist(lm);
+        if (open) sawOne = true;
+        else if (closed) sawTwo = true;
+        if (debugEnabled) {
+          let minX = 1,
+            maxX = 0,
+            minY = 1,
+            maxY = 0;
+          for (const p of lm) {
+            if (!p) continue;
+            if (p.x < minX) minX = p.x;
+            if (p.x > maxX) maxX = p.x;
+            if (p.y < minY) minY = p.y;
+            if (p.y > maxY) maxY = p.y;
+          }
+          const label = open ? "open" : closed ? "closed" : "other";
+          rects.push({ x0: minX, y0: minY, x1: maxX, y1: maxY, label });
+        }
       }
+      if (debugEnabled) setDebugRects(rects);
 
       // If both present simultaneously, treat as none this frame
       const detOne = sawOne && !sawTwo;
@@ -790,6 +803,38 @@ function GameRecorderOverlay({
             playsInline
             muted
           />
+          {debugEnabled && debugRects.length > 0 && (
+            <div className="absolute inset-0 pointer-events-none">
+              {debugRects.map((r, i) => {
+                const left = `${Math.max(0, Math.min(1, r.x0)) * 100}%`;
+                const top = `${Math.max(0, Math.min(1, r.y0)) * 100}%`;
+                const width = `${Math.max(0, Math.min(1, r.x1 - r.x0)) * 100}%`;
+                const height = `${
+                  Math.max(0, Math.min(1, r.y1 - r.y0)) * 100
+                }%`;
+                const color =
+                  r.label === "open"
+                    ? "#22c55e"
+                    : r.label === "closed"
+                    ? "#3b82f6"
+                    : "#9ca3af";
+                return (
+                  <div
+                    key={i}
+                    style={{ left, top, width, height, borderColor: color }}
+                    className="absolute border-2"
+                  >
+                    <div
+                      style={{ backgroundColor: color }}
+                      className="absolute -top-5 left-0 text-[10px] text-white px-1 rounded"
+                    >
+                      {r.label}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
           <canvas ref={canvasRef} className="hidden" />
 
           <div className="absolute top-0 left-0 right-0 p-3 flex flex-col gap-4 items-center justify-between text-white text-sm">
@@ -897,11 +942,31 @@ function GameRecorderOverlay({
             </div>
             {gestureEnabled && (
               <div className="rounded-full bg-black/40 border border-white/10 text-white text-xs px-3 py-1">
-                Gestures: show 1 finger → +1 Team A, 2 fingers → +1 Team B. Keep
+                Gestures: open palm → +1 Team A, closed fist → +1 Team B. Keep
                 hands around 1 racket away for best results. Toggle Voice for
                 readout.
               </div>
             )}
+            <div className="w-full flex items-center justify-center gap-2">
+              <button
+                onClick={() =>
+                  setFacingMode((m) =>
+                    m === "environment" ? "user" : "environment"
+                  )
+                }
+                className="rounded-md bg-white/10 px-3 py-1 backdrop-blur border border-white/20"
+              >
+                Switch camera
+              </button>
+              <label className="flex items-center gap-1">
+                <input
+                  type="checkbox"
+                  checked={debugEnabled}
+                  onChange={(e) => setDebugEnabled(e.target.checked)}
+                />
+                <span>Debug overlay</span>
+              </label>
+            </div>
             {/* Team labels below help text */}
             <div className="w-full flex items-start justify-center">
               <div className="w-full mt-2 rounded-lg bg-black/40 border border-white/10 text-white text-xs px-3 py-2">
