@@ -46,6 +46,9 @@ function GameRecorderOverlay({
   const [debugRects, setDebugRects] = useState<
     { x0: number; y0: number; x1: number; y1: number; label: string }[]
   >([]);
+  const [requirePalmFront, setRequirePalmFront] = useState(true);
+  const [invertPalmFrontTest, setInvertPalmFrontTest] = useState(false);
+  const [requireFistSideOn, setRequireFistSideOn] = useState(true);
   const bubbleTimerARef = useRef<number | null>(null);
   const bubbleTimerBRef = useRef<number | null>(null);
   const lastIncAtARef = useRef<number>(0);
@@ -494,6 +497,38 @@ function GameRecorderOverlay({
       return angleDeg(v1.x, v1.y, v1.z, v2.x, v2.y, v2.z);
     }
 
+    function isPalmFacingCamera(landmarks: any[]) {
+      // Use palm normal from wrist (0), index MCP (5), pinky MCP (17)
+      const w = landmarks[0];
+      const i = landmarks[5];
+      const p = landmarks[17];
+      if (!w || !i || !p) return true;
+      const v1 = { x: i.x - w.x, y: i.y - w.y, z: (i.z ?? 0) - (w.z ?? 0) };
+      const v2 = { x: p.x - w.x, y: p.y - w.y, z: (p.z ?? 0) - (w.z ?? 0) };
+      const nx = v1.y * v2.z - v1.z * v2.y;
+      const ny = v1.z * v2.x - v1.x * v2.z;
+      const nz = v1.x * v2.y - v1.y * v2.x;
+      // Heuristic: treat nz < 0 as palm facing camera (depends on coordinate convention)
+      const facing = nz < 0;
+      return invertPalmFrontTest ? !facing : facing;
+    }
+
+    function isPalmSideOn(landmarks: any[]) {
+      // Side-on if palm normal is approximately perpendicular to camera axis (small |nz| component)
+      const w = landmarks[0];
+      const i = landmarks[5];
+      const p = landmarks[17];
+      if (!w || !i || !p) return false;
+      const v1 = { x: i.x - w.x, y: i.y - w.y, z: (i.z ?? 0) - (w.z ?? 0) };
+      const v2 = { x: p.x - w.x, y: p.y - w.y, z: (p.z ?? 0) - (w.z ?? 0) };
+      const nx = v1.y * v2.z - v1.z * v2.y;
+      const ny = v1.z * v2.x - v1.x * v2.z;
+      const nz = v1.x * v2.y - v1.y * v2.x;
+      const mag = Math.hypot(nx, ny, nz) || 1;
+      const zRatio = Math.abs(nz) / mag; // 0 → perfectly side-on; 1 → fully facing/away
+      return zRatio <= 0.35; // threshold tunable
+    }
+
     function isExtended(
       landmarks: any[],
       tip: number,
@@ -570,6 +605,7 @@ function GameRecorderOverlay({
 
     function matchesOpenPalm(landmarks: any[]) {
       if (boundingBoxDiagonal(landmarks) < MIN_HAND_BOX_DIAGONAL) return false;
+      if (requirePalmFront && !isPalmFacingCamera(landmarks)) return false;
       // Require extended fingers for index, middle, ring, pinky (thumb optional)
       const extIndex = isExtended(landmarks, 8, 6, 5);
       const extMiddle = isExtended(landmarks, 12, 10, 9);
@@ -583,6 +619,12 @@ function GameRecorderOverlay({
 
     function matchesClosedFist(landmarks: any[]) {
       if (boundingBoxDiagonal(landmarks) < MIN_HAND_BOX_DIAGONAL) return false;
+      if (requireFistSideOn) {
+        if (!isPalmSideOn(landmarks)) return false;
+      } else if (requirePalmFront && !isPalmFacingCamera(landmarks)) {
+        // legacy option: allow using palm-front requirement instead
+        return false;
+      }
       const extIndex = isExtended(landmarks, 8, 6, 5);
       const extMiddle = isExtended(landmarks, 12, 10, 9);
       const extRing = isExtended(landmarks, 16, 14, 13);
@@ -966,6 +1008,36 @@ function GameRecorderOverlay({
                 />
                 <span>Debug overlay</span>
               </label>
+              {debugEnabled && (
+                <label className="flex items-center gap-1">
+                  <input
+                    type="checkbox"
+                    checked={requirePalmFront}
+                    onChange={(e) => setRequirePalmFront(e.target.checked)}
+                  />
+                  <span>Open palm: front only</span>
+                </label>
+              )}
+              {debugEnabled && (
+                <label className="flex items-center gap-1">
+                  <input
+                    type="checkbox"
+                    checked={requireFistSideOn}
+                    onChange={(e) => setRequireFistSideOn(e.target.checked)}
+                  />
+                  <span>Fist: side-on only</span>
+                </label>
+              )}
+              {debugEnabled && (
+                <label className="flex items-center gap-1">
+                  <input
+                    type="checkbox"
+                    checked={invertPalmFrontTest}
+                    onChange={(e) => setInvertPalmFrontTest(e.target.checked)}
+                  />
+                  <span>Invert palm test</span>
+                </label>
+              )}
             </div>
             {/* Team labels below help text */}
             <div className="w-full flex items-start justify-center">
