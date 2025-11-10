@@ -466,6 +466,9 @@ function SessionList({ onOpen }: { onOpen: (id: string) => void }) {
   const endSession = useStore((s) => s.endSession);
   const [endFor, setEndFor] = useState<string | null>(null);
   const [shuttles, setShuttles] = useState<string>("0");
+  const [requestPayment, setRequestPayment] = useState<boolean>(false);
+  const [courtCost, setCourtCost] = useState<string>("0");
+  const [shuttleCost, setShuttleCost] = useState<string>("0");
   const me = auth.currentUser?.uid || null;
 
   const nowIsoDate = new Date().toISOString().slice(0, 10);
@@ -550,6 +553,9 @@ function SessionList({ onOpen }: { onOpen: (id: string) => void }) {
                         if ((ss.courts || []).some((c) => c.inProgress)) return;
                         setEndFor(ss.id);
                         setShuttles("0");
+                        setRequestPayment(false);
+                        setCourtCost("0");
+                        setShuttleCost("0");
                       }}
                       disabled={(ss.courts || []).some((c) => c.inProgress)}
                       className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-1.5 text-amber-700 disabled:opacity-50"
@@ -603,6 +609,12 @@ function SessionList({ onOpen }: { onOpen: (id: string) => void }) {
           }
           shuttles={shuttles}
           onShuttlesChange={setShuttles}
+          courtCost={courtCost}
+          onCourtCostChange={setCourtCost}
+          shuttleCost={shuttleCost}
+          onShuttleCostChange={setShuttleCost}
+          requestPayment={requestPayment}
+          onRequestPaymentChange={setRequestPayment}
           onCancel={() => setEndFor(null)}
           onConfirm={() => {
             const num = Number(shuttles);
@@ -614,6 +626,19 @@ function SessionList({ onOpen }: { onOpen: (id: string) => void }) {
             if (endFor) {
               (async () => {
                 try {
+                  // Persist optional payment request before saving
+                  try {
+                    const enabled = !!requestPayment;
+                    const cc = Number(courtCost);
+                    const sc = Number(shuttleCost);
+                    (useStore.getState() as any).setPaymentRequest?.(endFor, {
+                      enabled,
+                      courtCost:
+                        Number.isFinite(cc) && cc >= 0 ? cc : undefined,
+                      shuttleCost:
+                        Number.isFinite(sc) && sc >= 0 ? sc : undefined,
+                    });
+                  } catch {}
                   const latest = (useStore.getState().sessions || []).find(
                     (s) => s.id === endFor
                   );
