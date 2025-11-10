@@ -1346,15 +1346,28 @@ export default {
                       parts.push(`Court: $${fmt(courtC)}`);
                     if (Number.isFinite(shuttleC) && shuttleC > 0)
                       parts.push(`Shuttle: $${fmt(shuttleC)}`);
-                    const breakdown = parts.length
-                      ? ` ${parts.join("\n")}`
-                      : "";
+                    const breakdown = parts.length ? `${parts.join("\n")}` : "";
                     paymentSection =
                       `\n\n💳 Payment\n` +
                       `${breakdown}\n` +
                       `Total: $${fmt(
                         totalC
                       )}\nPlayers: ${nPlayers}\nEach: $${fmt(each)}`;
+
+                    // Append organizer 'pay to' line using organizer's username from session snapshot (no extra calls)
+                    try {
+                      let organizerUsername = "";
+                      const owner = (
+                        Array.isArray(playersAll) ? playersAll : []
+                      ).find((p) => p && p.accountUid === organizerUid);
+                      const uname2 = (owner && owner.accountUsername) || "";
+                      if (uname2) organizerUsername = String(uname2);
+                      if (organizerUsername) {
+                        paymentSection += `\npay to @${escapeHtml(
+                          organizerUsername
+                        )}`;
+                      }
+                    } catch {}
                   }
                 } catch {}
 
