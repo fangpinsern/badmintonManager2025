@@ -14,6 +14,12 @@ function EndSessionModal({
   title,
   shuttles,
   onShuttlesChange,
+  courtCost,
+  onCourtCostChange,
+  shuttleCost,
+  onShuttleCostChange,
+  requestPayment,
+  onRequestPaymentChange,
   onCancel,
   onConfirm,
   organizerUid,
@@ -24,6 +30,12 @@ function EndSessionModal({
   title: string;
   shuttles: string;
   onShuttlesChange: (v: string) => void;
+  courtCost: string;
+  onCourtCostChange: (v: string) => void;
+  shuttleCost: string;
+  onShuttleCostChange: (v: string) => void;
+  requestPayment: boolean;
+  onRequestPaymentChange: (v: boolean) => void;
   onCancel: () => void;
   onConfirm: () => void;
   organizerUid?: string | null;
@@ -253,6 +265,47 @@ function EndSessionModal({
             onChange={(e) => onShuttlesChange(e.target.value)}
           />
         </div>
+        <div className="mt-3 flex items-center gap-2">
+          <input
+            id="request-payment"
+            type="checkbox"
+            className="h-4 w-4"
+            checked={requestPayment}
+            onChange={(e) => onRequestPaymentChange(e.target.checked)}
+          />
+          <label htmlFor="request-payment" className="text-sm text-gray-800">
+            Include payment request in end-session Telegram message
+          </label>
+        </div>
+        {requestPayment && (
+          <>
+            <div className="mt-3">
+              <Input
+                type="number"
+                label="Court cost"
+                inputMode="decimal"
+                step="0.01"
+                min={0}
+                value={courtCost}
+                onChange={(e) => onCourtCostChange(e.target.value)}
+              />
+            </div>
+            <div className="mt-3">
+              <Input
+                type="number"
+                label="Shuttlecock cost"
+                inputMode="decimal"
+                step="0.01"
+                min={0}
+                value={shuttleCost}
+                onChange={(e) => onShuttleCostChange(e.target.value)}
+              />
+            </div>
+            <div className="mt-2 text-[11px] text-gray-600">
+              Cost will be split equally among all players in the session.
+            </div>
+          </>
+        )}
         <div className="mt-3 flex items-center justify-end gap-2">
           <button
             onClick={() => {

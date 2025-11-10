@@ -288,6 +288,9 @@ function SessionManager({ onBack }: { onBack: () => void }) {
   }, [session]);
   const [endOpen, setEndOpen] = useState(false);
   const [endShuttles, setEndShuttles] = useState<string>("0");
+  const [endCourtCost, setEndCourtCost] = useState<string>("0");
+  const [endShuttleCostMoney, setEndShuttleCostMoney] = useState<string>("0");
+  const [endRequestPayment, setEndRequestPayment] = useState<boolean>(false);
   const [editGameId, setEditGameId] = useState<string | null>(null);
   const [gamesFilter, setGamesFilter] = useState<string>("");
   const [gamesPage, setGamesPage] = useState<number>(1); // 10 per page
@@ -879,6 +882,12 @@ function SessionManager({ onBack }: { onBack: () => void }) {
           title={`End ${formatSessionTitle(session)}?`}
           shuttles={endShuttles}
           onShuttlesChange={setEndShuttles}
+          courtCost={endCourtCost}
+          onCourtCostChange={setEndCourtCost}
+          shuttleCost={endShuttleCostMoney}
+          onShuttleCostChange={setEndShuttleCostMoney}
+          requestPayment={endRequestPayment}
+          onRequestPaymentChange={setEndRequestPayment}
           onCancel={() => setEndOpen(false)}
           onConfirm={() => {
             const num = Number(endShuttles);
@@ -888,6 +897,21 @@ function SessionManager({ onBack }: { onBack: () => void }) {
             );
             (async () => {
               try {
+                // Persist optional payment request before saving
+                try {
+                  const enabled = !!endRequestPayment;
+                  const court = Number(endCourtCost);
+                  const shuttle = Number(endShuttleCostMoney);
+                  (useStore.getState() as any).setPaymentRequest?.(session.id, {
+                    enabled,
+                    courtCost:
+                      Number.isFinite(court) && court >= 0 ? court : undefined,
+                    shuttleCost:
+                      Number.isFinite(shuttle) && shuttle >= 0
+                        ? shuttle
+                        : undefined,
+                  });
+                } catch {}
                 const latest = (useStore.getState().sessions || []).find(
                   (s) => s.id === session.id
                 );

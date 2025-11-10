@@ -106,6 +106,10 @@ interface StoreState {
     partial: Partial<NonNullable<Session["autoAssignConfig"]>>
   ) => void;
   updateSessionMeta: (sessionId: string, partial: Partial<Session>) => void;
+  setPaymentRequest: (
+    sessionId: string,
+    info: { enabled?: boolean; courtCost?: number; shuttleCost?: number }
+  ) => void;
 }
 
 const useStore = create<StoreState>()((set, _get) => ({
@@ -1107,6 +1111,7 @@ const useStore = create<StoreState>()((set, _get) => ({
       sessions: s.sessions.map((ss) => {
         if (ss.id !== sessionId) return ss;
         const next: Partial<Session> = {};
+        // Only handle explicitly whitelisted keys here to preserve existing behavior
         // Allow updating date (YYYY-MM-DD) when explicitly provided
         if (Object.prototype.hasOwnProperty.call(partial, "date")) {
           try {
@@ -1207,6 +1212,32 @@ const useStore = create<StoreState>()((set, _get) => ({
         }
         console.log("here", next);
         return { ...ss, ...next } as Session;
+      }),
+    })),
+  // Minimal, explicit setter for paymentRequest to avoid altering updateSessionMeta semantics
+  setPaymentRequest: (
+    sessionId: string,
+    info: { enabled?: boolean; courtCost?: number; shuttleCost?: number }
+  ) =>
+    set((s) => ({
+      sessions: s.sessions.map((ss) => {
+        if (ss.id !== sessionId) return ss;
+        const enabled =
+          typeof info?.enabled === "boolean" ? info.enabled : false;
+        const court =
+          typeof info?.courtCost === "number" && isFinite(info.courtCost)
+            ? info.courtCost
+            : undefined;
+        const shuttle =
+          typeof info?.shuttleCost === "number" && isFinite(info.shuttleCost)
+            ? info.shuttleCost
+            : undefined;
+        const paymentRequest = {
+          enabled,
+          courtCost: court,
+          shuttleCost: shuttle,
+        };
+        return { ...ss, paymentRequest } as Session;
       }),
     })),
 

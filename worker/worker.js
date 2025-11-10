@@ -1323,7 +1323,43 @@ export default {
                 // Prepend explicit end notice per requirement
                 const endNotice =
                   "🔚 Session has ended. You can now check your stats.";
-                const finalText = `${endNotice}\n\n${summaryText}`;
+
+                // Optional payment request section (split equally across all players)
+                let paymentSection = "";
+                try {
+                  const pr = (payload && payload.paymentRequest) || {};
+                  const enabled = !!pr.enabled;
+                  const courtC = Number(pr.courtCost || 0);
+                  const shuttleC = Number(pr.shuttleCost || 0);
+                  const totalC =
+                    (Number.isFinite(courtC) ? courtC : 0) +
+                    (Number.isFinite(shuttleC) ? shuttleC : 0);
+                  const nPlayers = Array.isArray(playersAll)
+                    ? playersAll.length
+                    : 0;
+                  if (enabled && totalC > 0 && nPlayers > 0) {
+                    const each = totalC / nPlayers;
+                    const fmt = (n) =>
+                      Number.isFinite(n) ? n.toFixed(2) : String(n || 0);
+                    const parts = [];
+                    if (Number.isFinite(courtC) && courtC > 0)
+                      parts.push(`Court: ${fmt(courtC)}`);
+                    if (Number.isFinite(shuttleC) && shuttleC > 0)
+                      parts.push(`Shuttle: ${fmt(shuttleC)}`);
+                    const breakdown = parts.length
+                      ? ` (${parts.join(" • ")})`
+                      : "";
+                    paymentSection =
+                      `\n\n💳 Payment request\n` +
+                      `Total: ${fmt(
+                        totalC
+                      )}${breakdown} • Players: ${nPlayers} • Each: ${fmt(
+                        each
+                      )}`;
+                  }
+                } catch {}
+
+                const finalText = `${endNotice}\n\n${summaryText}${paymentSection}`;
 
                 // Keep link to session
                 const origin = req.headers.get("Origin") || "";
