@@ -1268,7 +1268,8 @@ export default {
           payload
         );
 
-        // Best-effort: edit the original Telegram message with a concise end-of-session summary
+        // Best-effort: send a new end-of-session message with a concise summary.
+        // If original session message exists, reply to it; otherwise send as standalone.
         // This is additive and fully gated; failures are swallowed to avoid altering existing behavior
         try {
           const mid = Number(payload?.telegramMessageId || 0);
@@ -1276,7 +1277,7 @@ export default {
             typeof payload?.clubId === "string" && payload.clubId
               ? String(payload.clubId)
               : "";
-          if (mid && clubIdForTelegram) {
+          if (clubIdForTelegram) {
             // Read Telegram config from protected sensitive notifications doc
             const sensitiveCol =
               String(env?.STATS_TEST_MODE || "") === "1" ||
@@ -1319,6 +1320,11 @@ export default {
                   avgMin,
                 });
 
+                // Prepend explicit end notice per requirement
+                const endNotice =
+                  "🔚 Session has ended. You can now check your stats.";
+                const finalText = `${endNotice}\n\n${summaryText}`;
+
                 // Keep link to session
                 const origin = req.headers.get("Origin") || "";
                 const allowOrigin = ALLOW_ORIGINS.has(origin)
@@ -1334,17 +1340,18 @@ export default {
                 };
 
                 try {
-                  await editTelegramMessage({
+                  await sendTelegram({
                     token: botToken,
                     chatId: telegram.chatId,
-                    messageId: mid,
-                    text: summaryText,
+                    text: finalText,
                     replyMarkup,
+                    replyToMessageId:
+                      Number.isFinite(mid) && mid > 0 ? mid : undefined,
                     parse: "HTML",
                   });
                 } catch (e) {
                   try {
-                    console.log("telegram end-summary edit failed", e);
+                    console.log("telegram end-summary send failed", e);
                   } catch {}
                 }
               }
@@ -1612,6 +1619,7 @@ async function sendTelegram({
   chatId,
   text,
   replyMarkup,
+  replyToMessageId,
   parse = "HTML",
 }) {
   const url = `https://api.telegram.org/bot${token}/sendMessage`;
@@ -1620,6 +1628,14 @@ async function sendTelegram({
   params.set("text", String(text || ""));
   if (parse) params.set("parse_mode", String(parse));
   params.set("disable_web_page_preview", "true");
+  if (
+    Number.isFinite(Number(replyToMessageId)) &&
+    Number(replyToMessageId) > 0
+  ) {
+    params.set("reply_to_message_id", String(replyToMessageId));
+    // Ensure reply works even if the original message is not found (graceful behavior)
+    params.set("allow_sending_without_reply", "true");
+  }
   if (replyMarkup) {
     try {
       params.set("reply_markup", JSON.stringify(replyMarkup));
