@@ -13,6 +13,7 @@ import { EndSessionModal } from "@/components/session/endSessionModal";
 import { AddCourtButton } from "@/components/session/addCourtButton";
 import { CourtCard } from "@/components/session/courtCard";
 import { GameEditModal } from "@/components/session/gameEditModal";
+import { ConfirmModal } from "@/components/session/confirmModal";
 import LoadingScreen from "@/components/LoadingScreen";
 import Link from "next/link";
 import { toUsernameSlug } from "@/lib/helper";
@@ -33,7 +34,11 @@ import {
   addAndLinkPlayerByUsername,
 } from "@/lib/firestoreSessions";
 import { subscribeMyClubs } from "@/lib/firestoreClubs";
-import { subscribeClubVenues, type ClubVenue } from "@/lib/firestoreClubs";
+import {
+  subscribeClubVenues,
+  type ClubVenue,
+  type FirestoreClub,
+} from "@/lib/firestoreClubs";
 import { subscribeClubSessions } from "@/lib/firestoreSessions";
 import {
   useParams,
@@ -72,6 +77,7 @@ function SessionManager({ onBack }: { onBack: () => void }) {
   const [needsUsername, setNeedsUsername] = useState(false);
   const [myUsername, setMyUsername] = useState<string>("");
   const [myClubIds, setMyClubIds] = useState<string[]>([]);
+  const [myClubs, setMyClubs] = useState<FirestoreClub[]>([]);
   const [clubIdForViewing, setClubIdForViewing] = useState<string | null>(null);
   const [joinBusy, setJoinBusy] = useState(false);
   const [joinError, setJoinError] = useState<string>("");
@@ -82,6 +88,9 @@ function SessionManager({ onBack }: { onBack: () => void }) {
   const [settingsDate, setSettingsDate] = useState<string>("");
   const [settingsTime, setSettingsTime] = useState<string>("");
   const [clubVenues, setClubVenues] = useState<ClubVenue[]>([]);
+  const [clubLinkOpen, setClubLinkOpen] = useState(false);
+  const [selectedClubId, setSelectedClubId] = useState<string>("");
+  const [removeClubOpen, setRemoveClubOpen] = useState(false);
 
   useEffect(() => {
     return onAuthStateChanged(auth, (u) => {
@@ -144,6 +153,7 @@ function SessionManager({ onBack }: { onBack: () => void }) {
     if (!id || !user?.uid) return;
     // Track club membership
     const unsubClubs = subscribeMyClubs(user.uid, (clubs) => {
+      setMyClubs(clubs || []);
       setMyClubIds((clubs || []).map((c) => c.id));
     });
     return () => {
@@ -481,7 +491,6 @@ function SessionManager({ onBack }: { onBack: () => void }) {
       >
         ← Back
       </button>
-
       <Card>
         {needsUsername && (
           <UsernameModal
@@ -791,13 +800,80 @@ function SessionManager({ onBack }: { onBack: () => void }) {
           </div>
         </div>
       )}
-
+      {clubLinkOpen && isOrganizer && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div
+            className="absolute inset-0 bg-black/40"
+            onClick={() => setClubLinkOpen(false)}
+          ></div>
+          <div className="relative w-full max-w-sm rounded-2xl bg-white p-4 shadow-lg">
+            <div className="mb-2 text-base font-semibold">
+              {session.clubId ? "Change club" : "Add session to club"}
+            </div>
+            <div className="max-h-64 overflow-y-auto rounded-lg border">
+              {(myClubs || []).length === 0 ? (
+                <div className="p-3 text-sm text-gray-600">
+                  You are not a member of any clubs.
+                </div>
+              ) : (
+                <ul className="divide-y">
+                  {myClubs.map((c) => {
+                    const active = selectedClubId === c.id;
+                    return (
+                      <li key={c.id}>
+                        <button
+                          type="button"
+                          onClick={() => setSelectedClubId(c.id)}
+                          className={`flex w-full items-center justify-between px-3 py-2 text-sm ${
+                            active ? "bg-gray-100" : ""
+                          }`}
+                          aria-pressed={active}
+                        >
+                          <span className="truncate">{c.name || c.id}</span>
+                          <span
+                            className={`ml-2 inline-block h-4 w-4 rounded-full border ${
+                              active ? "bg-black" : "bg-white"
+                            }`}
+                            aria-hidden="true"
+                          ></span>
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
+            <div className="mt-3 flex items-center justify-end gap-2">
+              <button
+                className="rounded-xl border px-3 py-1.5 text-sm"
+                onClick={() => setClubLinkOpen(false)}
+              >
+                Cancel
+              </button>
+              <button
+                className="rounded-xl bg-black px-3 py-1.5 text-sm text-white disabled:opacity-50"
+                disabled={
+                  !selectedClubId || !myClubIds.includes(String(selectedClubId))
+                }
+                onClick={async () => {
+                  if (!isOrganizer) return;
+                  const cid = String(selectedClubId || "");
+                  if (!cid || !myClubIds.includes(cid)) return;
+                  updateSessionMeta(session.id, { clubId: cid } as any);
+                  setClubLinkOpen(false);
+                }}
+              >
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {joinError && (
         <Card>
           <div className="text-[11px] text-red-600">{joinError}</div>
         </Card>
       )}
-
       {isOrganizer && !!endOpen && (
         <EndSessionModal
           title={`End ${formatSessionTitle(session)}?`}
@@ -846,7 +922,6 @@ function SessionManager({ onBack }: { onBack: () => void }) {
           })()}
         />
       )}
-
       {session.ended && session.stats && (
         <Card>
           <div className="mb-2 flex items-center justify-between">
@@ -1014,20 +1089,70 @@ function SessionManager({ onBack }: { onBack: () => void }) {
         </Card>
       )}
 
-      {session.clubId && (
-        <Card>
+      <Card>
+        {isOrganizer && !session.ended && !session.clubId && (
+          <button
+            onClick={() => {
+              setSelectedClubId(session.clubId || "");
+              setClubLinkOpen(true);
+            }}
+            title="Add session to a club"
+            aria-label="Add session to a club"
+            className="rounded-xl border px-2 py-1.5"
+          >
+            Add to club
+          </button>
+        )}
+        {session.clubId && (
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="text-[11px] text-gray-600">
               This is a club session
             </div>
-            <Link
-              href={`/clubs/${session.clubId}`}
-              className="rounded border px-2 py-1 text-xs"
-            >
-              Club
-            </Link>
+            <div className="flex items-center gap-2">
+              <Link
+                href={`/clubs/${session.clubId}`}
+                className="rounded border px-2 py-1 text-xs"
+              >
+                Club
+              </Link>
+              {isOrganizer && !session.ended && (
+                <>
+                  <button
+                    onClick={() => {
+                      setSelectedClubId(session.clubId || "");
+                      setClubLinkOpen(true);
+                    }}
+                    className="rounded border px-2 py-1 text-xs"
+                  >
+                    Change club
+                  </button>
+                  <button
+                    onClick={() => {
+                      setRemoveClubOpen(true);
+                    }}
+                    className="rounded border px-2 py-1 text-xs"
+                  >
+                    Remove from club
+                  </button>
+                </>
+              )}
+            </div>
           </div>
-        </Card>
+        )}
+      </Card>
+
+      {removeClubOpen && isOrganizer && (
+        <ConfirmModal
+          open={true}
+          title="Remove session from club?"
+          body="This session will no longer appear under the club."
+          confirmText="Remove"
+          onCancel={() => setRemoveClubOpen(false)}
+          onConfirm={() => {
+            updateSessionMeta(session.id, { clubId: undefined } as any);
+            setRemoveClubOpen(false);
+          }}
+        />
       )}
 
       {canManage && (
@@ -1271,9 +1396,7 @@ function SessionManager({ onBack }: { onBack: () => void }) {
           </div>
         </Card>
       )}
-
       {/* Auto-assign settings now in a modal, opened from header button */}
-
       {/* Players and Courts */}
       <div className="space-y-3 layout-grid">
         <Card>
@@ -1581,7 +1704,6 @@ function SessionManager({ onBack }: { onBack: () => void }) {
           </div>
         </Card>
       </div>
-
       <Card>
         <div className="mb-3 flex items-center justify-between">
           <h3 className="text-base font-semibold">Games</h3>

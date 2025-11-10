@@ -1194,6 +1194,17 @@ const useStore = create<StoreState>()((set, _get) => ({
             next.venue = out as Session["venue"];
           }
         }
+        // Allow updating clubId when explicitly provided
+        if (Object.prototype.hasOwnProperty.call(partial, "clubId")) {
+          try {
+            const raw = (partial as any).clubId;
+            const val =
+              typeof raw === "string" && raw.trim()
+                ? String(raw).trim()
+                : undefined;
+            next.clubId = val as any;
+          } catch {}
+        }
         console.log("here", next);
         return { ...ss, ...next } as Session;
       }),
