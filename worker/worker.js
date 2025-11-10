@@ -430,6 +430,54 @@ export default {
         }
       }
 
+      if (type === "session_removed") {
+        const organizerUid = String(payload?.organizerUid || "").trim();
+        const sessionId = String(payload?.sessionId || "").trim();
+        if (!organizerUid || !sessionId) {
+          return withCors(
+            new Response("Missing organizer/session", { status: 400 }),
+            req
+          );
+        }
+        // Load session payload to get message id
+        const userCol =
+          String(env?.STATS_TEST_MODE || "").toLowerCase() === "true" ||
+          env?.STATS_TEST_MODE === "1"
+            ? "users_test"
+            : "users";
+        const sRes = await fetch(
+          `${baseUrl}/${userCol}/${organizerUid}/sessions/${sessionId}`,
+          { headers: { authorization: `Bearer ${token}` } }
+        );
+        if (!sRes.ok)
+          return withCors(
+            new Response("Session read failed", { status: 502 }),
+            req
+          );
+        const sdoc = await sRes.json();
+        const sfields = sdoc.fields || {};
+        const spayload = jsonFromFields(sfields.payload) || {};
+        const mid = Number(spayload.telegramMessageId || 0);
+        if (!mid)
+          return withCors(new Response("no message id", { status: 202 }), req);
+        try {
+          await editTelegramMessage({
+            token: botToken,
+            chatId: telegram.chatId,
+            messageId: mid,
+            text: "Session removed from club",
+            replyMarkup: undefined,
+            parse: "HTML",
+          });
+          return withCors(new Response("edited"), req);
+        } catch (e) {
+          try {
+            console.log("telegram remove edit failed", e);
+          } catch {}
+          return withCors(new Response("edit failed", { status: 502 }), req);
+        }
+      }
+
       if (
         type === "session_updated" ||
         type === "session_joined" ||
