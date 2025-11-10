@@ -1343,19 +1343,18 @@ export default {
                       Number.isFinite(n) ? n.toFixed(2) : String(n || 0);
                     const parts = [];
                     if (Number.isFinite(courtC) && courtC > 0)
-                      parts.push(`Court: ${fmt(courtC)}`);
+                      parts.push(`Court: $${fmt(courtC)}`);
                     if (Number.isFinite(shuttleC) && shuttleC > 0)
-                      parts.push(`Shuttle: ${fmt(shuttleC)}`);
+                      parts.push(`Shuttle: $${fmt(shuttleC)}`);
                     const breakdown = parts.length
-                      ? ` (${parts.join(" • ")})`
+                      ? ` ${parts.join("\n")}`
                       : "";
                     paymentSection =
-                      `\n\n💳 Payment request\n` +
-                      `Total: ${fmt(
+                      `\n\n💳 Payment\n` +
+                      `${breakdown}\n` +
+                      `Total: $${fmt(
                         totalC
-                      )}${breakdown} • Players: ${nPlayers} • Each: ${fmt(
-                        each
-                      )}`;
+                      )}\nPlayers: ${nPlayers}\nEach: $${fmt(each)}`;
                   }
                 } catch {}
 
