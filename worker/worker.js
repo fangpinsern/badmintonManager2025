@@ -1432,11 +1432,73 @@ export default {
         }
 
         const uids = Object.keys(perUser);
-        if (!uids.length)
-          return withCors(
-            new Response("No linked players", { status: 200 }),
-            req
+        if (!uids.length) {
+          // No linked players: still record club-level monthly aggregates so that
+          // sessionsCount and participationRate (0% when no linked attendees) are tracked.
+          const sessionKey = `${organizerUid}_${sessionId}`;
+          const endMonth = monthKey(
+            payload.endedAt || (games[games.length - 1] || {}).endedAt
           );
+          const clubId =
+            typeof payload?.clubId === "string" && payload.clubId
+              ? String(payload.clubId)
+              : "";
+          if (clubId) {
+            try {
+              const clubsCol = isTest ? "clubs_test" : "clubs";
+              const members = await fetchClubMembers({
+                clubId,
+                isTest,
+                baseUrl,
+                token,
+              });
+              if (members && members.size) {
+                try {
+                  const memberCountTotal = members.size;
+                  let memberAttendeeCount = 0;
+                  const attendeeSet = new Set();
+                  for (const p of Array.isArray(players) ? players : []) {
+                    const uid = p && p.accountUid ? String(p.accountUid) : "";
+                    if (uid && members.has(uid)) {
+                      memberAttendeeCount += 1;
+                      attendeeSet.add(uid);
+                    }
+                  }
+                  await commitClubMonthlyAggregate({
+                    clubsCol,
+                    clubId,
+                    endMonth,
+                    sessionKey,
+                    memberCount: memberCountTotal,
+                    memberAttendeeCount,
+                    env,
+                    token,
+                  });
+                  if (attendeeSet.size) {
+                    await commitClubPerUserAttendance({
+                      clubsCol,
+                      clubId,
+                      endMonth,
+                      sessionKey,
+                      attendeeUids: Array.from(attendeeSet),
+                      env,
+                      token,
+                    });
+                  }
+                } catch (e) {
+                  try {
+                    console.log("club-monthly aggregate error", e);
+                  } catch {}
+                }
+              }
+            } catch (e) {
+              try {
+                console.log("club-stats error", e);
+              } catch {}
+            }
+          }
+          return withCors(new Response("OK"), req);
+        }
 
         // ----------------------------
         // Elo ratings computation (background)
