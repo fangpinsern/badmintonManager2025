@@ -112,6 +112,30 @@ function GameRecorderOverlay({
     } catch {}
   }, [unlockAudioAndSpeech]);
 
+  // Speak helper for manual button increments, following the same order as gestures:
+  // - If Team A increments, read "A, B" (A first)
+  // - If Team B increments, read "B, A" (B first)
+  const speakScore = useCallback(
+    (incremented: "A" | "B") => {
+      try {
+        if (!speechEnabled) return;
+        unlockAudioAndSpeech();
+        if (typeof window !== "undefined" && "speechSynthesis" in window) {
+          const nextA =
+            incremented === "A" ? scoreARef.current + 1 : scoreARef.current;
+          const nextB =
+            incremented === "B" ? scoreBRef.current + 1 : scoreBRef.current;
+          const text =
+            incremented === "A" ? `${nextA}, ${nextB}` : `${nextB}, ${nextA}`;
+          const utter = new SpeechSynthesisUtterance(text);
+          window.speechSynthesis.cancel();
+          window.speechSynthesis.speak(utter);
+        }
+      } catch {}
+    },
+    [speechEnabled, unlockAudioAndSpeech]
+  );
+
   // Hidden keep-awake video helpers (fallback for iOS when wake lock unavailable)
   function ensureHiddenKeepAwakeVideo() {
     try {
@@ -641,17 +665,6 @@ function GameRecorderOverlay({
       return null;
     }
 
-    const speak = (text: string) => {
-      try {
-        if (!speechEnabled) return;
-        if (typeof window !== "undefined" && "speechSynthesis" in window) {
-          const utter = new SpeechSynthesisUtterance(text);
-          window.speechSynthesis.cancel();
-          window.speechSynthesis.speak(utter);
-        }
-      } catch {}
-    };
-
     const showBubble = (team: "A" | "B") => {
       if (team === "A") {
         setBubbleA(true);
@@ -757,9 +770,7 @@ function GameRecorderOverlay({
           lastIncAtARef.current = now;
           setScoreA((s) => s + 1);
           showBubble("A");
-          const a = scoreARef.current + 1;
-          const b = scoreBRef.current;
-          speak(`${a}, ${b}`);
+          speakScore("A");
         }
         armedOne = false; // require release before next increment
         stableOneCount = 0;
@@ -773,9 +784,7 @@ function GameRecorderOverlay({
           lastIncAtBRef.current = now;
           setScoreB((s) => s + 1);
           showBubble("B");
-          const a = scoreARef.current;
-          const b = scoreBRef.current + 1;
-          speak(`${b}, ${a}`);
+          speakScore("B");
         }
         armedTwo = false; // require release before next increment
         stableTwoCount = 0;
@@ -830,7 +839,7 @@ function GameRecorderOverlay({
           handLandmarker.close();
       } catch {}
     };
-  }, [open, gestureEnabled, speechEnabled]);
+  }, [open, gestureEnabled, speechEnabled, speakScore]);
 
   if (!open) return null;
 
@@ -1086,7 +1095,10 @@ function GameRecorderOverlay({
                     −
                   </button>
                   <button
-                    onClick={() => setScoreA((s) => s + 1)}
+                    onClick={() => {
+                      setScoreA((s) => s + 1);
+                      speakScore("A");
+                    }}
                     className="rounded-md border border-white/20 bg-white/10 px-4 py-3 text-2xl"
                   >
                     +
@@ -1103,7 +1115,10 @@ function GameRecorderOverlay({
                     −
                   </button>
                   <button
-                    onClick={() => setScoreB((s) => s + 1)}
+                    onClick={() => {
+                      setScoreB((s) => s + 1);
+                      speakScore("B");
+                    }}
                     className="rounded-md border border-white/20 bg-white/10 px-4 py-3 text-2xl"
                   >
                     +
