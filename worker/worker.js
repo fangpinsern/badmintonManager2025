@@ -1354,14 +1354,34 @@ export default {
                         totalC
                       )}\nPlayers: ${nPlayers}\nEach: $${fmt(each)}`;
 
-                    // Append organizer 'pay to' line using organizer's username from session snapshot (no extra calls)
+                    // Append organizer 'pay to' line using organizer's username when available
                     try {
                       let organizerUsername = "";
-                      const owner = (
-                        Array.isArray(playersAll) ? playersAll : []
-                      ).find((p) => p && p.accountUid === organizerUid);
-                      const uname2 = (owner && owner.accountUsername) || "";
-                      if (uname2) organizerUsername = String(uname2);
+                      // Preferred: users/{uid}.username
+                      try {
+                        const ures = await fetch(
+                          `${baseUrl}/${userCol}/${organizerUid}`,
+                          { headers: { authorization: `Bearer ${token}` } }
+                        );
+                        if (ures.ok) {
+                          const udoc = await ures.json();
+                          const uf = udoc.fields || {};
+                          const uname = String(
+                            jsonFromFields(uf.username) || ""
+                          );
+                          if (uname) organizerUsername = uname;
+                        }
+                      } catch {}
+                      // Fallback: from session players snapshot
+                      if (!organizerUsername) {
+                        try {
+                          const owner = (
+                            Array.isArray(playersAll) ? playersAll : []
+                          ).find((p) => p && p.accountUid === organizerUid);
+                          const uname2 = (owner && owner.accountUsername) || "";
+                          if (uname2) organizerUsername = String(uname2);
+                        } catch {}
+                      }
                       if (organizerUsername) {
                         paymentSection += `\npay to @${escapeHtml(
                           organizerUsername
