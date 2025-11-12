@@ -152,6 +152,13 @@ type Session = {
       placeId?: string;
     };
   };
+  // Optional payment request to be included in end-session message
+  // Costs will be split equally among all players; used only if enabled
+  paymentRequest?: {
+    enabled?: boolean;
+    courtCost?: number;
+    shuttleCost?: number;
+  };
 };
 
 export type {

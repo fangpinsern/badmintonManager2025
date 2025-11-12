@@ -430,6 +430,54 @@ export default {
         }
       }
 
+      if (type === "session_removed") {
+        const organizerUid = String(payload?.organizerUid || "").trim();
+        const sessionId = String(payload?.sessionId || "").trim();
+        if (!organizerUid || !sessionId) {
+          return withCors(
+            new Response("Missing organizer/session", { status: 400 }),
+            req
+          );
+        }
+        // Load session payload to get message id
+        const userCol =
+          String(env?.STATS_TEST_MODE || "").toLowerCase() === "true" ||
+          env?.STATS_TEST_MODE === "1"
+            ? "users_test"
+            : "users";
+        const sRes = await fetch(
+          `${baseUrl}/${userCol}/${organizerUid}/sessions/${sessionId}`,
+          { headers: { authorization: `Bearer ${token}` } }
+        );
+        if (!sRes.ok)
+          return withCors(
+            new Response("Session read failed", { status: 502 }),
+            req
+          );
+        const sdoc = await sRes.json();
+        const sfields = sdoc.fields || {};
+        const spayload = jsonFromFields(sfields.payload) || {};
+        const mid = Number(spayload.telegramMessageId || 0);
+        if (!mid)
+          return withCors(new Response("no message id", { status: 202 }), req);
+        try {
+          await editTelegramMessage({
+            token: botToken,
+            chatId: telegram.chatId,
+            messageId: mid,
+            text: "Session removed from club",
+            replyMarkup: undefined,
+            parse: "HTML",
+          });
+          return withCors(new Response("edited"), req);
+        } catch (e) {
+          try {
+            console.log("telegram remove edit failed", e);
+          } catch {}
+          return withCors(new Response("edit failed", { status: 502 }), req);
+        }
+      }
+
       if (
         type === "session_updated" ||
         type === "session_joined" ||
@@ -1220,7 +1268,8 @@ export default {
           payload
         );
 
-        // Best-effort: edit the original Telegram message with a concise end-of-session summary
+        // Best-effort: send a new end-of-session message with a concise summary.
+        // If original session message exists, reply to it; otherwise send as standalone.
         // This is additive and fully gated; failures are swallowed to avoid altering existing behavior
         try {
           const mid = Number(payload?.telegramMessageId || 0);
@@ -1228,7 +1277,7 @@ export default {
             typeof payload?.clubId === "string" && payload.clubId
               ? String(payload.clubId)
               : "";
-          if (mid && clubIdForTelegram) {
+          if (clubIdForTelegram) {
             // Read Telegram config from protected sensitive notifications doc
             const sensitiveCol =
               String(env?.STATS_TEST_MODE || "") === "1" ||
@@ -1271,6 +1320,79 @@ export default {
                   avgMin,
                 });
 
+                // Prepend explicit end notice per requirement
+                const endNotice =
+                  "🔚 Session has ended. You can now check your stats.";
+
+                // Optional payment request section (split equally across all players)
+                let paymentSection = "";
+                try {
+                  const pr = (payload && payload.paymentRequest) || {};
+                  const enabled = !!pr.enabled;
+                  const courtC = Number(pr.courtCost || 0);
+                  const shuttleC = Number(pr.shuttleCost || 0);
+                  const totalC =
+                    (Number.isFinite(courtC) ? courtC : 0) +
+                    (Number.isFinite(shuttleC) ? shuttleC : 0);
+                  const nPlayers = Array.isArray(playersAll)
+                    ? playersAll.length
+                    : 0;
+                  if (enabled && totalC > 0 && nPlayers > 0) {
+                    const each = totalC / nPlayers;
+                    const fmt = (n) =>
+                      Number.isFinite(n) ? n.toFixed(2) : String(n || 0);
+                    const parts = [];
+                    if (Number.isFinite(courtC) && courtC > 0)
+                      parts.push(`Court: $${fmt(courtC)}`);
+                    if (Number.isFinite(shuttleC) && shuttleC > 0)
+                      parts.push(`Shuttle: $${fmt(shuttleC)}`);
+                    const breakdown = parts.length ? `${parts.join("\n")}` : "";
+                    paymentSection =
+                      `\n\n💳 Payment\n` +
+                      `${breakdown}\n` +
+                      `Total: $${fmt(
+                        totalC
+                      )}\nPlayers: ${nPlayers}\nEach: $${fmt(each)}`;
+
+                    // Append organizer 'pay to' line using organizer's username when available
+                    try {
+                      let organizerUsername = "";
+                      // Preferred: users/{uid}.username
+                      try {
+                        const ures = await fetch(
+                          `${baseUrl}/${userCol}/${organizerUid}`,
+                          { headers: { authorization: `Bearer ${token}` } }
+                        );
+                        if (ures.ok) {
+                          const udoc = await ures.json();
+                          const uf = udoc.fields || {};
+                          const uname = String(
+                            jsonFromFields(uf.username) || ""
+                          );
+                          if (uname) organizerUsername = uname;
+                        }
+                      } catch {}
+                      // Fallback: from session players snapshot
+                      if (!organizerUsername) {
+                        try {
+                          const owner = (
+                            Array.isArray(playersAll) ? playersAll : []
+                          ).find((p) => p && p.accountUid === organizerUid);
+                          const uname2 = (owner && owner.accountUsername) || "";
+                          if (uname2) organizerUsername = String(uname2);
+                        } catch {}
+                      }
+                      if (organizerUsername) {
+                        paymentSection += `\npay to @${escapeHtml(
+                          organizerUsername
+                        )}`;
+                      }
+                    } catch {}
+                  }
+                } catch {}
+
+                const finalText = `${endNotice}\n\n${summaryText}${paymentSection}`;
+
                 // Keep link to session
                 const origin = req.headers.get("Origin") || "";
                 const allowOrigin = ALLOW_ORIGINS.has(origin)
@@ -1286,17 +1408,18 @@ export default {
                 };
 
                 try {
-                  await editTelegramMessage({
+                  await sendTelegram({
                     token: botToken,
                     chatId: telegram.chatId,
-                    messageId: mid,
-                    text: summaryText,
+                    text: finalText,
                     replyMarkup,
+                    replyToMessageId:
+                      Number.isFinite(mid) && mid > 0 ? mid : undefined,
                     parse: "HTML",
                   });
                 } catch (e) {
                   try {
-                    console.log("telegram end-summary edit failed", e);
+                    console.log("telegram end-summary send failed", e);
                   } catch {}
                 }
               }
@@ -1309,11 +1432,73 @@ export default {
         }
 
         const uids = Object.keys(perUser);
-        if (!uids.length)
-          return withCors(
-            new Response("No linked players", { status: 200 }),
-            req
+        if (!uids.length) {
+          // No linked players: still record club-level monthly aggregates so that
+          // sessionsCount and participationRate (0% when no linked attendees) are tracked.
+          const sessionKey = `${organizerUid}_${sessionId}`;
+          const endMonth = monthKey(
+            payload.endedAt || (games[games.length - 1] || {}).endedAt
           );
+          const clubId =
+            typeof payload?.clubId === "string" && payload.clubId
+              ? String(payload.clubId)
+              : "";
+          if (clubId) {
+            try {
+              const clubsCol = isTest ? "clubs_test" : "clubs";
+              const members = await fetchClubMembers({
+                clubId,
+                isTest,
+                baseUrl,
+                token,
+              });
+              if (members && members.size) {
+                try {
+                  const memberCountTotal = members.size;
+                  let memberAttendeeCount = 0;
+                  const attendeeSet = new Set();
+                  for (const p of Array.isArray(players) ? players : []) {
+                    const uid = p && p.accountUid ? String(p.accountUid) : "";
+                    if (uid && members.has(uid)) {
+                      memberAttendeeCount += 1;
+                      attendeeSet.add(uid);
+                    }
+                  }
+                  await commitClubMonthlyAggregate({
+                    clubsCol,
+                    clubId,
+                    endMonth,
+                    sessionKey,
+                    memberCount: memberCountTotal,
+                    memberAttendeeCount,
+                    env,
+                    token,
+                  });
+                  if (attendeeSet.size) {
+                    await commitClubPerUserAttendance({
+                      clubsCol,
+                      clubId,
+                      endMonth,
+                      sessionKey,
+                      attendeeUids: Array.from(attendeeSet),
+                      env,
+                      token,
+                    });
+                  }
+                } catch (e) {
+                  try {
+                    console.log("club-monthly aggregate error", e);
+                  } catch {}
+                }
+              }
+            } catch (e) {
+              try {
+                console.log("club-stats error", e);
+              } catch {}
+            }
+          }
+          return withCors(new Response("OK"), req);
+        }
 
         // ----------------------------
         // Elo ratings computation (background)
@@ -1456,6 +1641,45 @@ export default {
               token,
             });
             if (members && members.size) {
+              // Compute club participation and attendance for this session using current membership snapshot
+              try {
+                const memberCountTotal = members.size;
+                let memberAttendeeCount = 0;
+                const attendeeSet = new Set();
+                for (const p of Array.isArray(players) ? players : []) {
+                  const uid = p && p.accountUid ? String(p.accountUid) : "";
+                  if (uid && members.has(uid)) {
+                    memberAttendeeCount += 1;
+                    attendeeSet.add(uid);
+                  }
+                }
+                await commitClubMonthlyAggregate({
+                  clubsCol,
+                  clubId,
+                  endMonth,
+                  sessionKey,
+                  memberCount: memberCountTotal,
+                  memberAttendeeCount,
+                  env,
+                  token,
+                });
+                if (attendeeSet.size) {
+                  await commitClubPerUserAttendance({
+                    clubsCol,
+                    clubId,
+                    endMonth,
+                    sessionKey,
+                    attendeeUids: Array.from(attendeeSet),
+                    env,
+                    token,
+                  });
+                }
+              } catch (e) {
+                try {
+                  console.log("club-monthly aggregate error", e);
+                } catch {}
+              }
+
               // Per-user writes for club members only
               await commitClubPerUserStats({
                 uids,
@@ -1525,6 +1749,7 @@ async function sendTelegram({
   chatId,
   text,
   replyMarkup,
+  replyToMessageId,
   parse = "HTML",
 }) {
   const url = `https://api.telegram.org/bot${token}/sendMessage`;
@@ -1533,6 +1758,14 @@ async function sendTelegram({
   params.set("text", String(text || ""));
   if (parse) params.set("parse_mode", String(parse));
   params.set("disable_web_page_preview", "true");
+  if (
+    Number.isFinite(Number(replyToMessageId)) &&
+    Number(replyToMessageId) > 0
+  ) {
+    params.set("reply_to_message_id", String(replyToMessageId));
+    // Ensure reply works even if the original message is not found (graceful behavior)
+    params.set("allow_sending_without_reply", "true");
+  }
   if (replyMarkup) {
     try {
       params.set("reply_markup", JSON.stringify(replyMarkup));
@@ -1813,6 +2046,63 @@ async function commitWrites(token, env, writes) {
         }`;
     } catch {}
     throw new Error(`commit failed: ${res.status} ${msg}`);
+  }
+}
+// Groups many Firestore writes into fewer HTTP requests while tolerating idempotent failures.
+// Uses documents:batchWrite so one failed write (e.g. gate already exists) doesn't abort the whole batch.
+async function batchWriteIgnoreIdempotentErrors(
+  token,
+  env,
+  writes,
+  chunkSize = 450
+) {
+  const { url: baseUrl } = fsBases(env.GCP_PROJECT_ID, env.FIRESTORE_DB);
+  for (let i = 0; i < writes.length; i += chunkSize) {
+    const chunk = writes.slice(i, i + chunkSize);
+    const res = await fetch(`${baseUrl}:batchWrite`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ writes: chunk }),
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      let msg = text;
+      try {
+        const j = JSON.parse(text);
+        if (j?.error)
+          msg = `${j.error.status || ""} ${j.error.code || ""} — ${
+            j.error.message || ""
+          }`;
+      } catch {}
+      // Log and continue to behave like per-write best-effort updates
+      console.log(`batchWrite failed: ${res.status} ${msg}`);
+      continue;
+    }
+    try {
+      const j = await res.json();
+      const statuses = Array.isArray(j?.status) ? j.status : [];
+      for (const s of statuses) {
+        const code = Number(s?.code || 0);
+        if (code !== 0) {
+          const msg = String(s?.message || "");
+          if (!/ALREADY_EXISTS|FAILED_PRECONDITION/i.test(msg)) {
+            console.log("batchWrite non-idempotent error", s);
+          }
+        }
+      }
+    } catch (e) {
+      // Be tolerant of parsing issues; continue
+      console.log("batchWrite parse error", e);
+    }
+  }
+}
+async function commitWritesChunked(token, env, writes, chunkSize = 450) {
+  for (let i = 0; i < writes.length; i += chunkSize) {
+    const chunk = writes.slice(i, i + chunkSize);
+    await commitWrites(token, env, chunk);
   }
 }
 function isAlreadyApplied(e) {
@@ -3184,105 +3474,92 @@ async function commitPerUserStats({
   env,
   token,
 }) {
+  const gateWrites = [];
+  const writes = [];
   for (const uid of uids) {
     const agg = perUser[uid];
     const monthPath = `${rootCol}/${uid}/monthly/${endMonth}`;
     const sumPath = `${rootCol}/${uid}`;
 
-    {
-      const monthlyTaskKey = `stats:monthly:${endMonth}:${uid}:${sessionKey}`;
-      const writes = [];
-      writes.push(
-        makeUpdatePrecondCreate(
-          `${rootCol}/${uid}/gates/${monthlyTaskKey}`,
-          {
-            taskKey: monthlyTaskKey,
-            sessionKey,
-            scope: { uid, month: endMonth },
-            workerVersion: WORKER_VERSION,
-            createdAt: { __ts: true },
-          },
-          env
-        )
-      );
-      writes.push(
-        makeUpdateMaskWrite(
-          monthPath,
-          { month: endMonth, appliedSessions: { [sessionKey]: true } },
-          ["month", maskPath(`appliedSessions.${sessionKey}`)],
-          env
-        )
-      );
-      writes.push(
-        makeTransformWrite(
-          monthPath,
-          [
-            inc("singles.games", agg.singles.games),
-            inc("singles.wins", agg.singles.wins),
-            inc("singles.durationMin", agg.singles.durationMin),
-            inc("doubles.games", agg.doubles.games),
-            inc("doubles.wins", agg.doubles.wins),
-            inc("doubles.durationMin", agg.doubles.durationMin),
-            inc("totals.games", agg.totals.games),
-            inc("totals.wins", agg.totals.wins),
-            inc("totals.durationMin", agg.totals.durationMin),
-            reqTime("updatedAt"),
-          ],
-          env
-        )
-      );
+    const monthlyTaskKey = `stats:monthly:${endMonth}:${uid}:${sessionKey}`;
+    gateWrites.push(
+      makeUpdatePrecondCreate(
+        `${rootCol}/${uid}/gates/${monthlyTaskKey}`,
+        {
+          taskKey: monthlyTaskKey,
+          sessionKey,
+          scope: { uid, month: endMonth },
+          workerVersion: WORKER_VERSION,
+          createdAt: { __ts: true },
+        },
+        env
+      )
+    );
+    writes.push(
+      makeUpdateMaskWrite(
+        monthPath,
+        { month: endMonth, appliedSessions: { [sessionKey]: true } },
+        ["month", maskPath(`appliedSessions.${sessionKey}`)],
+        env
+      )
+    );
+    writes.push(
+      makeTransformWrite(
+        monthPath,
+        [
+          inc("singles.games", agg.singles.games),
+          inc("singles.wins", agg.singles.wins),
+          inc("singles.durationMin", agg.singles.durationMin),
+          inc("doubles.games", agg.doubles.games),
+          inc("doubles.wins", agg.doubles.wins),
+          inc("doubles.durationMin", agg.doubles.durationMin),
+          inc("totals.games", agg.totals.games),
+          inc("totals.wins", agg.totals.wins),
+          inc("totals.durationMin", agg.totals.durationMin),
+          reqTime("updatedAt"),
+        ],
+        env
+      )
+    );
 
-      try {
-        await commitWrites(token, env, writes);
-      } catch (e) {
-        if (!isAlreadyApplied(e)) console.log(e);
-      }
-    }
-
-    {
-      const summaryTaskKey = `stats:summary:${uid}:${sessionKey}`;
-      const writes = [];
-      writes.push(
-        makeUpdatePrecondCreate(
-          `${rootCol}/${uid}/gates/${summaryTaskKey}`,
-          {
-            taskKey: summaryTaskKey,
-            sessionKey,
-            scope: { uid },
-            workerVersion: WORKER_VERSION,
-            createdAt: { __ts: true },
-          },
-          env
-        )
-      );
-      writes.push(makeUpdateMaskWrite(sumPath, { uid }, ["uid"], env));
-      writes.push(
-        makeTransformWrite(
-          sumPath,
-          [
-            inc("totals.games", agg.totals.games),
-            inc("totals.wins", agg.totals.wins),
-            inc("totals.durationMin", agg.totals.durationMin),
-            inc("totals.singles.games", agg.singles.games),
-            inc("totals.singles.wins", agg.singles.wins),
-            inc("totals.singles.durationMin", agg.singles.durationMin),
-            inc("totals.doubles.games", agg.doubles.games),
-            inc("totals.doubles.wins", agg.doubles.wins),
-            inc("totals.doubles.durationMin", agg.doubles.durationMin),
-            arrayUnion("recentForm", agg.recent.slice().reverse()),
-            reqTime("updatedAt"),
-          ],
-          env
-        )
-      );
-
-      try {
-        await commitWrites(token, env, writes);
-      } catch (e) {
-        if (!isAlreadyApplied(e)) console.log(e);
-      }
-    }
+    const summaryTaskKey = `stats:summary:${uid}:${sessionKey}`;
+    gateWrites.push(
+      makeUpdatePrecondCreate(
+        `${rootCol}/${uid}/gates/${summaryTaskKey}`,
+        {
+          taskKey: summaryTaskKey,
+          sessionKey,
+          scope: { uid },
+          workerVersion: WORKER_VERSION,
+          createdAt: { __ts: true },
+        },
+        env
+      )
+    );
+    writes.push(makeUpdateMaskWrite(sumPath, { uid }, ["uid"], env));
+    writes.push(
+      makeTransformWrite(
+        sumPath,
+        [
+          inc("totals.games", agg.totals.games),
+          inc("totals.wins", agg.totals.wins),
+          inc("totals.durationMin", agg.totals.durationMin),
+          inc("totals.singles.games", agg.singles.games),
+          inc("totals.singles.wins", agg.singles.wins),
+          inc("totals.singles.durationMin", agg.singles.durationMin),
+          inc("totals.doubles.games", agg.doubles.games),
+          inc("totals.doubles.wins", agg.doubles.wins),
+          inc("totals.doubles.durationMin", agg.doubles.durationMin),
+          arrayUnion("recentForm", agg.recent.slice().reverse()),
+          reqTime("updatedAt"),
+        ],
+        env
+      )
+    );
   }
+  if (gateWrites.length)
+    await batchWriteIgnoreIdempotentErrors(token, env, gateWrites);
+  if (writes.length) await commitWritesChunked(token, env, writes);
 }
 
 async function commitEloWrites({
@@ -3294,12 +3571,13 @@ async function commitEloWrites({
   env,
   token,
 }) {
+  const gateWrites = [];
+  const writes = [];
   for (const uid of updatedUsers) {
     const pr = userElo.get(uid);
     if (!pr) continue;
-    const writes = [];
     const eloTaskKey = `elo:session:${organizerUid}_${sessionId}`;
-    writes.push(
+    gateWrites.push(
       makeUpdatePrecondCreate(
         `${userCol}/${uid}/gates/${eloTaskKey}`,
         {
@@ -3326,12 +3604,10 @@ async function commitEloWrites({
         env
       )
     );
-    try {
-      await commitWrites(token, env, writes);
-    } catch (e) {
-      if (!isAlreadyApplied(e)) console.log(e);
-    }
   }
+  if (gateWrites.length)
+    await batchWriteIgnoreIdempotentErrors(token, env, gateWrites);
+  if (writes.length) await commitWritesChunked(token, env, writes);
 }
 
 async function commitFriendEdgesAndMirrors({
@@ -3345,11 +3621,11 @@ async function commitFriendEdgesAndMirrors({
   chemistryByEdge,
 }) {
   const friendEdgeCol = isTest ? "friendEdges_test" : "friendEdges";
+  const gateWrites = [];
+  const writes = [];
   for (const [edgeKey, agg] of pairAgg) {
     const { u1, u2, games, wins, durationMin, lastEndedAt } = agg;
-
-    const writes = [];
-    writes.push(
+    gateWrites.push(
       makeUpdatePrecondCreate(
         `${friendEdgeCol}/${edgeKey}/bySession/${sessionKey}`,
         { sessionKey, month: endMonth, createdAt: { __ts: true } },
@@ -3380,7 +3656,6 @@ async function commitFriendEdgesAndMirrors({
         env
       )
     );
-
     if (chemistryByEdge.has(edgeKey)) {
       const chem = chemistryByEdge.get(edgeKey);
       writes.push(
@@ -3397,7 +3672,6 @@ async function commitFriendEdgesAndMirrors({
         )
       );
     }
-
     writes.push(
       makeUpdateMaskWrite(
         `${friendEdgeCol}/${edgeKey}/monthly/${endMonth}`,
@@ -3422,7 +3696,6 @@ async function commitFriendEdgesAndMirrors({
         env
       )
     );
-
     writes.push(
       makeUpdateMaskWrite(
         `${rootCol}/${u1}/friends/${u2}`,
@@ -3471,14 +3744,10 @@ async function commitFriendEdgesAndMirrors({
         env
       )
     );
-
-    try {
-      await commitWrites(token, env, writes);
-    } catch (e) {
-      if (isAlreadyApplied(e)) continue;
-      console.log(e);
-    }
   }
+  if (gateWrites.length)
+    await batchWriteIgnoreIdempotentErrors(token, env, gateWrites);
+  if (writes.length) await commitWritesChunked(token, env, writes);
 }
 
 async function commitOpponentEdgesAndMirrors({
@@ -3491,10 +3760,11 @@ async function commitOpponentEdgesAndMirrors({
   token,
 }) {
   const opponentEdgeCol = isTest ? "opponentEdges_test" : "opponentEdges";
+  const gateWrites = [];
+  const writes = [];
   for (const [pairKey, agg] of oppAgg) {
     const { u1, u2, singles, doubles, totals, lastEndedAt } = agg;
-    const writes = [];
-    writes.push(
+    gateWrites.push(
       makeUpdatePrecondCreate(
         `${opponentEdgeCol}/${pairKey}/bySession/${sessionKey}`,
         { sessionKey, month: endMonth, createdAt: { __ts: true } },
@@ -3633,14 +3903,10 @@ async function commitOpponentEdgesAndMirrors({
         env
       )
     );
-
-    try {
-      await commitWrites(token, env, writes);
-    } catch (e) {
-      if (isAlreadyApplied(e)) continue;
-      console.log(e);
-    }
   }
+  if (gateWrites.length)
+    await batchWriteIgnoreIdempotentErrors(token, env, gateWrites);
+  if (writes.length) await commitWritesChunked(token, env, writes);
 }
 
 async function notifyStatsUpdate({ uids, organizerUid, sessionId, env }) {
@@ -3698,110 +3964,97 @@ async function commitClubPerUserStats({
   env,
   token,
 }) {
+  const gateWrites = [];
+  const writes = [];
   for (const uid of uids) {
     if (!memberSet.has(uid)) continue;
     const agg = perUser[uid];
     const basePath = `${clubsCol}/${clubId}/userStats/${uid}`;
     const monthPath = `${basePath}/monthly/${endMonth}`;
 
-    // A) MONTHLY task (gate + monthly upserts + increments)
-    {
-      const monthlyTaskKey = `stats:monthly:${endMonth}:${uid}:${sessionKey}`;
-      const writes = [];
-      writes.push(
-        makeUpdatePrecondCreate(
-          `${basePath}/gates/${monthlyTaskKey}`,
-          {
-            taskKey: monthlyTaskKey,
-            sessionKey,
-            scope: { uid, month: endMonth, clubId },
-            workerVersion: WORKER_VERSION,
-            createdAt: { __ts: true },
-          },
-          env
-        )
-      );
-      writes.push(
-        makeUpdateMaskWrite(
-          monthPath,
-          { month: endMonth, appliedSessions: { [sessionKey]: true } },
-          ["month", maskPath(`appliedSessions.${sessionKey}`)],
-          env
-        )
-      );
-      writes.push(
-        makeTransformWrite(
-          monthPath,
-          [
-            inc("singles.games", agg.singles.games),
-            inc("singles.wins", agg.singles.wins),
-            inc("singles.durationMin", agg.singles.durationMin),
-            inc("doubles.games", agg.doubles.games),
-            inc("doubles.wins", agg.doubles.wins),
-            inc("doubles.durationMin", agg.doubles.durationMin),
-            inc("totals.games", agg.totals.games),
-            inc("totals.wins", agg.totals.wins),
-            inc("totals.durationMin", agg.totals.durationMin),
-            reqTime("updatedAt"),
-          ],
-          env
-        )
-      );
-      try {
-        await commitWrites(token, env, writes);
-      } catch (e) {
-        if (!isAlreadyApplied(e)) console.log(e);
-      }
-    }
+    const monthlyTaskKey = `stats:monthly:${endMonth}:${uid}:${sessionKey}`;
+    gateWrites.push(
+      makeUpdatePrecondCreate(
+        `${basePath}/gates/${monthlyTaskKey}`,
+        {
+          taskKey: monthlyTaskKey,
+          sessionKey,
+          scope: { uid, month: endMonth, clubId },
+          workerVersion: WORKER_VERSION,
+          createdAt: { __ts: true },
+        },
+        env
+      )
+    );
+    writes.push(
+      makeUpdateMaskWrite(
+        monthPath,
+        { month: endMonth, appliedSessions: { [sessionKey]: true } },
+        ["month", maskPath(`appliedSessions.${sessionKey}`)],
+        env
+      )
+    );
+    writes.push(
+      makeTransformWrite(
+        monthPath,
+        [
+          inc("singles.games", agg.singles.games),
+          inc("singles.wins", agg.singles.wins),
+          inc("singles.durationMin", agg.singles.durationMin),
+          inc("doubles.games", agg.doubles.games),
+          inc("doubles.wins", agg.doubles.wins),
+          inc("doubles.durationMin", agg.doubles.durationMin),
+          inc("totals.games", agg.totals.games),
+          inc("totals.wins", agg.totals.wins),
+          inc("totals.durationMin", agg.totals.durationMin),
+          reqTime("updatedAt"),
+        ],
+        env
+      )
+    );
 
-    // B) SUMMARY task (gate + ensure + increments + recentForm append)
-    {
-      const summaryTaskKey = `stats:summary:${uid}:${sessionKey}`;
-      const writes = [];
-      writes.push(
-        makeUpdatePrecondCreate(
-          `${basePath}/gates/${summaryTaskKey}`,
-          {
-            taskKey: summaryTaskKey,
-            sessionKey,
-            scope: { uid, clubId },
-            workerVersion: WORKER_VERSION,
-            createdAt: { __ts: true },
-          },
-          env
-        )
-      );
-      // ensure summary doc exists (uid, clubId fields)
-      writes.push(
-        makeUpdateMaskWrite(basePath, { uid, clubId }, ["uid", "clubId"], env)
-      );
-      // increment summary counters & append recent slice (club summary uses top-level singles/doubles)
-      writes.push(
-        makeTransformWrite(
-          basePath,
-          [
-            inc("totals.games", agg.totals.games),
-            inc("totals.wins", agg.totals.wins),
-            inc("totals.durationMin", agg.totals.durationMin),
-            inc("singles.games", agg.singles.games),
-            inc("singles.wins", agg.singles.wins),
-            inc("singles.durationMin", agg.singles.durationMin),
-            inc("doubles.games", agg.doubles.games),
-            inc("doubles.wins", agg.doubles.wins),
-            inc("doubles.durationMin", agg.doubles.durationMin),
-            arrayUnion("recentForm", agg.recent.slice().reverse()),
-            reqTime("updatedAt"),
-          ],
-          env
-        )
-      );
-      try {
-        await commitWrites(token, env, writes);
-      } catch (e) {
-        if (!isAlreadyApplied(e)) console.log(e);
-      }
-    }
+    const summaryTaskKey = `stats:summary:${uid}:${sessionKey}`;
+    gateWrites.push(
+      makeUpdatePrecondCreate(
+        `${basePath}/gates/${summaryTaskKey}`,
+        {
+          taskKey: summaryTaskKey,
+          sessionKey,
+          scope: { uid, clubId },
+          workerVersion: WORKER_VERSION,
+          createdAt: { __ts: true },
+        },
+        env
+      )
+    );
+    // ensure summary doc exists (uid, clubId fields)
+    writes.push(
+      makeUpdateMaskWrite(basePath, { uid, clubId }, ["uid", "clubId"], env)
+    );
+    // increment summary counters & append recent slice (club summary uses top-level singles/doubles)
+    writes.push(
+      makeTransformWrite(
+        basePath,
+        [
+          inc("totals.games", agg.totals.games),
+          inc("totals.wins", agg.totals.wins),
+          inc("totals.durationMin", agg.totals.durationMin),
+          inc("singles.games", agg.singles.games),
+          inc("singles.wins", agg.singles.wins),
+          inc("singles.durationMin", agg.singles.durationMin),
+          inc("doubles.games", agg.doubles.games),
+          inc("doubles.wins", agg.doubles.wins),
+          inc("doubles.durationMin", agg.doubles.durationMin),
+          arrayUnion("recentForm", agg.recent.slice().reverse()),
+          reqTime("updatedAt"),
+        ],
+        env
+      )
+    );
   }
+  if (gateWrites.length)
+    await batchWriteIgnoreIdempotentErrors(token, env, gateWrites);
+  if (writes.length) await commitWritesChunked(token, env, writes);
 }
 
 async function commitClubFriendEdgesAndMirrors({
@@ -3815,13 +4068,14 @@ async function commitClubFriendEdgesAndMirrors({
   token,
   chemistryByEdge,
 }) {
+  const gateWrites = [];
+  const writes = [];
   for (const [edgeKey, agg] of pairAgg) {
     const { u1, u2, games, wins, durationMin, lastEndedAt } = agg;
     if (!memberSet.has(u1) || !memberSet.has(u2)) continue;
 
     const edgePath = `${clubsCol}/${clubId}/friendEdges/${edgeKey}`;
-    const writes = [];
-    writes.push(
+    gateWrites.push(
       makeUpdatePrecondCreate(
         `${edgePath}/bySession/${sessionKey}`,
         { sessionKey, month: endMonth, createdAt: { __ts: true } },
@@ -3945,14 +4199,10 @@ async function commitClubFriendEdgesAndMirrors({
         env
       )
     );
-
-    try {
-      await commitWrites(token, env, writes);
-    } catch (e) {
-      if (!isAlreadyApplied(e)) continue;
-      else console.log(e);
-    }
   }
+  if (gateWrites.length)
+    await batchWriteIgnoreIdempotentErrors(token, env, gateWrites);
+  if (writes.length) await commitWritesChunked(token, env, writes);
 }
 
 async function commitClubOpponentEdgesAndMirrors({
@@ -3965,13 +4215,14 @@ async function commitClubOpponentEdgesAndMirrors({
   env,
   token,
 }) {
+  const gateWrites = [];
+  const writes = [];
   for (const [pairKey, agg] of oppAgg) {
     const { u1, u2, singles, doubles, totals, lastEndedAt } = agg;
     if (!memberSet.has(u1) || !memberSet.has(u2)) continue;
 
     const edgePath = `${clubsCol}/${clubId}/opponentEdges/${pairKey}`;
-    const writes = [];
-    writes.push(
+    gateWrites.push(
       makeUpdatePrecondCreate(
         `${edgePath}/bySession/${sessionKey}`,
         { sessionKey, month: endMonth, createdAt: { __ts: true } },
@@ -4115,12 +4366,136 @@ async function commitClubOpponentEdgesAndMirrors({
         env
       )
     );
-
-    try {
-      await commitWrites(token, env, writes);
-    } catch (e) {
-      if (isAlreadyApplied(e)) continue;
-      console.log(e);
-    }
   }
+  if (gateWrites.length)
+    await batchWriteIgnoreIdempotentErrors(token, env, gateWrites);
+  if (writes.length) await commitWritesChunked(token, env, writes);
+}
+
+// Aggregates club-level monthly participation and session count.
+// Idempotent per session via create-only gate under monthly/{YYYY-MM}/bySession/{sessionKey}
+async function commitClubMonthlyAggregate({
+  clubsCol,
+  clubId,
+  endMonth,
+  sessionKey,
+  memberCount,
+  memberAttendeeCount,
+  env,
+  token,
+}) {
+  const monthPath = `${clubsCol}/${clubId}/monthly/${endMonth}`;
+  const gatePath = `${monthPath}/bySession/${sessionKey}`;
+  const writes = [];
+  writes.push(
+    makeUpdatePrecondCreate(
+      gatePath,
+      { sessionKey, createdAt: { __ts: true } },
+      env
+    )
+  );
+  writes.push(
+    makeUpdateMaskWrite(monthPath, { month: endMonth }, ["month"], env)
+  );
+  const participationRate =
+    Number(memberCount) > 0
+      ? Number(memberAttendeeCount || 0) / Number(memberCount)
+      : 0;
+  const participationRateX100 = Math.floor(
+    Number(participationRate * 100) || 0
+  );
+  writes.push(
+    makeTransformWrite(
+      monthPath,
+      [
+        inc("sessionsCount", 1),
+        inc("participationSampleCount", 1),
+        inc("memberAttendeeSum", Number(memberAttendeeCount || 0)),
+        inc("memberCountSum", Number(memberCount || 0)),
+        inc("participationRateSum", participationRateX100),
+        reqTime("updatedAt"),
+      ],
+      env
+    )
+  );
+  try {
+    await commitWrites(token, env, writes);
+  } catch (e) {
+    if (!isAlreadyApplied(e)) console.log("monthly aggregate error", e);
+  }
+}
+
+// Increments per-user club attendance (once per session), both monthly and summary.
+// Idempotent per user+session via gates under userStats/{uid}/gates
+async function commitClubPerUserAttendance({
+  clubsCol,
+  clubId,
+  endMonth,
+  sessionKey,
+  attendeeUids,
+  env,
+  token,
+}) {
+  const gateWrites = [];
+  const writes = [];
+  for (const uid of Array.isArray(attendeeUids) ? attendeeUids : []) {
+    const basePath = `${clubsCol}/${clubId}/userStats/${uid}`;
+    const monthPath = `${basePath}/monthly/${endMonth}`;
+
+    // Monthly attendance gate and increment
+    const monthlyKey = `attendance:${endMonth}:${uid}:${sessionKey}`;
+    gateWrites.push(
+      makeUpdatePrecondCreate(
+        `${basePath}/gates/${monthlyKey}`,
+        {
+          taskKey: monthlyKey,
+          sessionKey,
+          scope: { uid, month: endMonth, clubId },
+          workerVersion: WORKER_VERSION,
+          createdAt: { __ts: true },
+        },
+        env
+      )
+    );
+    writes.push(
+      makeUpdateMaskWrite(monthPath, { month: endMonth }, ["month"], env)
+    );
+    writes.push(
+      makeTransformWrite(
+        monthPath,
+        [inc("attendance.sessions", 1), reqTime("updatedAt")],
+        env
+      )
+    );
+
+    // Summary attendance gate and increment
+    const summaryKey = `attendance:summary:${uid}:${sessionKey}`;
+    gateWrites.push(
+      makeUpdatePrecondCreate(
+        `${basePath}/gates/${summaryKey}`,
+        {
+          taskKey: summaryKey,
+          sessionKey,
+          scope: { uid, clubId },
+          workerVersion: WORKER_VERSION,
+          createdAt: { __ts: true },
+        },
+        env
+      )
+    );
+    // ensure summary doc exists
+    writes.push(
+      makeUpdateMaskWrite(basePath, { uid, clubId }, ["uid", "clubId"], env)
+    );
+    writes.push(
+      makeTransformWrite(
+        basePath,
+        [inc("attendance.sessions", 1), reqTime("updatedAt")],
+        env
+      )
+    );
+  }
+  if (gateWrites.length)
+    await batchWriteIgnoreIdempotentErrors(token, env, gateWrites);
+  if (writes.length) await commitWritesChunked(token, env, writes);
 }

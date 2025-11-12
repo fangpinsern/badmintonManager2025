@@ -450,6 +450,9 @@ export async function saveSession(sessionId: string, payload: unknown) {
     if (typeof (sanitized as any)?.venue === "undefined") {
       await updateDoc(ref, { "payload.venue": deleteField() });
     }
+    if (typeof (sanitized as any)?.clubId === "undefined") {
+      await updateDoc(ref, { "payload.clubId": deleteField() });
+    }
   } catch {}
   // Index under club if session is sanctioned by a club
   try {
@@ -473,6 +476,124 @@ export async function saveSession(sessionId: string, payload: unknown) {
         },
         { merge: true }
       );
+    }
+  } catch {}
+  // Best-effort: clean up previous club index if club changed
+  try {
+    const prevClub: string | undefined = (prevPayload as any)?.clubId;
+    const nextClub: string | undefined = (sanitized as any)?.clubId;
+    if (
+      typeof prevClub === "string" &&
+      prevClub &&
+      prevClub !== (typeof nextClub === "string" ? nextClub : undefined)
+    ) {
+      const oldIdxRef = doc(
+        collection(db, clubsCollectionId(), prevClub, "sessions"),
+        `${uid}_${sessionId}`
+      );
+      await deleteDoc(oldIdxRef);
+    }
+  } catch {}
+  // Telegram integration for club link/unlink/change
+  try {
+    const prevClub: string | undefined = (prevPayload as any)?.clubId;
+    const nextClub: string | undefined = (sanitized as any)?.clubId;
+    const endpoint = (process.env.NEXT_PUBLIC_WORKER_BASE_URL as any)
+      ? `${process.env.NEXT_PUBLIC_WORKER_BASE_URL}/telegram/send`
+      : "/api/telegram/send";
+    // Unlink: prev existed, next cleared
+    if (typeof prevClub === "string" && prevClub && !nextClub) {
+      try {
+        await fetch(endpoint, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            clubId: prevClub,
+            type: "session_removed",
+            organizerUid: uid,
+            sessionId,
+          }),
+        });
+      } catch {}
+      try {
+        await updateDoc(ref, { "payload.telegramMessageId": deleteField() });
+      } catch {}
+    }
+    // Change: prev existed and differs from next
+    if (
+      typeof prevClub === "string" &&
+      prevClub &&
+      typeof nextClub === "string" &&
+      nextClub &&
+      prevClub !== nextClub
+    ) {
+      // Mark removed in old club
+      try {
+        await fetch(endpoint, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            clubId: prevClub,
+            type: "session_removed",
+            organizerUid: uid,
+            sessionId,
+          }),
+        });
+      } catch {}
+      // Clear old message id
+      try {
+        await updateDoc(ref, { "payload.telegramMessageId": deleteField() });
+      } catch {}
+      // Send new created message in new club and capture message id
+      try {
+        const resp = await fetch(endpoint, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            clubId: nextClub,
+            type: "session_created",
+            organizerUid: uid,
+            sessionId,
+          }),
+        });
+        if (resp.ok) {
+          try {
+            const j = await resp.json();
+            const mid = j?.message_id;
+            if (mid) {
+              await updateDoc(ref, { "payload.telegramMessageId": mid });
+            }
+          } catch {}
+        }
+      } catch {}
+    }
+    // Added: no prev club, next set
+    if (
+      (!prevClub || typeof prevClub !== "string" || !prevClub) &&
+      typeof nextClub === "string" &&
+      nextClub
+    ) {
+      try {
+        const resp = await fetch(endpoint, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            clubId: nextClub,
+            type: "session_created",
+            organizerUid: uid,
+            sessionId,
+          }),
+        });
+        if (resp.ok) {
+          try {
+            const j = await resp.json();
+            const mid = j?.message_id;
+            if (mid) {
+              await updateDoc(ref, { "payload.telegramMessageId": mid });
+            }
+          } catch {}
+        }
+      } catch {}
     }
   } catch {}
   // Sync index docs (users/{uid}/linkedSessions/{organizer_session})
@@ -661,6 +782,12 @@ export async function saveSessionOnBehalf(
         },
         { merge: true }
       );
+    }
+  } catch {}
+  // If clubId was cleared, explicitly delete nested field
+  try {
+    if (typeof (sanitized as any)?.clubId === "undefined") {
+      await updateDoc(ref, { "payload.clubId": deleteField() });
     }
   } catch {}
   // update linkedSessions index for any newly linked users
