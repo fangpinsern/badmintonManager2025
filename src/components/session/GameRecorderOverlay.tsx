@@ -473,21 +473,21 @@ function GameRecorderOverlay({
     };
   }, [recording, paused]);
 
-  // Gesture detection loop (open palm -> Team A, closed fist -> Team B)
+  // Gesture detection loop (1 finger -> Team A, 2 fingers -> Team B)
   useEffect(() => {
     if (!open || !gestureEnabled) return;
     let cancelled = false;
     let rafId: number | null = null;
     let handLandmarker: any = null;
     // Stability counters for consecutive frames
-    let stableOneCount = 0; // open palm
-    let stableTwoCount = 0; // closed fist
+    let stableOneCount = 0; // 1 finger (index)
+    let stableTwoCount = 0; // 2 fingers (index + middle)
     const REQUIRED_STABLE_FRAMES = 4; // hold to avoid quick false triggers
     const COOLDOWN_MS = 1200;
     const MIN_HAND_BOX_DIAGONAL = 0.08; // normalized diagonal threshold to ensure sufficient hand size
     // Latching: require release (gesture not seen) before next increment
-    let armedOne = true; // for 1-finger → Team A
-    let armedTwo = true; // for 2-fingers → Team B
+    let armedOne = true; // for 1 finger → Team A
+    let armedTwo = true; // for 2 fingers → Team B
     let releaseOneFrames = 0;
     let releaseTwoFrames = 0;
     const RELEASE_REQUIRED_FRAMES = 6;
@@ -627,36 +627,37 @@ function GameRecorderOverlay({
       return ang >= 160; // extended if nearly straight
     }
 
-    function matchesOpenPalm(landmarks: any[]) {
+    function matchesOneFinger(landmarks: any[]) {
+      // Robust 1-finger (index) gesture:
+      // - Hand must be large enough
+      // - Index extended, middle NOT extended
+      // - Ring and pinky NOT extended (curled); thumb state ignored
       if (boundingBoxDiagonal(landmarks) < MIN_HAND_BOX_DIAGONAL) return false;
-      if (requirePalmFront && !isPalmFacingCamera(landmarks)) return false;
-      // Require extended fingers for index, middle, ring, pinky (thumb optional)
       const extIndex = isExtended(landmarks, 8, 6, 5);
       const extMiddle = isExtended(landmarks, 12, 10, 9);
       const extRing = isExtended(landmarks, 16, 14, 13);
       const extPinky = isExtended(landmarks, 20, 18, 17);
-      const extendedCount = [extIndex, extMiddle, extRing, extPinky].filter(
-        Boolean
-      ).length;
-      return extendedCount >= 3; // tolerate one finger slightly bent
+      if (!extIndex) return false;
+      if (extMiddle) return false;
+      if (extRing) return false;
+      if (extPinky) return false;
+      return true;
     }
 
-    function matchesClosedFist(landmarks: any[]) {
+    function matchesTwoFingers(landmarks: any[]) {
+      // Robust 2-fingers (index + middle) gesture:
+      // - Hand must be large enough
+      // - Index and middle extended
+      // - Ring and pinky NOT extended; thumb state ignored
       if (boundingBoxDiagonal(landmarks) < MIN_HAND_BOX_DIAGONAL) return false;
-      if (requireFistSideOn) {
-        if (!isPalmSideOn(landmarks)) return false;
-      } else if (requirePalmFront && !isPalmFacingCamera(landmarks)) {
-        // legacy option: allow using palm-front requirement instead
-        return false;
-      }
       const extIndex = isExtended(landmarks, 8, 6, 5);
       const extMiddle = isExtended(landmarks, 12, 10, 9);
       const extRing = isExtended(landmarks, 16, 14, 13);
       const extPinky = isExtended(landmarks, 20, 18, 17);
-      const thumbExt = isThumbExtended(landmarks);
-      const anyExt = extIndex || extMiddle || extRing || extPinky || thumbExt;
-      // Also require ring/pinky curled to reduce false positives
-      return !anyExt && areNonTargetFingersCurled(landmarks);
+      if (!(extIndex && extMiddle)) return false;
+      if (extRing) return false;
+      if (extPinky) return false;
+      return true;
     }
 
     function teamForCount(count: number): "A" | "B" | null {
@@ -701,8 +702,8 @@ function GameRecorderOverlay({
         return;
       }
 
-      let sawOne = false; // open palm
-      let sawTwo = false; // closed fist
+      let sawOne = false; // 1 finger
+      let sawTwo = false; // 2 fingers
       const rects: {
         x0: number;
         y0: number;
@@ -712,10 +713,10 @@ function GameRecorderOverlay({
       }[] = [];
       for (let i = 0; i < landmarksList.length; i++) {
         const lm = landmarksList[i];
-        const open = matchesOpenPalm(lm);
-        const closed = !open && matchesClosedFist(lm);
-        if (open) sawOne = true;
-        else if (closed) sawTwo = true;
+        const one = matchesOneFinger(lm);
+        const two = !one && matchesTwoFingers(lm);
+        if (one) sawOne = true;
+        else if (two) sawTwo = true;
         if (debugEnabled) {
           let minX = 1,
             maxX = 0,
@@ -728,7 +729,7 @@ function GameRecorderOverlay({
             if (p.y < minY) minY = p.y;
             if (p.y > maxY) maxY = p.y;
           }
-          const label = open ? "open" : closed ? "closed" : "other";
+          const label = one ? "one" : two ? "two" : "other";
           rects.push({ x0: minX, y0: minY, x1: maxX, y1: maxY, label });
         }
       }
@@ -993,7 +994,7 @@ function GameRecorderOverlay({
             </div>
             {gestureEnabled && (
               <div className="rounded-full bg-black/40 border border-white/10 text-white text-xs px-3 py-1">
-                Gestures: open palm → +1 Team A, closed fist → +1 Team B. Keep
+                Gestures: show 1 finger → +1 Team A, 2 fingers → +1 Team B. Keep
                 hands around 1 racket away for best results. Toggle Voice for
                 readout.
               </div>
