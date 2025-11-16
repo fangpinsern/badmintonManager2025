@@ -1,10 +1,12 @@
 "use client";
 import { Input } from "@/components/layout";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { auth, db } from "@/lib/firebase";
 import {
+  getProfileByUsername,
   linkAccountInOrganizerSession,
   organizerUnlinkPlayer,
+  suggestUsernames,
 } from "@/lib/firestoreSessions";
 import { QRCodeSVG } from "qrcode.react";
 import { logAnalyticsEvent } from "@/lib/analytics";
@@ -52,6 +54,14 @@ function EndSessionModal({
   const [linkedToMe, setLinkedToMe] = useState(organizerLinked);
   const toggleQr = (pid: string) =>
     setOpenQr((m) => ({ ...m, [pid]: !m[pid] }));
+  // Organizer username-link UI state (per player)
+  const [unameInput, setUnameInput] = useState<Record<string, string>>({});
+  const [unameBusy, setUnameBusy] = useState<Record<string, boolean>>({});
+  const [unameError, setUnameError] = useState<Record<string, string>>({});
+  const [unameSuggest, setUnameSuggest] = useState<Record<string, string[]>>(
+    {}
+  );
+  const suggestTimersRef = useRef<Record<string, number>>({});
   const baseOrigin = typeof location !== "undefined" ? location.origin : "";
   const links = useMemo(() => {
     if (!sessionId || !organizerUid) return new Map<string, string>();
@@ -231,6 +241,180 @@ function EndSessionModal({
                         <div className="w-full truncate rounded border bg-gray-50 p-1 text-[10px] text-gray-700">
                           {links.get(p.id)}
                         </div>
+                        {organizerUid && sessionId && !linkedIds[p.id] && (
+                          <div className="w-full rounded border bg-white p-2">
+                            <div className="mb-1 text-[11px] font-medium text-gray-700">
+                              Organizer: link by username
+                            </div>
+                            <form
+                              onSubmit={async (e) => {
+                                e.preventDefault();
+                                if (!organizerUid || !sessionId) return;
+                                const val = (unameInput[p.id] || "")
+                                  .trim()
+                                  .toLowerCase();
+                                if (!val) return;
+                                setUnameError((m) => ({
+                                  ...m,
+                                  [p.id]: "",
+                                }));
+                                setUnameBusy((m) => ({ ...m, [p.id]: true }));
+                                try {
+                                  const prof = await getProfileByUsername(val);
+                                  if (!prof?.uid)
+                                    throw new Error("Username not found");
+                                  await linkAccountInOrganizerSession(
+                                    organizerUid,
+                                    sessionId,
+                                    p.id,
+                                    prof.uid
+                                  );
+                                  setUnameInput((m) => ({ ...m, [p.id]: "" }));
+                                  setUnameSuggest((m) => ({
+                                    ...m,
+                                    [p.id]: [],
+                                  }));
+                                } catch (err: any) {
+                                  setUnameError((m) => ({
+                                    ...m,
+                                    [p.id]:
+                                      err?.message ||
+                                      "Failed to link by username",
+                                  }));
+                                } finally {
+                                  setUnameBusy((m) => ({
+                                    ...m,
+                                    [p.id]: false,
+                                  }));
+                                }
+                              }}
+                              className="space-y-1"
+                            >
+                              <div className="flex items-center gap-2">
+                                <Input
+                                  placeholder="Username (without @)"
+                                  value={unameInput[p.id] || ""}
+                                  onChange={(e) => {
+                                    const v = e.target.value;
+                                    setUnameInput((m) => ({
+                                      ...m,
+                                      [p.id]: v,
+                                    }));
+                                    setUnameError((m) => ({
+                                      ...m,
+                                      [p.id]: "",
+                                    }));
+                                    const prev = suggestTimersRef.current[p.id];
+                                    if (prev) window.clearTimeout(prev);
+                                    suggestTimersRef.current[p.id] =
+                                      window.setTimeout(async () => {
+                                        try {
+                                          const q = v.trim().toLowerCase();
+                                          if (!q) {
+                                            setUnameSuggest((m) => ({
+                                              ...m,
+                                              [p.id]: [],
+                                            }));
+                                            return;
+                                          }
+                                          const list = await suggestUsernames(
+                                            q,
+                                            5
+                                          );
+                                          setUnameSuggest((m) => ({
+                                            ...m,
+                                            [p.id]: list,
+                                          }));
+                                        } catch {
+                                          setUnameSuggest((m) => ({
+                                            ...m,
+                                            [p.id]: [],
+                                          }));
+                                        }
+                                      }, 200);
+                                  }}
+                                  className="flex-1"
+                                  disabled={!!unameBusy[p.id]}
+                                />
+                                <button
+                                  type="submit"
+                                  disabled={!!unameBusy[p.id]}
+                                  className="rounded bg-black px-2 py-1 text-xs text-white disabled:opacity-50"
+                                >
+                                  {unameBusy[p.id] ? "Linking…" : "Link"}
+                                </button>
+                              </div>
+                              {!!(unameSuggest[p.id] || []).length && (
+                                <div className="rounded border bg-white">
+                                  {(unameSuggest[p.id] || []).map((s) => (
+                                    <button
+                                      type="button"
+                                      key={s}
+                                      onClick={async () => {
+                                        if (!organizerUid || !sessionId) return;
+                                        if (unameBusy[p.id]) return;
+                                        setUnameInput((m) => ({
+                                          ...m,
+                                          [p.id]: s,
+                                        }));
+                                        setUnameError((m) => ({
+                                          ...m,
+                                          [p.id]: "",
+                                        }));
+                                        setUnameBusy((m) => ({
+                                          ...m,
+                                          [p.id]: true,
+                                        }));
+                                        try {
+                                          const prof =
+                                            await getProfileByUsername(s);
+                                          if (!prof?.uid)
+                                            throw new Error(
+                                              "Username not found"
+                                            );
+                                          await linkAccountInOrganizerSession(
+                                            organizerUid,
+                                            sessionId,
+                                            p.id,
+                                            prof.uid
+                                          );
+                                          setUnameInput((m) => ({
+                                            ...m,
+                                            [p.id]: "",
+                                          }));
+                                          setUnameSuggest((m) => ({
+                                            ...m,
+                                            [p.id]: [],
+                                          }));
+                                        } catch (err: any) {
+                                          setUnameError((m) => ({
+                                            ...m,
+                                            [p.id]:
+                                              err?.message ||
+                                              "Failed to link by username",
+                                          }));
+                                        } finally {
+                                          setUnameBusy((m) => ({
+                                            ...m,
+                                            [p.id]: false,
+                                          }));
+                                        }
+                                      }}
+                                      className="block w-full px-2 py-1 text-left text-[12px] hover:bg-gray-50"
+                                    >
+                                      @{s}
+                                    </button>
+                                  ))}
+                                </div>
+                              )}
+                              {!!(unameError[p.id] || "") && (
+                                <div className="text-[11px] text-red-600">
+                                  {unameError[p.id]}
+                                </div>
+                              )}
+                            </form>
+                          </div>
+                        )}
                       </div>
                     )}
                   </li>
