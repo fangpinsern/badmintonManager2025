@@ -108,7 +108,12 @@ interface StoreState {
   updateSessionMeta: (sessionId: string, partial: Partial<Session>) => void;
   setPaymentRequest: (
     sessionId: string,
-    info: { enabled?: boolean; courtCost?: number; shuttleCost?: number }
+    info: {
+      enabled?: boolean;
+      courtCost?: number;
+      shuttleCost?: number;
+      recipientPlayerId?: string;
+    }
   ) => void;
 }
 
@@ -1217,7 +1222,12 @@ const useStore = create<StoreState>()((set, _get) => ({
   // Minimal, explicit setter for paymentRequest to avoid altering updateSessionMeta semantics
   setPaymentRequest: (
     sessionId: string,
-    info: { enabled?: boolean; courtCost?: number; shuttleCost?: number }
+    info: {
+      enabled?: boolean;
+      courtCost?: number;
+      shuttleCost?: number;
+      recipientPlayerId?: string;
+    }
   ) =>
     set((s) => ({
       sessions: s.sessions.map((ss) => {
@@ -1232,10 +1242,16 @@ const useStore = create<StoreState>()((set, _get) => ({
           typeof info?.shuttleCost === "number" && isFinite(info.shuttleCost)
             ? info.shuttleCost
             : undefined;
+        const recipientPlayerId =
+          typeof info?.recipientPlayerId === "string" &&
+          (info.recipientPlayerId || "").trim()
+            ? String(info.recipientPlayerId)
+            : undefined;
         const paymentRequest = {
           enabled,
           courtCost: court,
           shuttleCost: shuttle,
+          recipientPlayerId,
         };
         return { ...ss, paymentRequest } as Session;
       }),

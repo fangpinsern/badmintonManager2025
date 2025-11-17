@@ -214,7 +214,7 @@ function CourtCard({
             <button
               onClick={() => setOpen(true)}
               disabled={!!session.ended || !isOrganizer}
-              className="rounded-lg border border-gray-300 px-2 py-1 text-xs disabled:opacity-50"
+              className="rounded-lg border border-rose-300 bg-rose-50 px-2 py-1 text-xs text-rose-700 disabled:opacity-50"
             >
               End game
             </button>

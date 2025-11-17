@@ -1,5 +1,5 @@
 "use client";
-import { Input } from "@/components/layout";
+import { Input, Select } from "@/components/layout";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { auth, db } from "@/lib/firebase";
 import {
@@ -28,6 +28,10 @@ function EndSessionModal({
   sessionId,
   unlinkedPlayers = [],
   organizerLinked = false,
+  showPaymentOptions = true,
+  players = [],
+  paymentRecipientPlayerId = "",
+  onPaymentRecipientChange,
 }: {
   title: string;
   shuttles: string;
@@ -44,6 +48,10 @@ function EndSessionModal({
   sessionId?: string;
   unlinkedPlayers?: { id: string; name: string }[];
   organizerLinked?: boolean;
+  showPaymentOptions?: boolean;
+  players?: { id: string; name: string }[];
+  paymentRecipientPlayerId?: string;
+  onPaymentRecipientChange?: (playerId: string) => void;
 }) {
   const showReminder =
     Array.isArray(unlinkedPlayers) && unlinkedPlayers.length > 0;
@@ -449,45 +457,71 @@ function EndSessionModal({
             onChange={(e) => onShuttlesChange(e.target.value)}
           />
         </div>
-        <div className="mt-3 flex items-center gap-2">
-          <input
-            id="request-payment"
-            type="checkbox"
-            className="h-4 w-4"
-            checked={requestPayment}
-            onChange={(e) => onRequestPaymentChange(e.target.checked)}
-          />
-          <label htmlFor="request-payment" className="text-sm text-gray-800">
-            Include payment request in end-session Telegram message
-          </label>
-        </div>
-        {requestPayment && (
+        {showPaymentOptions && (
           <>
-            <div className="mt-3">
-              <Input
-                type="number"
-                label="Court cost"
-                inputMode="decimal"
-                step="0.01"
-                min={0}
-                value={courtCost}
-                onChange={(e) => onCourtCostChange(e.target.value)}
+            <div className="mt-3 flex items-center gap-2">
+              <input
+                id="request-payment"
+                type="checkbox"
+                className="h-4 w-4"
+                checked={requestPayment}
+                onChange={(e) => onRequestPaymentChange(e.target.checked)}
               />
+              <label
+                htmlFor="request-payment"
+                className="text-sm text-gray-800"
+              >
+                Include payment request in end-session Telegram message
+              </label>
             </div>
-            <div className="mt-3">
-              <Input
-                type="number"
-                label="Shuttlecock cost"
-                inputMode="decimal"
-                step="0.01"
-                min={0}
-                value={shuttleCost}
-                onChange={(e) => onShuttleCostChange(e.target.value)}
-              />
-            </div>
-            <div className="mt-2 text-[11px] text-gray-600">
-              Cost will be split equally among all players in the session.
-            </div>
+            {requestPayment && (
+              <>
+                <div className="mt-3">
+                  <label className="mb-1 block text-xs text-gray-600">
+                    Pay to
+                  </label>
+                  <Select
+                    value={paymentRecipientPlayerId || ""}
+                    onChange={(v) =>
+                      onPaymentRecipientChange?.(String(v || ""))
+                    }
+                    className="rounded-lg border border-gray-300 px-2 py-1 text-sm w-full"
+                  >
+                    <option value="">{`Organizer (default)`}</option>
+                    {players.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name}
+                      </option>
+                    ))}
+                  </Select>
+                </div>
+                <div className="mt-3">
+                  <Input
+                    type="number"
+                    label="Court cost"
+                    inputMode="decimal"
+                    step="0.01"
+                    min={0}
+                    value={courtCost}
+                    onChange={(e) => onCourtCostChange(e.target.value)}
+                  />
+                </div>
+                <div className="mt-3">
+                  <Input
+                    type="number"
+                    label="Shuttlecock cost"
+                    inputMode="decimal"
+                    step="0.01"
+                    min={0}
+                    value={shuttleCost}
+                    onChange={(e) => onShuttleCostChange(e.target.value)}
+                  />
+                </div>
+                <div className="mt-2 text-[11px] text-gray-600">
+                  Cost will be split equally among all players in the session.
+                </div>
+              </>
+            )}
           </>
         )}
         <div className="mt-3 flex items-center justify-end gap-2">
