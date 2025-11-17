@@ -129,7 +129,7 @@ function EndSessionModal({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div className="absolute inset-0 bg-black/40" onClick={onCancel}></div>
-      <div className="relative w-full max-w-sm rounded-t-2xl bg-white p-4 shadow-lg sm:rounded-2xl max-h-[90vh] overflow-y-auto">
+      <div className="relative w-full max-w-sm rounded-2xl bg-white p-4 shadow-lg sm:rounded-2xl max-h-[90vh] overflow-y-auto">
         <div className="mb-2 text-base font-semibold">{title}</div>
         <div className="text-xs text-gray-600">
           This will lock further changes and compute session statistics.
