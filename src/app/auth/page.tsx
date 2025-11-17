@@ -10,6 +10,7 @@ import { signInWithGoogleSafe } from "@/lib/authClient";
 import { logAnalyticsEvent } from "@/lib/analytics";
 import UsernameModal from "@/components/UsernameModal";
 import { getUserProfile, claimUsername } from "@/lib/firestoreSessions";
+import TelegramBrowserOverlay from "@/components/TelegramBrowserOverlay";
 
 function AuthPageInner() {
   const router = useRouter();
@@ -75,6 +76,7 @@ function AuthPageInner() {
   if (authReady && userUid && profileChecked && needsUsername) {
     return (
       <main className="mx-auto max-w-md p-4 text-sm">
+        <TelegramBrowserOverlay />
         <UsernameModal
           open={true}
           onClose={() => {}}
@@ -101,6 +103,7 @@ function AuthPageInner() {
 
   return (
     <main className="mx-auto max-w-md p-4 text-sm">
+      <TelegramBrowserOverlay />
       <Card>
         <div className="flex items-center justify-between">
           <div>
