@@ -210,17 +210,29 @@ function GameRecorderOverlay({
           });
         } catch {}
       };
+      // Initial compute, then run again next frame to ensure layout is stable
       compute();
+      const raf = window.requestAnimationFrame(() => compute());
+      // Observe size changes of the overlay container
+      let ro: ResizeObserver | null = null;
+      try {
+        if (typeof ResizeObserver !== "undefined" && overlayRef.current) {
+          ro = new ResizeObserver(() => compute());
+          ro.observe(overlayRef.current);
+        }
+      } catch {}
       window.addEventListener("resize", compute);
       window.addEventListener("orientationchange", compute);
       return () => {
         try {
           window.removeEventListener("resize", compute);
           window.removeEventListener("orientationchange", compute);
+          window.cancelAnimationFrame(raf);
+          if (ro) ro.disconnect();
         } catch {}
       };
     } catch {}
-  }, []);
+  }, [open]);
 
   const testSpeak = useCallback(() => {
     try {
