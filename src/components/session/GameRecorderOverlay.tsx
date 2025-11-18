@@ -53,6 +53,26 @@ function GameRecorderOverlay({
   const bubbleTimerBRef = useRef<number | null>(null);
   const lastIncAtARef = useRef<number>(0);
   const lastIncAtBRef = useRef<number>(0);
+  const overlayRef = useRef<HTMLDivElement | null>(null);
+  const [courtRect, setCourtRect] = useState<{
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+  }>({ left: 0, top: 0, width: 0, height: 0 });
+  const [overlayOffset, setOverlayOffset] = useState<{
+    left: number;
+    top: number;
+  }>({ left: 0, top: 0 });
+  const poolARef = useRef<HTMLDivElement | null>(null);
+  const poolBRef = useRef<HTMLDivElement | null>(null);
+  const [draggingItem, setDraggingItem] = useState<{
+    team: "A" | "B";
+    name: string;
+    from: "pool" | "zone";
+    zone?: "top" | "bottom";
+  } | null>(null);
+  const [dragPos, setDragPos] = useState<{ x: number; y: number } | null>(null);
   // Court assignments for drag-and-drop placement
   const [courtAssign, setCourtAssign] = useState<{
     A: { top: string[]; bottom: string[] };
@@ -104,6 +124,49 @@ function GameRecorderOverlay({
           speechUnlockedRef.current = true;
         } catch {}
       }
+    } catch {}
+  }, []);
+
+  // Compute rendered court rectangle (letterboxed) so zones align in both orientations
+  useEffect(() => {
+    try {
+      const compute = () => {
+        try {
+          const el = overlayRef.current;
+          if (!el) return;
+          const rect = el.getBoundingClientRect();
+          const containerW = rect.width;
+          const containerH = rect.height;
+          setOverlayOffset({ left: rect.left, top: rect.top });
+          // SVG viewBox is 2000x1000; court is x=200..1800, y=100..900
+          const vbW = 2000;
+          const vbH = 1000;
+          const scale = Math.min(containerW / vbW, containerH / vbH);
+          const renderedW = vbW * scale;
+          const renderedH = vbH * scale;
+          const marginLeft = (containerW - renderedW) / 2;
+          const marginTop = (containerH - renderedH) / 2;
+          const courtLeft = marginLeft + 200 * scale;
+          const courtTop = marginTop + 100 * scale;
+          const courtWidth = 1600 * scale;
+          const courtHeight = 800 * scale;
+          setCourtRect({
+            left: courtLeft,
+            top: courtTop,
+            width: courtWidth,
+            height: courtHeight,
+          });
+        } catch {}
+      };
+      compute();
+      window.addEventListener("resize", compute);
+      window.addEventListener("orientationchange", compute);
+      return () => {
+        try {
+          window.removeEventListener("resize", compute);
+          window.removeEventListener("orientationchange", compute);
+        } catch {}
+      };
     } catch {}
   }, []);
 
@@ -202,8 +265,8 @@ function GameRecorderOverlay({
           next.A.bottom = next.A.bottom.filter((n) => n !== name);
           next.B.top = next.B.top.filter((n) => n !== name);
           next.B.bottom = next.B.bottom.filter((n) => n !== name);
-          // Add to target
-          next[team][zone] = [...next[team][zone], name];
+          // Add to target (single player per zone)
+          next[team][zone] = [name];
           return next;
         });
       } catch {}
@@ -234,6 +297,100 @@ function GameRecorderOverlay({
     };
   }
 
+  // Touch-friendly drag support for PWAs/iOS
+  function onChipTouchStart(
+    team: "A" | "B",
+    name: string,
+    from: "pool" | "zone",
+    zone?: "top" | "bottom"
+  ) {
+    return (e: any) => {
+      try {
+        const t = (e.touches && e.touches[0]) || null;
+        if (!t) return;
+        setDraggingItem({ team, name, from, zone });
+        setDragPos({ x: t.clientX, y: t.clientY });
+        const onMove = (ev: any) => {
+          try {
+            const touch = (ev.touches && ev.touches[0]) || null;
+            if (!touch) return;
+            setDragPos({ x: touch.clientX, y: touch.clientY });
+            ev.preventDefault();
+          } catch {}
+        };
+        const onEnd = (ev: any) => {
+          try {
+            const touch =
+              (ev.changedTouches && ev.changedTouches[0]) ||
+              (ev.touches && ev.touches[0]) ||
+              null;
+            const clientX = touch ? touch.clientX : dragPos?.x || 0;
+            const clientY = touch ? touch.clientY : dragPos?.y || 0;
+            const item = { team, name, from, zone };
+            const over = (el: HTMLDivElement | null) => {
+              if (!el) return false;
+              const r = el.getBoundingClientRect();
+              return (
+                clientX >= r.left &&
+                clientX <= r.right &&
+                clientY >= r.top &&
+                clientY <= r.bottom
+              );
+            };
+            const inCourt =
+              clientX >= courtRect.left &&
+              clientX <= courtRect.left + courtRect.width &&
+              clientY >= courtRect.top &&
+              clientY <= courtRect.top + courtRect.height;
+            if (inCourt) {
+              const midX = courtRect.left + courtRect.width / 2;
+              const midY = courtRect.top + courtRect.height / 2;
+              const tgtTeam: "A" | "B" = clientX < midX ? "A" : "B";
+              const tgtZone: "top" | "bottom" =
+                clientY < midY ? "top" : "bottom";
+              if (tgtTeam === item.team) {
+                setCourtAssign((prev) => {
+                  const next = {
+                    A: { top: [...prev.A.top], bottom: [...prev.A.bottom] },
+                    B: { top: [...prev.B.top], bottom: [...prev.B.bottom] },
+                  };
+                  next.A.top = next.A.top.filter((n) => n !== name);
+                  next.A.bottom = next.A.bottom.filter((n) => n !== name);
+                  next.B.top = next.B.top.filter((n) => n !== name);
+                  next.B.bottom = next.B.bottom.filter((n) => n !== name);
+                  next[tgtTeam][tgtZone] = [name];
+                  return next;
+                });
+              }
+            } else if (
+              over(item.team === "A" ? poolARef.current : poolBRef.current)
+            ) {
+              setCourtAssign((prev) => {
+                const next = {
+                  A: { top: [...prev.A.top], bottom: [...prev.A.bottom] },
+                  B: { top: [...prev.B.top], bottom: [...prev.B.bottom] },
+                };
+                next.A.top = next.A.top.filter((n) => n !== name);
+                next.A.bottom = next.A.bottom.filter((n) => n !== name);
+                next.B.top = next.B.top.filter((n) => n !== name);
+                next.B.bottom = next.B.bottom.filter((n) => n !== name);
+                return next;
+              });
+            }
+          } catch {}
+          try {
+            window.removeEventListener("touchmove", onMove as any);
+            window.removeEventListener("touchend", onEnd as any);
+          } catch {}
+          setDraggingItem(null);
+          setDragPos(null);
+        };
+        window.addEventListener("touchmove", onMove as any, { passive: false });
+        window.addEventListener("touchend", onEnd as any);
+      } catch {}
+    };
+  }
+
   function PlayerChip({
     team,
     name,
@@ -249,7 +406,8 @@ function GameRecorderOverlay({
       <div
         draggable
         onDragStart={startDrag(team, name, from, zone)}
-        className="pointer-events-auto inline-flex items-center rounded-full bg-white/90 text-black text-[11px] md:text-xs px-2 py-1 m-1"
+        onTouchStart={onChipTouchStart(team, name, from, zone)}
+        className="pointer-events-auto touch-none inline-flex items-center rounded-full bg-white/90 text-black text-[11px] md:text-xs px-2 py-1 m-1"
       >
         {name}
       </div>
@@ -1008,7 +1166,10 @@ function GameRecorderOverlay({
             </div>
           )}
           {/* Badminton court overlay (visual only; not embedded in recording) */}
-          <div className="absolute inset-0 pointer-events-none">
+          <div
+            ref={overlayRef}
+            className="absolute inset-0 pointer-events-none"
+          >
             <svg
               viewBox="0 0 2000 1000"
               preserveAspectRatio="xMidYMid meet"
@@ -1066,6 +1227,7 @@ function GameRecorderOverlay({
             {/* Team pools (left = Team A, right = Team B). Drop here to return to pool. */}
             <div className="absolute left-6 top-1/2 -translate-y-1/2 text-white text-xs md:text-sm">
               <div
+                ref={poolARef}
                 className="pointer-events-auto inline-block rounded-md bg-black/35 border border-white/10 px-3 py-2"
                 onDragOver={onDragOverAllow}
                 onDrop={dropToPool("A")}
@@ -1086,6 +1248,7 @@ function GameRecorderOverlay({
             </div>
             <div className="absolute right-6 top-1/2 -translate-y-1/2 text-white text-xs md:text-sm">
               <div
+                ref={poolBRef}
                 className="pointer-events-auto inline-block rounded-md bg-black/35 border border-white/10 px-3 py-2"
                 onDragOver={onDragOverAllow}
                 onDrop={dropToPool("B")}
@@ -1108,123 +1271,135 @@ function GameRecorderOverlay({
             <div
               className="absolute"
               style={{
-                left: "10%",
-                top: "10%",
-                width: "40%",
-                height: "40%",
+                left: courtRect.left,
+                top: courtRect.top,
+                width: courtRect.width / 2,
+                height: courtRect.height / 2,
               }}
             >
               <div
-                className="pointer-events-auto w-full h-full rounded-md border border-white/30"
+                className="pointer-events-auto relative w-full h-full rounded-md border border-white/30"
                 onDragOver={onDragOverAllow}
                 onDrop={dropToZone("A", "top")}
               >
-                <div className="text-white/80 text-[10px] md:text-xs px-2 pt-1">
+                {/* <div className="absolute left-2 top-1 text-white/80 text-[10px] md:text-xs px-1 py-0.5">
                   Team A - Top
-                </div>
-                <div className="p-2 flex flex-wrap">
-                  {courtAssign.A.top.map((n, i) => (
+                </div> */}
+                <div className="h-full w-full p-2 flex items-center justify-center">
+                  {courtAssign.A.top.length > 0 ? (
                     <PlayerChip
-                      key={`A-top-${i}`}
                       team="A"
-                      name={n}
+                      name={courtAssign.A.top[0]}
                       from="zone"
                       zone="top"
                     />
-                  ))}
+                  ) : null}
                 </div>
               </div>
             </div>
             <div
               className="absolute"
               style={{
-                left: "10%",
-                top: "50%",
-                width: "40%",
-                height: "40%",
+                left: courtRect.left,
+                top: courtRect.top + courtRect.height / 2,
+                width: courtRect.width / 2,
+                height: courtRect.height / 2,
               }}
             >
               <div
-                className="pointer-events-auto w-full h-full rounded-md border border-white/30"
+                className="pointer-events-auto relative w-full h-full rounded-md border border-white/30"
                 onDragOver={onDragOverAllow}
                 onDrop={dropToZone("A", "bottom")}
               >
-                <div className="text-white/80 text-[10px] md:text-xs px-2 pt-1">
+                {/* <div className="absolute left-2 top-1 text-white/80 text-[10px] md:text-xs px-1 py-0.5">
                   Team A - Bottom
-                </div>
-                <div className="p-2 flex flex-wrap">
-                  {courtAssign.A.bottom.map((n, i) => (
+                </div> */}
+                <div className="h-full w-full p-2 flex items-center justify-center">
+                  {courtAssign.A.bottom.length > 0 ? (
                     <PlayerChip
-                      key={`A-bottom-${i}`}
                       team="A"
-                      name={n}
+                      name={courtAssign.A.bottom[0]}
                       from="zone"
                       zone="bottom"
                     />
-                  ))}
+                  ) : null}
                 </div>
               </div>
             </div>
             <div
               className="absolute"
               style={{
-                left: "50%",
-                top: "10%",
-                width: "40%",
-                height: "40%",
+                left: courtRect.left + courtRect.width / 2,
+                top: courtRect.top,
+                width: courtRect.width / 2,
+                height: courtRect.height / 2,
               }}
             >
               <div
-                className="pointer-events-auto w-full h-full rounded-md border border-white/30"
+                className="pointer-events-auto relative w-full h-full rounded-md border border-white/30"
                 onDragOver={onDragOverAllow}
                 onDrop={dropToZone("B", "top")}
               >
-                <div className="text-white/80 text-[10px] md:text-xs px-2 pt-1">
+                {/* <div className="absolute left-2 top-1 text-white/80 text-[10px] md:text-xs px-1 py-0.5">
                   Team B - Top
-                </div>
-                <div className="p-2 flex flex-wrap">
-                  {courtAssign.B.top.map((n, i) => (
+                </div> */}
+                <div className="h-full w-full p-2 flex items-center justify-center">
+                  {courtAssign.B.top.length > 0 ? (
                     <PlayerChip
-                      key={`B-top-${i}`}
                       team="B"
-                      name={n}
+                      name={courtAssign.B.top[0]}
                       from="zone"
                       zone="top"
                     />
-                  ))}
+                  ) : null}
                 </div>
               </div>
             </div>
             <div
               className="absolute"
               style={{
-                left: "50%",
-                top: "50%",
-                width: "40%",
-                height: "40%",
+                left: courtRect.left + courtRect.width / 2,
+                top: courtRect.top + courtRect.height / 2,
+                width: courtRect.width / 2,
+                height: courtRect.height / 2,
               }}
             >
               <div
-                className="pointer-events-auto w-full h-full rounded-md border border-white/30"
+                className="pointer-events-auto relative w-full h-full rounded-md border border-white/30"
                 onDragOver={onDragOverAllow}
                 onDrop={dropToZone("B", "bottom")}
               >
-                <div className="text-white/80 text-[10px] md:text-xs px-2 pt-1">
+                {/* <div className="absolute left-2 top-1 text-white/80 text-[10px] md:text-xs px-1 py-0.5">
                   Team B - Bottom
-                </div>
-                <div className="p-2 flex flex-wrap">
-                  {courtAssign.B.bottom.map((n, i) => (
+                </div> */}
+                <div className="h-full w-full p-2 flex items-center justify-center">
+                  {courtAssign.B.bottom.length > 0 ? (
                     <PlayerChip
-                      key={`B-bottom-${i}`}
                       team="B"
-                      name={n}
+                      name={courtAssign.B.bottom[0]}
                       from="zone"
                       zone="bottom"
                     />
-                  ))}
+                  ) : null}
                 </div>
               </div>
             </div>
+            {/* Ghost chip for touch dragging */}
+            {draggingItem && dragPos && (
+              <div
+                className="absolute pointer-events-none"
+                style={{
+                  left: dragPos.x - overlayOffset.left,
+                  top: dragPos.y - overlayOffset.top,
+                  transform: "translate(-50%, -50%)",
+                  zIndex: 5,
+                }}
+              >
+                <div className="inline-flex items-center rounded-full bg-white/90 text-black text-[11px] md:text-xs px-2 py-1">
+                  {draggingItem.name}
+                </div>
+              </div>
+            )}
           </div>
           <canvas ref={canvasRef} className="hidden" />
 
