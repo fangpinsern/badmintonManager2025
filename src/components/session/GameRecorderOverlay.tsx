@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import {
   DndContext,
   useDraggable,
@@ -12,6 +12,11 @@ import {
   rectIntersection,
   DragEndEvent,
 } from "@dnd-kit/core";
+import {
+  computeNextService,
+  computeTargetPlan,
+  sideZoneForServiceCourt,
+} from "../../lib/rules/service";
 
 type GameRecorderOverlayProps = {
   open: boolean;
@@ -98,6 +103,35 @@ function GameRecorderOverlay({
       activationConstraint: { delay: 120, tolerance: 4 },
     })
   );
+  // Service/rules state
+  const [servingSide, setServingSide] = useState<"A" | "B" | null>(null);
+  const [serverName, setServerName] = useState<string | null>(null);
+  const [serviceCourt, setServiceCourt] = useState<"left" | "right">("right");
+  const [serviceWarnings, setServiceWarnings] = useState<string[]>([]);
+  const [showServiceSetup, setShowServiceSetup] = useState<boolean>(false);
+  const [targetPositions, setTargetPositions] = useState<
+    Record<string, { x: number; y: number; role: string }>
+  >({});
+  const [chipsLocked, setChipsLocked] = useState<boolean>(false);
+  const [setupStep, setSetupStep] = useState<1 | 2>(1);
+  const [selATop, setSelATop] = useState<string>("");
+  const [selABottom, setSelABottom] = useState<string>("");
+  const [selBTop, setSelBTop] = useState<string>("");
+  const [selBBottom, setSelBBottom] = useState<string>("");
+  const dupA = useMemo(
+    () => Boolean(selATop) && Boolean(selABottom) && selATop === selABottom,
+    [selATop, selABottom]
+  );
+  const dupB = useMemo(
+    () => Boolean(selBTop) && Boolean(selBBottom) && selBTop === selBBottom,
+    [selBTop, selBBottom]
+  );
+  const setupError = useMemo(() => {
+    const msgs: string[] = [];
+    if (dupA) msgs.push("Team A has duplicate players in starting positions.");
+    if (dupB) msgs.push("Team B has duplicate players in starting positions.");
+    return msgs.join(" ");
+  }, [dupA, dupB]);
   // Prefer pools over court zones when both intersect during a drop (so drag-over pool returns to pool)
   const zonesFirst = useCallback((args: any) => {
     try {
@@ -120,6 +154,95 @@ function GameRecorderOverlay({
     A: { top: [], bottom: [] },
     B: { top: [], bottom: [] },
   });
+  // ---- Undo history (placed after courtAssign so it's in scope)
+  type HistoryEntry = {
+    scoreA: number;
+    scoreB: number;
+    servingSide: "A" | "B" | null;
+    serverName: string | null;
+    serviceCourt: "left" | "right";
+    courtAssign: {
+      A: { top: string[]; bottom: string[] };
+      B: { top: string[]; bottom: string[] };
+    };
+    targetPositions: Record<string, { x: number; y: number; role: string }>;
+    chipsLocked: boolean;
+    showServiceSetup: boolean;
+    setupStep: 1 | 2;
+    serviceWarnings: string[];
+  };
+  const [history, setHistory] = useState<HistoryEntry[]>([]);
+  const cloneAssign = useCallback(
+    (a: {
+      A: { top: string[]; bottom: string[] };
+      B: { top: string[]; bottom: string[] };
+    }) => {
+      return {
+        A: { top: [...a.A.top], bottom: [...a.A.bottom] },
+        B: { top: [...a.B.top], bottom: [...a.B.bottom] },
+      };
+    },
+    []
+  );
+  const cloneTargets = useCallback(
+    (t: Record<string, { x: number; y: number; role: string }>) => {
+      const out: Record<string, { x: number; y: number; role: string }> = {};
+      for (const k in t) out[k] = { ...t[k] };
+      return out;
+    },
+    []
+  );
+  const pushHistory = useCallback(() => {
+    try {
+      const snapshot: HistoryEntry = {
+        scoreA: scoreARef.current,
+        scoreB: scoreBRef.current,
+        servingSide,
+        serverName,
+        serviceCourt,
+        courtAssign: cloneAssign(courtAssign),
+        targetPositions: cloneTargets(targetPositions),
+        chipsLocked,
+        showServiceSetup,
+        setupStep,
+        serviceWarnings: [...(serviceWarnings || [])],
+      };
+      setHistory((h) => [...h, snapshot]);
+    } catch {}
+  }, [
+    servingSide,
+    serverName,
+    serviceCourt,
+    courtAssign,
+    targetPositions,
+    chipsLocked,
+    showServiceSetup,
+    setupStep,
+    serviceWarnings,
+    cloneAssign,
+    cloneTargets,
+  ]);
+  const onUndo = useCallback(() => {
+    try {
+      setHistory((prev) => {
+        if (!prev.length) return prev;
+        const next = prev.slice(0, -1);
+        const last = prev[prev.length - 1];
+        setScoreA(last.scoreA);
+        setScoreB(last.scoreB);
+        setServingSide(last.servingSide);
+        setServerName(last.serverName);
+        setServiceCourt(last.serviceCourt);
+        setCourtAssign(cloneAssign(last.courtAssign));
+        setTargetPositions(cloneTargets(last.targetPositions));
+        setChipsLocked(last.chipsLocked);
+        setShowServiceSetup(last.showServiceSetup);
+        setSetupStep(last.setupStep);
+        setServiceWarnings(last.serviceWarnings);
+        return next;
+      });
+    } catch {}
+  }, [cloneAssign, cloneTargets]);
   const audioCtxRef = useRef<AudioContext | null>(null);
   const speechUnlockedRef = useRef<boolean>(false);
   const hiddenVideoRef = useRef<HTMLVideoElement | null>(null);
@@ -469,20 +592,20 @@ function GameRecorderOverlay({
   function PlayerChip({ team, name }: { team: "A" | "B"; name: string }) {
     const id = `chip:${team}:${name}`;
     const { attributes, listeners, setNodeRef, transform, isDragging } =
-      useDraggable({ id });
+      useDraggable({ id, disabled: chipsLocked });
     const style: any = {
       transform: transform
         ? `translate3d(${transform.x}px, ${transform.y}px, 0)`
         : undefined,
       opacity: isDragging ? 0.8 : 1,
-      cursor: "grab",
+      cursor: chipsLocked ? "default" : "grab",
     };
     return (
       <div
         ref={setNodeRef}
         style={style}
-        {...listeners}
-        {...attributes}
+        {...(chipsLocked ? {} : listeners)}
+        {...(chipsLocked ? {} : attributes)}
         className="pointer-events-auto touch-none inline-flex items-center rounded-full bg-white/90 text-black text-[11px] md:text-xs px-2 py-1 m-1"
       >
         {name}
@@ -616,6 +739,12 @@ function GameRecorderOverlay({
       setError(null);
       setScoreA(0);
       setScoreB(0);
+      setServingSide(null);
+      setServerName(null);
+      setServiceCourt("right");
+      setServiceWarnings([]);
+      setTargetPositions({});
+      setShowServiceSetup(true);
       try {
         // Match device orientation at start so recording matches preview
         const isPortrait =
@@ -747,6 +876,128 @@ function GameRecorderOverlay({
       setPaused(false);
     };
   }, [open, facingMode]);
+
+  // Helper: zone center in pixels within overlay container
+  const zoneCenter = useCallback(
+    (team: "A" | "B", zone: "top" | "bottom") => {
+      const halfW = courtRect.width / 2;
+      const halfH = courtRect.height / 2;
+      const x =
+        team === "A"
+          ? courtRect.left + halfW / 2
+          : courtRect.left + halfW + halfW / 2;
+      const y =
+        zone === "top"
+          ? courtRect.top + halfH / 2
+          : courtRect.top + halfH + halfH / 2;
+      return { x, y };
+    },
+    [courtRect]
+  );
+
+  // Helper: recompute current target markers based on service state and assignments
+  const recomputeTargets = useCallback(() => {
+    try {
+      if (!servingSide) {
+        setTargetPositions({});
+        return;
+      }
+      const countA =
+        (courtAssign.A.top.length ? 1 : 0) +
+        (courtAssign.A.bottom.length ? 1 : 0);
+      const countB =
+        (courtAssign.B.top.length ? 1 : 0) +
+        (courtAssign.B.bottom.length ? 1 : 0);
+      const isDoubles = countA === 2 && countB === 2;
+      const service = {
+        servingSide,
+        serverName,
+        serviceCourt,
+        receivingSide: servingSide === "A" ? "B" : "A",
+      } as any;
+      const plan = computeTargetPlan(service, isDoubles, courtAssign);
+      const pos: Record<string, { x: number; y: number; role: string }> = {};
+      for (const t of plan.targets) {
+        const c = zoneCenter(t.team, t.zone);
+        pos[t.player] = { x: c.x, y: c.y, role: t.role };
+      }
+      setTargetPositions(pos);
+      setServiceWarnings(plan.warnings || []);
+    } catch {}
+  }, [servingSide, serverName, serviceCourt, courtAssign, zoneCenter]);
+
+  useEffect(() => {
+    recomputeTargets();
+  }, [recomputeTargets]);
+
+  // Point increment wrapper (applies rules and computes targets)
+  const onPoint = useCallback(
+    (winner: "A" | "B") => {
+      try {
+        // Snapshot current state for undo
+        pushHistory();
+        const countA =
+          (courtAssign.A.top.length ? 1 : 0) +
+          (courtAssign.A.bottom.length ? 1 : 0);
+        const countB =
+          (courtAssign.B.top.length ? 1 : 0) +
+          (courtAssign.B.bottom.length ? 1 : 0);
+        const isDoubles = countA === 2 && countB === 2;
+        const next = computeNextService(
+          {
+            scores: { scoreA: scoreARef.current, scoreB: scoreBRef.current },
+            service: {
+              servingSide,
+              serverName,
+              serviceCourt,
+            },
+          },
+          winner,
+          isDoubles,
+          courtAssign
+        );
+        setServingSide(next.servingSide);
+        setServerName(next.serverName);
+        setServiceCourt(next.serviceCourt);
+        const plan = computeTargetPlan(next, isDoubles, courtAssign);
+        // Apply target plan to chip assignment so chips stay in sync with rules
+        setCourtAssign((prev) => {
+          const nextAssign = {
+            A: { top: [] as string[], bottom: [] as string[] },
+            B: { top: [] as string[], bottom: [] as string[] },
+          };
+          for (const t of plan.targets) {
+            nextAssign[t.team][t.zone] = [t.player];
+          }
+          return nextAssign;
+        });
+        const pos: Record<string, { x: number; y: number; role: string }> = {};
+        for (const t of plan.targets) {
+          const c = zoneCenter(t.team, t.zone);
+          pos[t.player] = { x: c.x, y: c.y, role: t.role };
+        }
+        setTargetPositions(pos);
+        setServiceWarnings(plan.warnings || []);
+        if (!chipsLocked) setChipsLocked(true);
+        if (winner === "A") {
+          setScoreA((s) => s + 1);
+        } else {
+          setScoreB((s) => s + 1);
+        }
+        speakScore(winner);
+      } catch {}
+    },
+    [
+      courtAssign,
+      servingSide,
+      serverName,
+      serviceCourt,
+      speakScore,
+      zoneCenter,
+      chipsLocked,
+      pushHistory,
+    ]
+  );
 
   const startRecording = useCallback(() => {
     try {
@@ -1175,9 +1426,8 @@ function GameRecorderOverlay({
       if (detOne && armedOne && stableOneCount >= REQUIRED_STABLE_FRAMES) {
         if (now - lastIncAtARef.current >= COOLDOWN_MS) {
           lastIncAtARef.current = now;
-          setScoreA((s) => s + 1);
           showBubble("A");
-          speakScore("A");
+          onPoint("A");
         }
         armedOne = false; // require release before next increment
         stableOneCount = 0;
@@ -1189,9 +1439,8 @@ function GameRecorderOverlay({
       ) {
         if (now - lastIncAtBRef.current >= COOLDOWN_MS) {
           lastIncAtBRef.current = now;
-          setScoreB((s) => s + 1);
           showBubble("B");
-          speakScore("B");
+          onPoint("B");
         }
         armedTwo = false; // require release before next increment
         stableTwoCount = 0;
@@ -1299,6 +1548,7 @@ function GameRecorderOverlay({
             collisionDetection={zonesFirst}
             onDragEnd={(e: DragEndEvent) => {
               try {
+                if (chipsLocked) return;
                 const activeId = String(e.active?.id ?? "");
                 const overId = String(e.over?.id ?? "");
                 if (!activeId || !overId) return;
@@ -1544,6 +1794,28 @@ function GameRecorderOverlay({
                   <PlayerChip team="B" name={courtAssign.B.bottom[0]} />
                 ) : null}
               </CourtDropZone>
+              {/* Suggested target markers */}
+              {Object.entries(targetPositions).map(([name, pos]) => (
+                <div
+                  key={`marker-${name}`}
+                  className="absolute pointer-events-none z-[6]"
+                  style={{
+                    left: pos.x,
+                    top: pos.y,
+                    transform: "translate(-50%, -50%)",
+                  }}
+                >
+                  <div className="flex flex-col items-center gap-1">
+                    <div className="h-3 w-3 rounded-full bg-yellow-300 shadow" />
+                    <div className="text-[10px] md:text-xs text-white/90 px-1 rounded bg-black/40 border border-white/10">
+                      {pos.role}
+                    </div>
+                    <div className="text-[10px] md:text-xs text-white/90">
+                      {name}
+                    </div>
+                  </div>
+                </div>
+              ))}
               {/* Ghost chip for touch dragging */}
               {draggingItem && dragPos && (
                 <div
@@ -1752,15 +2024,19 @@ function GameRecorderOverlay({
               <div className="grid grid-cols-3 items-center gap-3">
                 <div className="flex items-center justify-start gap-3">
                   <button
-                    onClick={() => setScoreA((s) => Math.max(0, s - 1))}
-                    className="rounded-md border border-white/20 bg-white/10 px-4 py-3 text-2xl"
+                    onClick={onUndo}
+                    disabled={history.length === 0}
+                    className={`rounded-md border border-white/20 px-4 py-3 text-2xl ${
+                      history.length === 0
+                        ? "bg-white/5 text-white/50"
+                        : "bg-white/10"
+                    }`}
                   >
-                    −
+                    Undo
                   </button>
                   <button
                     onClick={() => {
-                      setScoreA((s) => s + 1);
-                      speakScore("A");
+                      onPoint("A");
                     }}
                     className="rounded-md border border-white/20 bg-white/10 px-4 py-3 text-2xl"
                   >
@@ -1772,15 +2048,8 @@ function GameRecorderOverlay({
                 </div>
                 <div className="flex items-center justify-end gap-3">
                   <button
-                    onClick={() => setScoreB((s) => Math.max(0, s - 1))}
-                    className="rounded-md border border-white/20 bg-white/10 px-4 py-3 text-2xl"
-                  >
-                    −
-                  </button>
-                  <button
                     onClick={() => {
-                      setScoreB((s) => s + 1);
-                      speakScore("B");
+                      onPoint("B");
                     }}
                     className="rounded-md border border-white/20 bg-white/10 px-4 py-3 text-2xl"
                   >
@@ -1818,6 +2087,257 @@ function GameRecorderOverlay({
               {error}
             </div>
           ) : null}
+          {/* Service info banner */}
+          {(servingSide && (
+            <div className="absolute left-0 right-0 top-2 mx-auto w-max rounded-full bg-black/50 border border-white/10 text-white text-xs px-3 py-1">
+              Serve: {servingSide} • {serviceCourt}
+              {serverName ? ` • ${serverName}` : ""}
+            </div>
+          )) ||
+            null}
+          {/* Start-of-game service selection */}
+          {showServiceSetup && (
+            <div className="absolute inset-0 flex items-center justify-center z-[70]">
+              <div className="rounded-xl bg-black/80 border border-white/20 text-white p-4 w-[min(90vw,320px)]">
+                {setupStep === 1 ? (
+                  <>
+                    <div className="text-sm font-semibold mb-2">
+                      Who serves first?
+                    </div>
+                    <div className="flex items-center gap-2 mb-3">
+                      <button
+                        onClick={() => {
+                          try {
+                            const team: "A" | "B" = "A";
+                            setServingSide(team);
+                            setServiceCourt("right");
+                            setServerName(null);
+                            // Prefill lineup suggestion
+                            setSelATop(teamA[0] || "");
+                            setSelABottom(teamA[1] || "");
+                            setSelBTop(teamB[0] || "");
+                            setSelBBottom(teamB[1] || "");
+                            setSetupStep(2);
+                          } catch {}
+                        }}
+                        className="flex-1 rounded-md bg-white/10 px-3 py-2 border border-white/20"
+                      >
+                        Team A
+                      </button>
+                      <button
+                        onClick={() => {
+                          try {
+                            const team: "A" | "B" = "B";
+                            setServingSide(team);
+                            setServiceCourt("right");
+                            setServerName(null);
+                            // Prefill lineup suggestion
+                            setSelATop(teamA[0] || "");
+                            setSelABottom(teamA[1] || "");
+                            setSelBTop(teamB[0] || "");
+                            setSelBBottom(teamB[1] || "");
+                            setSetupStep(2);
+                          } catch {}
+                        }}
+                        className="flex-1 rounded-md bg-white/10 px-3 py-2 border border-white/20"
+                      >
+                        Team B
+                      </button>
+                    </div>
+                    <div className="text-[11px] text-white/80">
+                      You can skip drag-and-drop; we’ll set starting positions
+                      next.
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="text-sm font-semibold mb-2">
+                      Starting positions
+                    </div>
+                    <div className="grid grid-cols-2 gap-2 mb-3 text-xs">
+                      <div className="col-span-1">
+                        <div className="font-semibold mb-1">Team A</div>
+                        <label className="block mb-1">Top</label>
+                        <select
+                          className="w-full bg-white/10 border border-white/20 rounded px-2 py-1"
+                          value={selATop}
+                          onChange={(e) => setSelATop(e.target.value)}
+                        >
+                          <option value="">None</option>
+                          {teamA.map((n) => (
+                            <option key={`a-top-${n}`} value={n}>
+                              {n}
+                            </option>
+                          ))}
+                        </select>
+                        <label className="block mt-2 mb-1">Bottom</label>
+                        <select
+                          className="w-full bg-white/10 border border-white/20 rounded px-2 py-1"
+                          value={selABottom}
+                          onChange={(e) => setSelABottom(e.target.value)}
+                        >
+                          <option value="">None</option>
+                          {teamA.map((n) => (
+                            <option key={`a-bot-${n}`} value={n}>
+                              {n}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="col-span-1">
+                        <div className="font-semibold mb-1">Team B</div>
+                        <label className="block mb-1">Top</label>
+                        <select
+                          className="w-full bg-white/10 border border-white/20 rounded px-2 py-1"
+                          value={selBTop}
+                          onChange={(e) => setSelBTop(e.target.value)}
+                        >
+                          <option value="">None</option>
+                          {teamB.map((n) => (
+                            <option key={`b-top-${n}`} value={n}>
+                              {n}
+                            </option>
+                          ))}
+                        </select>
+                        <label className="block mt-2 mb-1">Bottom</label>
+                        <select
+                          className="w-full bg-white/10 border border-white/20 rounded px-2 py-1"
+                          value={selBBottom}
+                          onChange={(e) => setSelBBottom(e.target.value)}
+                        >
+                          <option value="">None</option>
+                          {teamB.map((n) => (
+                            <option key={`b-bot-${n}`} value={n}>
+                              {n}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+                    {setupError && (
+                      <div className="mb-2 text-xs text-red-400">
+                        {setupError}
+                      </div>
+                    )}
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => setSetupStep(1)}
+                        className="rounded-md bg-white/10 px-3 py-2 border border-white/20"
+                      >
+                        Back
+                      </button>
+                      <button
+                        onClick={() => {
+                          try {
+                            if (dupA || dupB) return;
+                            // Build initial assignment from selections, ensuring no duplicates
+                            const used = new Set<string>();
+                            const nextAssign = {
+                              A: {
+                                top: [] as string[],
+                                bottom: [] as string[],
+                              },
+                              B: {
+                                top: [] as string[],
+                                bottom: [] as string[],
+                              },
+                            };
+                            const pushUnique = (
+                              team: "A" | "B",
+                              zone: "top" | "bottom",
+                              name: string
+                            ) => {
+                              if (!name) return;
+                              if (used.has(name)) return;
+                              used.add(name);
+                              nextAssign[team][zone] = [name];
+                            };
+                            pushUnique("A", "top", selATop);
+                            pushUnique("A", "bottom", selABottom);
+                            pushUnique("B", "top", selBTop);
+                            pushUnique("B", "bottom", selBBottom);
+                            setCourtAssign(nextAssign);
+                            // Compute initial plan from serving side and parity (0 -> right)
+                            if (!servingSide) return;
+                            // Determine initial server from selected positions (parity zone)
+                            const parityZone = sideZoneForServiceCourt(
+                              servingSide,
+                              "right"
+                            );
+                            const initialServer =
+                              nextAssign[servingSide][parityZone][0] ||
+                              nextAssign[servingSide][
+                                parityZone === "top" ? "bottom" : "top"
+                              ][0] ||
+                              null;
+                            const countA =
+                              (nextAssign.A.top.length ? 1 : 0) +
+                              (nextAssign.A.bottom.length ? 1 : 0);
+                            const countB =
+                              (nextAssign.B.top.length ? 1 : 0) +
+                              (nextAssign.B.bottom.length ? 1 : 0);
+                            const isDoubles = countA === 2 && countB === 2;
+                            const nextService = {
+                              servingSide,
+                              serverName: initialServer,
+                              serviceCourt: "right" as const,
+                              receivingSide:
+                                servingSide === "A"
+                                  ? ("B" as const)
+                                  : ("A" as const),
+                            };
+                            const plan = computeTargetPlan(
+                              nextService as any,
+                              isDoubles,
+                              nextAssign
+                            );
+                            setServerName(initialServer);
+                            // Snap chips to plan targets
+                            setCourtAssign((prev) => {
+                              const applied = {
+                                A: {
+                                  top: [] as string[],
+                                  bottom: [] as string[],
+                                },
+                                B: {
+                                  top: [] as string[],
+                                  bottom: [] as string[],
+                                },
+                              };
+                              for (const t of plan.targets) {
+                                applied[t.team][t.zone] = [t.player];
+                              }
+                              return applied;
+                            });
+                            // Compute marker positions
+                            const pos: Record<
+                              string,
+                              { x: number; y: number; role: string }
+                            > = {};
+                            for (const t of plan.targets) {
+                              const c = zoneCenter(t.team, t.zone);
+                              pos[t.player] = { x: c.x, y: c.y, role: t.role };
+                            }
+                            setTargetPositions(pos);
+                            setServiceWarnings(plan.warnings || []);
+                            setShowServiceSetup(false);
+                          } catch {}
+                        }}
+                        className={`flex-1 rounded-md px-3 py-2 border border-white/20 ${
+                          dupA || dupB
+                            ? "bg-green-600/40 text-white/60"
+                            : "bg-green-600"
+                        }`}
+                        disabled={dupA || dupB}
+                      >
+                        Confirm lineup
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>
