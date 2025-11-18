@@ -38,7 +38,7 @@ function GameRecorderOverlay({
   const composedStreamRef = useRef<MediaStream | null>(null);
 
   // Gesture scoring
-  const [gestureEnabled, setGestureEnabled] = useState(true);
+  const [gestureEnabled, setGestureEnabled] = useState(false);
   const [speechEnabled, setSpeechEnabled] = useState(true);
   const [bubbleA, setBubbleA] = useState(false);
   const [bubbleB, setBubbleB] = useState(false);
@@ -891,23 +891,73 @@ function GameRecorderOverlay({
 
           <div className="absolute top-0 left-0 right-0 p-3 flex flex-col gap-4 items-center justify-between text-white text-sm">
             <div className="w-full flex justify-between gap-2">
-              <div className="flex items-center gap-2">
-                <span
-                  className={`inline-block h-2 w-2 rounded-full ${
-                    recording && !paused
-                      ? "bg-red-500"
-                      : recording && paused
-                      ? "bg-yellow-400"
-                      : "bg-gray-400"
-                  }`}
-                ></span>
-                <span>
-                  {recording
-                    ? paused
-                      ? "Paused"
-                      : "Recording"
-                    : "Not recording"}
-                </span>
+              <div className="flex flex-col items-start gap-2">
+                <div className="flex items-center gap-2">
+                  <span
+                    className={`inline-block h-2 w-2 rounded-full ${
+                      recording && !paused
+                        ? "bg-red-500"
+                        : recording && paused
+                        ? "bg-yellow-400"
+                        : "bg-gray-400"
+                    }`}
+                  ></span>
+                  <span>
+                    {recording
+                      ? paused
+                        ? "Paused"
+                        : "Recording"
+                      : "Not recording"}
+                  </span>
+                </div>
+                <button
+                  onClick={() =>
+                    setFacingMode((m) =>
+                      m === "environment" ? "user" : "environment"
+                    )
+                  }
+                  className="rounded-md bg-white/10 px-3 py-1 backdrop-blur border border-white/20"
+                >
+                  Switch camera
+                </button>
+                <label className="flex items-center gap-1">
+                  <input
+                    type="checkbox"
+                    checked={debugEnabled}
+                    onChange={(e) => setDebugEnabled(e.target.checked)}
+                  />
+                  <span>Debug overlay</span>
+                </label>
+                {debugEnabled && (
+                  <label className="flex items-center gap-1">
+                    <input
+                      type="checkbox"
+                      checked={requirePalmFront}
+                      onChange={(e) => setRequirePalmFront(e.target.checked)}
+                    />
+                    <span>Open palm: front only</span>
+                  </label>
+                )}
+                {debugEnabled && (
+                  <label className="flex items-center gap-1">
+                    <input
+                      type="checkbox"
+                      checked={requireFistSideOn}
+                      onChange={(e) => setRequireFistSideOn(e.target.checked)}
+                    />
+                    <span>Fist: side-on only</span>
+                  </label>
+                )}
+                {debugEnabled && (
+                  <label className="flex items-center gap-1">
+                    <input
+                      type="checkbox"
+                      checked={invertPalmFrontTest}
+                      onChange={(e) => setInvertPalmFrontTest(e.target.checked)}
+                    />
+                    <span>Invert palm test</span>
+                  </label>
+                )}
               </div>
               <div className="flex items-center gap-2">
                 {/* {!recording && (
@@ -919,44 +969,54 @@ function GameRecorderOverlay({
                 </button>
               )} */}
                 <div className="flex flex-col items-start gap-2">
-                  <label className="flex items-center gap-1">
-                    <input
-                      type="checkbox"
-                      checked={gestureEnabled}
-                      onChange={(e) => {
-                        setGestureEnabled(e.target.checked);
-                        if (e.target.checked && speechEnabled) {
-                          // User gesture present here; safe to unlock
+                  {!gestureEnabled ? (
+                    <button
+                      onClick={() => {
+                        setGestureEnabled(true);
+                        if (speechEnabled) {
+                          // Button click is a user gesture; safe to unlock
                           unlockAudioAndSpeech();
                         }
                       }}
-                    />
-                    <span>Gesture scoring</span>
-                  </label>
-                  {gestureEnabled && (
-                    <div className="flex items-center gap-2">
-                      <label className="items-center gap-1">
-                        <input
-                          type="checkbox"
-                          checked={speechEnabled}
-                          onChange={(e) => {
-                            setSpeechEnabled(e.target.checked);
-                            if (e.target.checked) {
-                              // Toggle click counts as user gesture on iOS
-                              unlockAudioAndSpeech();
-                            }
-                          }}
-                        />
-                        <span>Voice</span>
-                      </label>
-                      <button
-                        onClick={testSpeak}
-                        className="rounded-md bg-white/10 px-3 py-1 backdrop-blur border border-white/20"
-                      >
-                        Test voice
-                      </button>
-                    </div>
+                      className="rounded-md bg-white/10 px-3 py-1 backdrop-blur border border-white/20"
+                    >
+                      Activate Gesture
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => {
+                        setGestureEnabled(false);
+                      }}
+                      className="rounded-md bg-white/10 px-3 py-1 backdrop-blur border border-white/20"
+                    >
+                      Deactivate Gesture
+                    </button>
                   )}
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => {
+                        const next = !speechEnabled;
+                        setSpeechEnabled(next);
+                        if (next) {
+                          // Enabling voice: unlock on user gesture
+                          unlockAudioAndSpeech();
+                        }
+                      }}
+                      className={`rounded-md px-3 py-1 backdrop-blur border border-white/20 ${
+                        speechEnabled
+                          ? "bg-red-600 text-white"
+                          : "bg-green-600 text-white"
+                      }`}
+                    >
+                      {speechEnabled ? "Off voice" : "On voice"}
+                    </button>
+                    <button
+                      onClick={testSpeak}
+                      className="rounded-md bg-white/10 px-3 py-1 backdrop-blur border border-white/20"
+                    >
+                      Test voice
+                    </button>
+                  </div>
                 </div>
                 {recording && !paused && (
                   <button
@@ -999,56 +1059,7 @@ function GameRecorderOverlay({
                 readout.
               </div>
             )}
-            <div className="w-full flex items-center justify-center gap-2">
-              <button
-                onClick={() =>
-                  setFacingMode((m) =>
-                    m === "environment" ? "user" : "environment"
-                  )
-                }
-                className="rounded-md bg-white/10 px-3 py-1 backdrop-blur border border-white/20"
-              >
-                Switch camera
-              </button>
-              <label className="flex items-center gap-1">
-                <input
-                  type="checkbox"
-                  checked={debugEnabled}
-                  onChange={(e) => setDebugEnabled(e.target.checked)}
-                />
-                <span>Debug overlay</span>
-              </label>
-              {debugEnabled && (
-                <label className="flex items-center gap-1">
-                  <input
-                    type="checkbox"
-                    checked={requirePalmFront}
-                    onChange={(e) => setRequirePalmFront(e.target.checked)}
-                  />
-                  <span>Open palm: front only</span>
-                </label>
-              )}
-              {debugEnabled && (
-                <label className="flex items-center gap-1">
-                  <input
-                    type="checkbox"
-                    checked={requireFistSideOn}
-                    onChange={(e) => setRequireFistSideOn(e.target.checked)}
-                  />
-                  <span>Fist: side-on only</span>
-                </label>
-              )}
-              {debugEnabled && (
-                <label className="flex items-center gap-1">
-                  <input
-                    type="checkbox"
-                    checked={invertPalmFrontTest}
-                    onChange={(e) => setInvertPalmFrontTest(e.target.checked)}
-                  />
-                  <span>Invert palm test</span>
-                </label>
-              )}
-            </div>
+
             {/* Team labels below help text */}
             <div className="w-full flex items-start justify-center">
               <div className="w-full mt-2 rounded-lg bg-black/40 border border-white/10 text-white text-xs px-3 py-2">
