@@ -1,17 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
-import {
-  DndContext,
-  useDraggable,
-  useDroppable,
-  PointerSensor,
-  TouchSensor,
-  useSensor,
-  useSensors,
-  rectIntersection,
-  DragEndEvent,
-} from "@dnd-kit/core";
+// Drag-and-drop removed
 import {
   computeNextService,
   computeTargetPlan,
@@ -86,23 +76,8 @@ function GameRecorderOverlay({
     left: number;
     top: number;
   }>({ left: 0, top: 0 });
-  const poolARef = useRef<HTMLDivElement | null>(null);
-  const poolBRef = useRef<HTMLDivElement | null>(null);
-  const [draggingItem, setDraggingItem] = useState<{
-    team: "A" | "B";
-    name: string;
-    from: "pool" | "zone";
-    zone?: "top" | "bottom";
-  } | null>(null);
-  const [dragPos, setDragPos] = useState<{ x: number; y: number } | null>(null);
-  const bodyOverflowRef = useRef<string>("");
-  // dnd-kit sensors
-  const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
-    useSensor(TouchSensor, {
-      activationConstraint: { delay: 120, tolerance: 4 },
-    })
-  );
+  // Drag-and-drop refs removed
+  // Drag-and-drop removed
   // Service/rules state
   const [servingSide, setServingSide] = useState<"A" | "B" | null>(null);
   const [serverName, setServerName] = useState<string | null>(null);
@@ -118,6 +93,8 @@ function GameRecorderOverlay({
   const [selABottom, setSelABottom] = useState<string>("");
   const [selBTop, setSelBTop] = useState<string>("");
   const [selBBottom, setSelBBottom] = useState<string>("");
+  // Which team is rendered on the left half (supports side switch)
+  const [leftTeam, setLeftTeam] = useState<"A" | "B">("A");
   const dupA = useMemo(
     () => Boolean(selATop) && Boolean(selABottom) && selATop === selABottom,
     [selATop, selABottom]
@@ -132,20 +109,7 @@ function GameRecorderOverlay({
     if (dupB) msgs.push("Team B has duplicate players in starting positions.");
     return msgs.join(" ");
   }, [dupA, dupB]);
-  // Prefer pools over court zones when both intersect during a drop (so drag-over pool returns to pool)
-  const zonesFirst = useCallback((args: any) => {
-    try {
-      const collisions = rectIntersection(args) || [];
-      return collisions.sort((a: any, b: any) => {
-        const aPool = String(a.id || "").startsWith("pool:") ? 1 : 0;
-        const bPool = String(b.id || "").startsWith("pool:") ? 1 : 0;
-        if (aPool !== bPool) return bPool - aPool; // pools first
-        return 0;
-      });
-    } catch {
-      return rectIntersection(args) || [];
-    }
-  }, []);
+  // Drag-and-drop collision preference removed
   // Court assignments for drag-and-drop placement
   const [courtAssign, setCourtAssign] = useState<{
     A: { top: string[]; bottom: string[] };
@@ -394,240 +358,29 @@ function GameRecorderOverlay({
     [speechEnabled, unlockAudioAndSpeech]
   );
 
-  // ----- Drag & Drop helpers for court placement -----
-  const assignedSetA = new Set<string>([
-    ...courtAssign.A.top,
-    ...courtAssign.A.bottom,
-  ]);
-  const assignedSetB = new Set<string>([
-    ...courtAssign.B.top,
-    ...courtAssign.B.bottom,
-  ]);
-  const availableA = (teamA || []).filter((n) => !assignedSetA.has(n));
-  const availableB = (teamB || []).filter((n) => !assignedSetB.has(n));
+  // Player pools shown by side orientation (display-only)
+  const poolLeft = (leftTeam === "A" ? teamA : teamB) || [];
+  const poolRight = (leftTeam === "A" ? teamB : teamA) || [];
 
-  function startDrag(
-    team: "A" | "B",
-    name: string,
-    from: "pool" | "zone",
-    zone?: "top" | "bottom"
-  ) {
-    return (e: any) => {
-      try {
-        const payload = JSON.stringify({ team, name, from, zone });
-        e.dataTransfer.setData("application/json", payload);
-        e.dataTransfer.effectAllowed = "move";
-      } catch {}
-    };
-  }
-
-  function onDragOverAllow(e: any) {
-    try {
-      e.preventDefault();
-      e.dataTransfer.dropEffect = "move";
-    } catch {}
-  }
-
-  function dropToZone(team: "A" | "B", zone: "top" | "bottom") {
-    return (e: any) => {
-      try {
-        e.preventDefault();
-        const data = e.dataTransfer.getData("application/json");
-        if (!data) return;
-        const parsed: {
-          team: "A" | "B";
-          name: string;
-          from: "pool" | "zone";
-          zone?: "top" | "bottom";
-        } = JSON.parse(data);
-        if (parsed.team !== team) return; // enforce team-side constraint
-        const name = parsed.name;
-        setCourtAssign((prev) => {
-          const next = {
-            A: { top: [...prev.A.top], bottom: [...prev.A.bottom] },
-            B: { top: [...prev.B.top], bottom: [...prev.B.bottom] },
-          };
-          // Remove from all zones first (avoid duplicates)
-          next.A.top = next.A.top.filter((n) => n !== name);
-          next.A.bottom = next.A.bottom.filter((n) => n !== name);
-          next.B.top = next.B.top.filter((n) => n !== name);
-          next.B.bottom = next.B.bottom.filter((n) => n !== name);
-          // Add to target (single player per zone)
-          next[team][zone] = [name];
-          return next;
-        });
-      } catch {}
-    };
-  }
-
-  function dropToPool(team: "A" | "B") {
-    return (e: any) => {
-      try {
-        e.preventDefault();
-        const data = e.dataTransfer.getData("application/json");
-        if (!data) return;
-        const parsed: { team: "A" | "B"; name: string } = JSON.parse(data);
-        if (parsed.team !== team) return; // enforce team-side constraint
-        const name = parsed.name;
-        setCourtAssign((prev) => {
-          const next = {
-            A: { top: [...prev.A.top], bottom: [...prev.A.bottom] },
-            B: { top: [...prev.B.top], bottom: [...prev.B.bottom] },
-          };
-          next.A.top = next.A.top.filter((n) => n !== name);
-          next.A.bottom = next.A.bottom.filter((n) => n !== name);
-          next.B.top = next.B.top.filter((n) => n !== name);
-          next.B.bottom = next.B.bottom.filter((n) => n !== name);
-          return next;
-        });
-      } catch {}
-    };
-  }
-
-  // Touch-friendly drag support for PWAs/iOS
-  function onChipTouchStart(
-    team: "A" | "B",
-    name: string,
-    from: "pool" | "zone",
-    zone?: "top" | "bottom"
-  ) {
-    return (e: any) => {
-      try {
-        if (e.cancelable) e.preventDefault();
-        e.stopPropagation?.();
-        const touches = e.touches ? e.touches.length : 0;
-        if (touches > 1) return; // ignore multi-touch
-        const t = (e.touches && e.touches[0]) || null;
-        if (!t) return;
-        try {
-          bodyOverflowRef.current = document.body.style.overflow || "";
-          document.body.style.overflow = "hidden";
-        } catch {}
-        setDraggingItem({ team, name, from, zone });
-        setDragPos({ x: t.clientX, y: t.clientY });
-        const onMove = (ev: any) => {
-          try {
-            const touch = (ev.touches && ev.touches[0]) || null;
-            if (!touch) return;
-            setDragPos({ x: touch.clientX, y: touch.clientY });
-            if (ev.cancelable) ev.preventDefault();
-          } catch {}
-        };
-        const onEnd = (ev: any) => {
-          try {
-            const touch =
-              (ev.changedTouches && ev.changedTouches[0]) ||
-              (ev.touches && ev.touches[0]) ||
-              null;
-            const clientX = touch ? touch.clientX : dragPos?.x || 0;
-            const clientY = touch ? touch.clientY : dragPos?.y || 0;
-            const item = { team, name, from, zone };
-            const over = (el: HTMLDivElement | null) => {
-              if (!el) return false;
-              const r = el.getBoundingClientRect();
-              return (
-                clientX >= r.left &&
-                clientX <= r.right &&
-                clientY >= r.top &&
-                clientY <= r.bottom
-              );
-            };
-            const inCourt =
-              clientX >= courtRect.left &&
-              clientX <= courtRect.left + courtRect.width &&
-              clientY >= courtRect.top &&
-              clientY <= courtRect.top + courtRect.height;
-            if (inCourt) {
-              const midX = courtRect.left + courtRect.width / 2;
-              const midY = courtRect.top + courtRect.height / 2;
-              const tgtTeam: "A" | "B" = clientX < midX ? "A" : "B";
-              const tgtZone: "top" | "bottom" =
-                clientY < midY ? "top" : "bottom";
-              if (tgtTeam === item.team) {
-                setCourtAssign((prev) => {
-                  const next = {
-                    A: { top: [...prev.A.top], bottom: [...prev.A.bottom] },
-                    B: { top: [...prev.B.top], bottom: [...prev.B.bottom] },
-                  };
-                  next.A.top = next.A.top.filter((n) => n !== name);
-                  next.A.bottom = next.A.bottom.filter((n) => n !== name);
-                  next.B.top = next.B.top.filter((n) => n !== name);
-                  next.B.bottom = next.B.bottom.filter((n) => n !== name);
-                  next[tgtTeam][tgtZone] = [name];
-                  return next;
-                });
-              }
-            } else if (
-              over(item.team === "A" ? poolARef.current : poolBRef.current)
-            ) {
-              setCourtAssign((prev) => {
-                const next = {
-                  A: { top: [...prev.A.top], bottom: [...prev.A.bottom] },
-                  B: { top: [...prev.B.top], bottom: [...prev.B.bottom] },
-                };
-                next.A.top = next.A.top.filter((n) => n !== name);
-                next.A.bottom = next.A.bottom.filter((n) => n !== name);
-                next.B.top = next.B.top.filter((n) => n !== name);
-                next.B.bottom = next.B.bottom.filter((n) => n !== name);
-                return next;
-              });
-            }
-          } catch {}
-          try {
-            window.removeEventListener("touchmove", onMove as any);
-            window.removeEventListener("touchend", onEnd as any);
-          } catch {}
-          try {
-            document.body.style.overflow = bodyOverflowRef.current || "";
-          } catch {}
-          setDraggingItem(null);
-          setDragPos(null);
-        };
-        window.addEventListener("touchmove", onMove as any, { passive: false });
-        window.addEventListener("touchend", onEnd as any);
-      } catch {}
-    };
-  }
+  // Drag-and-drop handlers removed
 
   function PlayerChip({ team, name }: { team: "A" | "B"; name: string }) {
-    const id = `chip:${team}:${name}`;
-    const { attributes, listeners, setNodeRef, transform, isDragging } =
-      useDraggable({ id, disabled: chipsLocked });
-    const style: any = {
-      transform: transform
-        ? `translate3d(${transform.x}px, ${transform.y}px, 0)`
-        : undefined,
-      opacity: isDragging ? 0.8 : 1,
-      cursor: chipsLocked ? "default" : "grab",
-    };
     return (
-      <div
-        ref={setNodeRef}
-        style={style}
-        {...(chipsLocked ? {} : listeners)}
-        {...(chipsLocked ? {} : attributes)}
-        className="pointer-events-auto touch-none inline-flex items-center rounded-full bg-white/90 text-black text-[11px] md:text-xs px-2 py-1 m-1"
-      >
+      <div className="inline-flex items-center rounded-full bg-white/90 text-black text-[11px] md:text-xs px-2 py-1 m-1">
         {name}
       </div>
     );
   }
 
-  function TeamPool({ team, children }: { team: "A" | "B"; children: any }) {
-    const { setNodeRef, isOver } = useDroppable({ id: `pool:${team}` });
+  function TeamPool({ children }: { children: any }) {
     return (
-      <div
-        ref={setNodeRef}
-        className={`pointer-events-auto inline-block rounded-md bg-black/35 border ${
-          isOver ? "border-white/40" : "border-white/10"
-        } px-3 py-2`}
-      >
+      <div className="inline-block rounded-md bg-black/35 border border-white/10 px-3 py-2">
         {children}
       </div>
     );
   }
 
-  function CourtDropZone({
+  function CourtZone({
     team,
     zone,
     style,
@@ -638,8 +391,6 @@ function GameRecorderOverlay({
     style: any;
     children: any;
   }) {
-    const id = `zone:${team}:${zone}`;
-    const { setNodeRef, isOver } = useDroppable({ id });
     const baseColor =
       team === "A"
         ? zone === "top"
@@ -648,15 +399,10 @@ function GameRecorderOverlay({
         : zone === "top"
         ? "bg-blue-500"
         : "bg-green-500";
-    const bgClass = isOver
-      ? `${baseColor}/40 border-white/50`
-      : `${baseColor}/20 border-white/30`;
+    const bgClass = `${baseColor}/20 border-white/30`;
     return (
       <div className="absolute" style={style}>
-        <div
-          ref={setNodeRef}
-          className={`pointer-events-auto relative w-full h-full rounded-md border ${bgClass}`}
-        >
+        <div className={`relative w-full h-full rounded-md border ${bgClass}`}>
           <div className="h-full w-full p-2 flex items-center justify-center">
             {children}
           </div>
@@ -883,7 +629,7 @@ function GameRecorderOverlay({
       const halfW = courtRect.width / 2;
       const halfH = courtRect.height / 2;
       const x =
-        team === "A"
+        team === leftTeam
           ? courtRect.left + halfW / 2
           : courtRect.left + halfW + halfW / 2;
       const y =
@@ -892,7 +638,17 @@ function GameRecorderOverlay({
           : courtRect.top + halfH + halfH / 2;
       return { x, y };
     },
-    [courtRect]
+    [courtRect, leftTeam]
+  );
+
+  // Map service-court (left/right relative to serving side) to screen zone given current side orientation
+  const effectiveZoneForServiceCourt = useCallback(
+    (team: "A" | "B", court: "left" | "right"): "top" | "bottom" => {
+      const teamIsLeft = team === leftTeam;
+      if (teamIsLeft) return court === "right" ? "bottom" : "top";
+      return court === "right" ? "top" : "bottom";
+    },
+    [leftTeam]
   );
 
   // Helper: recompute current target markers based on service state and assignments
@@ -916,15 +672,42 @@ function GameRecorderOverlay({
         receivingSide: servingSide === "A" ? "B" : "A",
       } as any;
       const plan = computeTargetPlan(service, isDoubles, courtAssign);
+      const servingZone = effectiveZoneForServiceCourt(
+        service.servingSide,
+        service.serviceCourt
+      );
+      const servingPartnerZone = servingZone === "top" ? "bottom" : "top";
+      const recvSide = service.receivingSide as "A" | "B";
+      const receiverZone = effectiveZoneForServiceCourt(
+        recvSide,
+        service.serviceCourt
+      );
+      const receiverPartnerZone = receiverZone === "top" ? "bottom" : "top";
       const pos: Record<string, { x: number; y: number; role: string }> = {};
+      // Recompute zones per role with current orientation to place markers
       for (const t of plan.targets) {
-        const c = zoneCenter(t.team, t.zone);
+        let z: "top" | "bottom" =
+          t.team === service.servingSide
+            ? t.role === "server"
+              ? servingZone
+              : servingPartnerZone
+            : t.role === "receiver"
+            ? receiverZone
+            : receiverPartnerZone;
+        const c = zoneCenter(t.team, z);
         pos[t.player] = { x: c.x, y: c.y, role: t.role };
       }
       setTargetPositions(pos);
       setServiceWarnings(plan.warnings || []);
     } catch {}
-  }, [servingSide, serverName, serviceCourt, courtAssign, zoneCenter]);
+  }, [
+    servingSide,
+    serverName,
+    serviceCourt,
+    courtAssign,
+    zoneCenter,
+    effectiveZoneForServiceCourt,
+  ]);
 
   useEffect(() => {
     recomputeTargets();
@@ -960,20 +743,48 @@ function GameRecorderOverlay({
         setServerName(next.serverName);
         setServiceCourt(next.serviceCourt);
         const plan = computeTargetPlan(next, isDoubles, courtAssign);
-        // Apply target plan to chip assignment so chips stay in sync with rules
-        setCourtAssign((prev) => {
+        // Compute zones per orientation
+        const servingZone = effectiveZoneForServiceCourt(
+          next.servingSide as "A" | "B",
+          next.serviceCourt
+        );
+        const servingPartnerZone = servingZone === "top" ? "bottom" : "top";
+        const recvSide = next.receivingSide as "A" | "B";
+        const receiverZone = effectiveZoneForServiceCourt(
+          recvSide,
+          next.serviceCourt
+        );
+        const receiverPartnerZone = receiverZone === "top" ? "bottom" : "top";
+        // Apply target plan to chip assignment using orientation-aware zones
+        setCourtAssign(() => {
           const nextAssign = {
             A: { top: [] as string[], bottom: [] as string[] },
             B: { top: [] as string[], bottom: [] as string[] },
           };
           for (const t of plan.targets) {
-            nextAssign[t.team][t.zone] = [t.player];
+            const z =
+              t.team === next.servingSide
+                ? t.role === "server"
+                  ? servingZone
+                  : servingPartnerZone
+                : t.role === "receiver"
+                ? receiverZone
+                : receiverPartnerZone;
+            nextAssign[t.team][z] = [t.player];
           }
           return nextAssign;
         });
         const pos: Record<string, { x: number; y: number; role: string }> = {};
         for (const t of plan.targets) {
-          const c = zoneCenter(t.team, t.zone);
+          const z =
+            t.team === next.servingSide
+              ? t.role === "server"
+                ? servingZone
+                : servingPartnerZone
+              : t.role === "receiver"
+              ? receiverZone
+              : receiverPartnerZone;
+          const c = zoneCenter(t.team, z);
           pos[t.player] = { x: c.x, y: c.y, role: t.role };
         }
         setTargetPositions(pos);
@@ -1543,297 +1354,242 @@ function GameRecorderOverlay({
             </div>
           )}
           {/* Badminton court overlay (visual only; not embedded in recording) */}
-          <DndContext
-            sensors={sensors}
-            collisionDetection={zonesFirst}
-            onDragEnd={(e: DragEndEvent) => {
-              try {
-                if (chipsLocked) return;
-                const activeId = String(e.active?.id ?? "");
-                const overId = String(e.over?.id ?? "");
-                if (!activeId || !overId) return;
-                const activeParts = activeId.split(":");
-                const overParts = overId.split(":");
-                const aTeam = activeParts[1] as "A" | "B";
-                const name = activeParts.slice(2).join(":");
-                const overType = overParts[0];
-                const bTeam = overParts[1] as "A" | "B" | undefined;
-                const zone = overParts[2] as "top" | "bottom" | undefined;
-                if (overType === "pool") {
-                  setCourtAssign((prev) => {
-                    const next = {
-                      A: { top: [...prev.A.top], bottom: [...prev.A.bottom] },
-                      B: { top: [...prev.B.top], bottom: [...prev.B.bottom] },
-                    };
-                    next.A.top = next.A.top.filter((n) => n !== name);
-                    next.A.bottom = next.A.bottom.filter((n) => n !== name);
-                    next.B.top = next.B.top.filter((n) => n !== name);
-                    next.B.bottom = next.B.bottom.filter((n) => n !== name);
-                    return next;
-                  });
-                  return;
-                }
-                if (overType === "zone") {
-                  if (!bTeam || !zone) return;
-                  if (aTeam !== bTeam) return;
-                  const z = zone === "top" ? "top" : "bottom";
-                  setCourtAssign((prev) => {
-                    const next = {
-                      A: { top: [...prev.A.top], bottom: [...prev.A.bottom] },
-                      B: { top: [...prev.B.top], bottom: [...prev.B.bottom] },
-                    };
-                    next.A.top = next.A.top.filter((n) => n !== name);
-                    next.A.bottom = next.A.bottom.filter((n) => n !== name);
-                    next.B.top = next.B.top.filter((n) => n !== name);
-                    next.B.bottom = next.B.bottom.filter((n) => n !== name);
-                    next[bTeam as "A" | "B"][z] = [name];
-                    return next;
-                  });
-                }
-              } catch {}
-            }}
+          <div
+            ref={overlayRef}
+            className="absolute inset-0 pointer-events-auto select-none"
+            style={
+              {
+                touchAction: "none",
+                WebkitUserSelect: "none",
+                WebkitTouchCallout: "none",
+              } as any
+            }
           >
             <div
-              ref={overlayRef}
-              className="absolute inset-0 pointer-events-auto select-none"
-              style={
-                {
-                  touchAction: "none",
-                  WebkitUserSelect: "none",
-                  WebkitTouchCallout: "none",
-                } as any
-              }
+              className="absolute"
+              style={{
+                left: svgBoxRect.left,
+                top: svgBoxRect.top,
+                width: svgBoxRect.width,
+                height: svgBoxRect.height,
+              }}
             >
-              <div
-                className="absolute"
-                style={{
-                  left: svgBoxRect.left,
-                  top: svgBoxRect.top,
-                  width: svgBoxRect.width,
-                  height: svgBoxRect.height,
-                }}
+              <svg
+                viewBox="0 0 2000 1000"
+                preserveAspectRatio="xMidYMid meet"
+                className="w-full h-full"
               >
-                <svg
-                  viewBox="0 0 2000 1000"
-                  preserveAspectRatio="xMidYMid meet"
-                  className="w-full h-full"
-                >
-                  {/* Court outer boundary */}
-                  <rect
-                    x="200"
-                    y="100"
-                    width="1600"
-                    height="800"
-                    fill="none"
-                    stroke="rgba(255,255,255,0.5)"
-                    strokeWidth="8"
-                  />
-                  {/* Net line (mid-court, vertical) */}
-                  <line
-                    x1="1000"
-                    y1="100"
-                    x2="1000"
-                    y2="900"
-                    stroke="rgba(255,255,255,0.5)"
-                    strokeWidth="6"
-                  />
-                  {/* Short service lines (approximate, vertical) */}
-                  <line
-                    x1="780"
-                    y1="120"
-                    x2="780"
-                    y2="880"
-                    stroke="rgba(255,255,255,0.35)"
-                    strokeDasharray="18 14"
-                    strokeWidth="5"
-                  />
-                  <line
-                    x1="300"
-                    y1="120"
-                    x2="300"
-                    y2="880"
-                    stroke="rgba(255,255,255,0.35)"
-                    strokeDasharray="18 14"
-                    strokeWidth="5"
-                  />
-                  <line
-                    x1="1220"
-                    y1="120"
-                    x2="1220"
-                    y2="880"
-                    stroke="rgba(255,255,255,0.35)"
-                    strokeDasharray="18 14"
-                    strokeWidth="5"
-                  />
-                  <line
-                    x1="1700"
-                    y1="120"
-                    x2="1700"
-                    y2="880"
-                    stroke="rgba(255,255,255,0.35)"
-                    strokeDasharray="18 14"
-                    strokeWidth="5"
-                  />
-                  {/* Center line (service courts, horizontal) */}
-                  <line
-                    x1="200"
-                    y1="500"
-                    x2="1800"
-                    y2="500"
-                    stroke="rgba(255,255,255,0.35)"
-                    strokeDasharray="18 14"
-                    strokeWidth="5"
-                  />
-                  <line
-                    x1="200"
-                    y1="175"
-                    x2="1800"
-                    y2="175"
-                    stroke="rgba(255,255,255,0.35)"
-                    strokeDasharray="18 14"
-                    strokeWidth="5"
-                  />
-                  <line
-                    x1="200"
-                    y1="825"
-                    x2="1800"
-                    y2="825"
-                    stroke="rgba(255,255,255,0.35)"
-                    strokeDasharray="18 14"
-                    strokeWidth="5"
-                  />
-                </svg>
-              </div>
-              {/* Team pools (left = Team A, right = Team B). Drop here to return to pool. */}
-              <div className="absolute left-6 top-1/2 -translate-y-1/2 text-white text-xs md:text-sm z-10">
-                <TeamPool team="A">
-                  <div className="text-center font-semibold">Team A</div>
-                  {(availableA.length ? availableA : ["TBD"]).map((n, i) => (
-                    <div key={`court-a-pool-${i}`} className="text-center">
-                      {typeof n === "string" ? (
-                        n === "TBD" ? (
-                          "TBD"
-                        ) : (
-                          <PlayerChip team="A" name={n} />
-                        )
-                      ) : null}
-                    </div>
-                  ))}
-                </TeamPool>
-              </div>
-              <div className="absolute right-6 top-1/2 -translate-y-1/2 text-white text-xs md:text-sm z-10">
-                <TeamPool team="B">
-                  <div className="text-center font-semibold">Team B</div>
-                  {(availableB.length ? availableB : ["TBD"]).map((n, i) => (
-                    <div key={`court-b-pool-${i}`} className="text-center">
-                      {typeof n === "string" ? (
-                        n === "TBD" ? (
-                          "TBD"
-                        ) : (
-                          <PlayerChip team="B" name={n} />
-                        )
-                      ) : null}
-                    </div>
-                  ))}
-                </TeamPool>
-              </div>
-              {/* Droppable zones: A top/bottom (left); B top/bottom (right) */}
-              <CourtDropZone
-                team="A"
-                zone="top"
-                style={{
-                  left: courtRect.left,
-                  top: courtRect.top,
-                  width: courtRect.width / 2,
-                  height: courtRect.height / 2,
-                }}
-              >
-                {courtAssign.A.top.length > 0 ? (
-                  <PlayerChip team="A" name={courtAssign.A.top[0]} />
-                ) : null}
-              </CourtDropZone>
-              <CourtDropZone
-                team="A"
-                zone="bottom"
-                style={{
-                  left: courtRect.left,
-                  top: courtRect.top + courtRect.height / 2,
-                  width: courtRect.width / 2,
-                  height: courtRect.height / 2,
-                }}
-              >
-                {courtAssign.A.bottom.length > 0 ? (
-                  <PlayerChip team="A" name={courtAssign.A.bottom[0]} />
-                ) : null}
-              </CourtDropZone>
-              <CourtDropZone
-                team="B"
-                zone="top"
-                style={{
-                  left: courtRect.left + courtRect.width / 2,
-                  top: courtRect.top,
-                  width: courtRect.width / 2,
-                  height: courtRect.height / 2,
-                }}
-              >
-                {courtAssign.B.top.length > 0 ? (
-                  <PlayerChip team="B" name={courtAssign.B.top[0]} />
-                ) : null}
-              </CourtDropZone>
-              <CourtDropZone
-                team="B"
-                zone="bottom"
-                style={{
-                  left: courtRect.left + courtRect.width / 2,
-                  top: courtRect.top + courtRect.height / 2,
-                  width: courtRect.width / 2,
-                  height: courtRect.height / 2,
-                }}
-              >
-                {courtAssign.B.bottom.length > 0 ? (
-                  <PlayerChip team="B" name={courtAssign.B.bottom[0]} />
-                ) : null}
-              </CourtDropZone>
-              {/* Suggested target markers */}
-              {Object.entries(targetPositions).map(([name, pos]) => (
-                <div
-                  key={`marker-${name}`}
-                  className="absolute pointer-events-none z-[6]"
-                  style={{
-                    left: pos.x,
-                    top: pos.y,
-                    transform: "translate(-50%, -50%)",
-                  }}
-                >
-                  <div className="flex flex-col items-center gap-1">
-                    <div className="h-3 w-3 rounded-full bg-yellow-300 shadow" />
-                    <div className="text-[10px] md:text-xs text-white/90 px-1 rounded bg-black/40 border border-white/10">
-                      {pos.role}
-                    </div>
-                    <div className="text-[10px] md:text-xs text-white/90">
-                      {name}
-                    </div>
-                  </div>
-                </div>
-              ))}
-              {/* Ghost chip for touch dragging */}
-              {draggingItem && dragPos && (
-                <div
-                  className="absolute pointer-events-none"
-                  style={{
-                    left: dragPos.x - overlayOffset.left,
-                    top: dragPos.y - overlayOffset.top,
-                    transform: "translate(-50%, -50%)",
-                    zIndex: 5,
-                  }}
-                >
-                  <div className="inline-flex items-center rounded-full bg-white/90 text-black text-[11px] md:text-xs px-2 py-1">
-                    {draggingItem.name}
-                  </div>
-                </div>
-              )}
+                {/* Court outer boundary */}
+                <rect
+                  x="200"
+                  y="100"
+                  width="1600"
+                  height="800"
+                  fill="none"
+                  stroke="rgba(255,255,255,0.5)"
+                  strokeWidth="8"
+                />
+                {/* Net line (mid-court, vertical) */}
+                <line
+                  x1="1000"
+                  y1="100"
+                  x2="1000"
+                  y2="900"
+                  stroke="rgba(255,255,255,0.5)"
+                  strokeWidth="6"
+                />
+                {/* Short service lines (approximate, vertical) */}
+                <line
+                  x1="780"
+                  y1="120"
+                  x2="780"
+                  y2="880"
+                  stroke="rgba(255,255,255,0.35)"
+                  strokeDasharray="18 14"
+                  strokeWidth="5"
+                />
+                <line
+                  x1="300"
+                  y1="120"
+                  x2="300"
+                  y2="880"
+                  stroke="rgba(255,255,255,0.35)"
+                  strokeDasharray="18 14"
+                  strokeWidth="5"
+                />
+                <line
+                  x1="1220"
+                  y1="120"
+                  x2="1220"
+                  y2="880"
+                  stroke="rgba(255,255,255,0.35)"
+                  strokeDasharray="18 14"
+                  strokeWidth="5"
+                />
+                <line
+                  x1="1700"
+                  y1="120"
+                  x2="1700"
+                  y2="880"
+                  stroke="rgba(255,255,255,0.35)"
+                  strokeDasharray="18 14"
+                  strokeWidth="5"
+                />
+                {/* Center line (service courts, horizontal) */}
+                <line
+                  x1="200"
+                  y1="500"
+                  x2="1800"
+                  y2="500"
+                  stroke="rgba(255,255,255,0.35)"
+                  strokeDasharray="18 14"
+                  strokeWidth="5"
+                />
+                <line
+                  x1="200"
+                  y1="175"
+                  x2="1800"
+                  y2="175"
+                  stroke="rgba(255,255,255,0.35)"
+                  strokeDasharray="18 14"
+                  strokeWidth="5"
+                />
+                <line
+                  x1="200"
+                  y1="825"
+                  x2="1800"
+                  y2="825"
+                  stroke="rgba(255,255,255,0.35)"
+                  strokeDasharray="18 14"
+                  strokeWidth="5"
+                />
+              </svg>
             </div>
-          </DndContext>
+            {/* Team pools (left/right follow orientation). Display only. */}
+            <div className="absolute left-6 top-1/2 -translate-y-1/2 text-white text-xs md:text-sm z-10">
+              <TeamPool>
+                <div className="text-center font-semibold">
+                  {leftTeam === "A" ? "Team A" : "Team B"}
+                </div>
+                {(poolLeft.length ? poolLeft : ["TBD"]).map((n, i) => (
+                  <div key={`court-a-pool-${i}`} className="text-center">
+                    {typeof n === "string" ? (
+                      n === "TBD" ? (
+                        "TBD"
+                      ) : (
+                        <PlayerChip team={leftTeam} name={n} />
+                      )
+                    ) : null}
+                  </div>
+                ))}
+              </TeamPool>
+            </div>
+            <div className="absolute right-6 top-1/2 -translate-y-1/2 text-white text-xs md:text-sm z-10">
+              <TeamPool>
+                <div className="text-center font-semibold">
+                  {leftTeam === "A" ? "Team B" : "Team A"}
+                </div>
+                {(poolRight.length ? poolRight : ["TBD"]).map((n, i) => (
+                  <div key={`court-b-pool-${i}`} className="text-center">
+                    {typeof n === "string" ? (
+                      n === "TBD" ? (
+                        "TBD"
+                      ) : (
+                        <PlayerChip
+                          team={leftTeam === "A" ? "B" : "A"}
+                          name={n}
+                        />
+                      )
+                    ) : null}
+                  </div>
+                ))}
+              </TeamPool>
+            </div>
+            {/* Zones: A top/bottom (left); B top/bottom (right) */}
+            {/* <CourtZone
+              team="A"
+              zone="top"
+              style={{
+                left: courtRect.left,
+                top: courtRect.top,
+                width: courtRect.width / 2,
+                height: courtRect.height / 2,
+              }}
+            >
+              {courtAssign.A.top.length > 0 ? (
+                <PlayerChip team="A" name={courtAssign.A.top[0]} />
+              ) : null}
+            </CourtZone>
+            <CourtZone
+              team="A"
+              zone="bottom"
+              style={{
+                left: courtRect.left,
+                top: courtRect.top + courtRect.height / 2,
+                width: courtRect.width / 2,
+                height: courtRect.height / 2,
+              }}
+            >
+              {courtAssign.A.bottom.length > 0 ? (
+                <PlayerChip team="A" name={courtAssign.A.bottom[0]} />
+              ) : null}
+            </CourtZone>
+            <CourtZone
+              team="B"
+              zone="top"
+              style={{
+                left: courtRect.left + courtRect.width / 2,
+                top: courtRect.top,
+                width: courtRect.width / 2,
+                height: courtRect.height / 2,
+              }}
+            >
+              {courtAssign.B.top.length > 0 ? (
+                <PlayerChip team="B" name={courtAssign.B.top[0]} />
+              ) : null}
+            </CourtZone>
+            <CourtZone
+              team="B"
+              zone="bottom"
+              style={{
+                left: courtRect.left + courtRect.width / 2,
+                top: courtRect.top + courtRect.height / 2,
+                width: courtRect.width / 2,
+                height: courtRect.height / 2,
+              }}
+            >
+              {courtAssign.B.bottom.length > 0 ? (
+                <PlayerChip team="B" name={courtAssign.B.bottom[0]} />
+              ) : null}
+            </CourtZone> */}
+            {/* Suggested target markers */}
+            {Object.entries(targetPositions).map(([name, pos]) => (
+              <div
+                key={`marker-${name}`}
+                className="absolute pointer-events-none z-[6]"
+                style={{
+                  left: pos.x,
+                  top: pos.y,
+                  transform: "translate(-50%, -50%)",
+                }}
+              >
+                <div className="flex flex-col items-center gap-1">
+                  <div
+                    className={`h-3 w-3 rounded-full shadow ${
+                      pos.role === "server" ? "bg-red-500" : "bg-yellow-300"
+                    }`}
+                  />
+                  <div className="text-[10px] md:text-xs text-white/90 px-1 rounded bg-black/40 border border-white/10">
+                    {pos.role}
+                  </div>
+                  <div className="text-[10px] md:text-xs text-white/90">
+                    {name}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+
           <canvas ref={canvasRef} className="hidden" />
 
           <div className="absolute top-0 left-0 right-0 p-3 flex flex-col gap-4 items-center justify-between text-white text-sm">
@@ -2024,32 +1780,38 @@ function GameRecorderOverlay({
               <div className="grid grid-cols-3 items-center gap-3">
                 <div className="flex items-center justify-start gap-3">
                   <button
-                    onClick={onUndo}
-                    disabled={history.length === 0}
-                    className={`rounded-md border border-white/20 px-4 py-3 text-2xl ${
-                      history.length === 0
-                        ? "bg-white/5 text-white/50"
-                        : "bg-white/10"
-                    }`}
-                  >
-                    Undo
-                  </button>
-                  <button
                     onClick={() => {
-                      onPoint("A");
+                      onPoint(leftTeam);
                     }}
                     className="rounded-md border border-white/20 bg-white/10 px-4 py-3 text-2xl"
                   >
                     +
                   </button>
                 </div>
-                <div className="text-center text-2xl md:text-3xl font-semibold tracking-wide">
-                  {scoreA} : {scoreB}
+                <div className="flex flex-col items-center">
+                  <div className="text-center text-2xl md:text-3xl font-semibold tracking-wide">
+                    {leftTeam === "A" ? scoreA : scoreB} :{" "}
+                    {leftTeam === "A" ? scoreB : scoreA}
+                  </div>
+                  <div className="mt-2 flex">
+                    <button
+                      onClick={onUndo}
+                      disabled={history.length === 0}
+                      title="Undo last point"
+                      className={`px-2 py-1 rounded-full border border-white/20 ${
+                        history.length === 0
+                          ? "bg-white/5 text-white/50"
+                          : "bg-white/10 text-white"
+                      } flex items-center justify-center`}
+                    >
+                      ↺ undo
+                    </button>
+                  </div>
                 </div>
                 <div className="flex items-center justify-end gap-3">
                   <button
                     onClick={() => {
-                      onPoint("B");
+                      onPoint(leftTeam === "A" ? "B" : "A");
                     }}
                     className="rounded-md border border-white/20 bg-white/10 px-4 py-3 text-2xl"
                   >
@@ -2089,7 +1851,9 @@ function GameRecorderOverlay({
           ) : null}
           {/* Service info banner */}
           {(servingSide && (
-            <div className="absolute left-0 right-0 top-2 mx-auto w-max rounded-full bg-black/50 border border-white/10 text-white text-xs px-3 py-1">
+            <div
+              className={`absolute left-0 right-0 top-2 mx-auto w-max rounded-full bg-black/50 border border-white/10 text-white text-xs px-3 py-1`}
+            >
               Serve: {servingSide} • {serviceCourt}
               {serverName ? ` • ${serverName}` : ""}
             </div>
@@ -2151,67 +1915,93 @@ function GameRecorderOverlay({
                   </>
                 ) : (
                   <>
-                    <div className="text-sm font-semibold mb-2">
-                      Starting positions
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="text-sm font-semibold">
+                        Starting positions
+                      </div>
+                      <button
+                        onClick={() =>
+                          setLeftTeam((lt) => (lt === "A" ? "B" : "A"))
+                        }
+                        className="rounded-md bg-white/10 px-2 py-1 text-xs border border-white/20"
+                      >
+                        Swap sides
+                      </button>
                     </div>
                     <div className="grid grid-cols-2 gap-2 mb-3 text-xs">
+                      {/* Left column follows leftTeam */}
                       <div className="col-span-1">
-                        <div className="font-semibold mb-1">Team A</div>
-                        <label className="block mb-1">Top</label>
-                        <select
-                          className="w-full bg-white/10 border border-white/20 rounded px-2 py-1"
-                          value={selATop}
-                          onChange={(e) => setSelATop(e.target.value)}
-                        >
-                          <option value="">None</option>
-                          {teamA.map((n) => (
-                            <option key={`a-top-${n}`} value={n}>
-                              {n}
-                            </option>
-                          ))}
-                        </select>
-                        <label className="block mt-2 mb-1">Bottom</label>
-                        <select
-                          className="w-full bg-white/10 border border-white/20 rounded px-2 py-1"
-                          value={selABottom}
-                          onChange={(e) => setSelABottom(e.target.value)}
-                        >
-                          <option value="">None</option>
-                          {teamA.map((n) => (
-                            <option key={`a-bot-${n}`} value={n}>
-                              {n}
-                            </option>
-                          ))}
-                        </select>
+                        <div className="flex items-center justify-between mb-1">
+                          <div className="font-semibold">
+                            {leftTeam === "A" ? "Team A" : "Team B"}
+                          </div>
+                          <button
+                            onClick={() => {
+                              if (leftTeam === "A") {
+                                const aTop = selATop;
+                                setSelATop(selABottom);
+                                setSelABottom(aTop);
+                              } else {
+                                const bTop = selBTop;
+                                setSelBTop(selBBottom);
+                                setSelBBottom(bTop);
+                              }
+                            }}
+                            className="rounded-md bg-white/10 px-2 py-1 border border-white/20"
+                            title="Swap positions"
+                          >
+                            ⇅
+                          </button>
+                        </div>
+                        <div className="mb-1">Top</div>
+                        <div className="w-full bg-white/10 border border-white/20 rounded px-2 py-1">
+                          {leftTeam === "A"
+                            ? selATop || "None"
+                            : selBTop || "None"}
+                        </div>
+                        <div className="mt-2 mb-1">Bottom</div>
+                        <div className="w-full bg-white/10 border border-white/20 rounded px-2 py-1">
+                          {leftTeam === "A"
+                            ? selABottom || "None"
+                            : selBBottom || "None"}
+                        </div>
                       </div>
+                      {/* Right column is the other team */}
                       <div className="col-span-1">
-                        <div className="font-semibold mb-1">Team B</div>
-                        <label className="block mb-1">Top</label>
-                        <select
-                          className="w-full bg-white/10 border border-white/20 rounded px-2 py-1"
-                          value={selBTop}
-                          onChange={(e) => setSelBTop(e.target.value)}
-                        >
-                          <option value="">None</option>
-                          {teamB.map((n) => (
-                            <option key={`b-top-${n}`} value={n}>
-                              {n}
-                            </option>
-                          ))}
-                        </select>
-                        <label className="block mt-2 mb-1">Bottom</label>
-                        <select
-                          className="w-full bg-white/10 border border-white/20 rounded px-2 py-1"
-                          value={selBBottom}
-                          onChange={(e) => setSelBBottom(e.target.value)}
-                        >
-                          <option value="">None</option>
-                          {teamB.map((n) => (
-                            <option key={`b-bot-${n}`} value={n}>
-                              {n}
-                            </option>
-                          ))}
-                        </select>
+                        <div className="flex items-center justify-between mb-1">
+                          <div className="font-semibold">
+                            {leftTeam === "A" ? "Team B" : "Team A"}
+                          </div>
+                          <button
+                            onClick={() => {
+                              if (leftTeam === "A") {
+                                const bTop = selBTop;
+                                setSelBTop(selBBottom);
+                                setSelBBottom(bTop);
+                              } else {
+                                const aTop = selATop;
+                                setSelATop(selABottom);
+                                setSelABottom(aTop);
+                              }
+                            }}
+                            className="rounded-md bg-white/10 px-2 py-1 border border-white/20"
+                            title="Swap positions"
+                          >
+                            ⇅
+                          </button>
+                        </div>
+                        <div className="mb-1">Top</div>
+                        <div className="w-full bg-white/10 border border-white/20 rounded px-2 py-1">
+                          {leftTeam === "A"
+                            ? selBTop || "None"
+                            : selATop || "None"}
+                        </div>
+                        <div className="mt-2 mb-1">Bottom</div>
+                        <div className="w-full bg-white/10 border border-white/20 rounded px-2 py-1">
+                          {leftTeam === "A"
+                            ? selBBottom || "None"
+                            : selABottom || "None"}
+                        </div>
                       </div>
                     </div>
                     {setupError && (
@@ -2260,7 +2050,7 @@ function GameRecorderOverlay({
                             // Compute initial plan from serving side and parity (0 -> right)
                             if (!servingSide) return;
                             // Determine initial server from selected positions (parity zone)
-                            const parityZone = sideZoneForServiceCourt(
+                            const parityZone = effectiveZoneForServiceCourt(
                               servingSide,
                               "right"
                             );
@@ -2292,8 +2082,24 @@ function GameRecorderOverlay({
                               nextAssign
                             );
                             setServerName(initialServer);
-                            // Snap chips to plan targets
-                            setCourtAssign((prev) => {
+                            // Orientation-aware zones for initial layout
+                            const servingZone = effectiveZoneForServiceCourt(
+                              nextService.servingSide,
+                              nextService.serviceCourt
+                            );
+                            const servingPartnerZone =
+                              servingZone === "top" ? "bottom" : "top";
+                            const recvSideInit = nextService.receivingSide as
+                              | "A"
+                              | "B";
+                            const receiverZone = effectiveZoneForServiceCourt(
+                              recvSideInit,
+                              nextService.serviceCourt
+                            );
+                            const receiverPartnerZone =
+                              receiverZone === "top" ? "bottom" : "top";
+                            // Snap chips to plan targets using orientation-aware zones
+                            setCourtAssign(() => {
                               const applied = {
                                 A: {
                                   top: [] as string[],
@@ -2305,17 +2111,33 @@ function GameRecorderOverlay({
                                 },
                               };
                               for (const t of plan.targets) {
-                                applied[t.team][t.zone] = [t.player];
+                                const z =
+                                  t.team === nextService.servingSide
+                                    ? t.role === "server"
+                                      ? servingZone
+                                      : servingPartnerZone
+                                    : t.role === "receiver"
+                                    ? receiverZone
+                                    : receiverPartnerZone;
+                                applied[t.team][z] = [t.player];
                               }
                               return applied;
                             });
-                            // Compute marker positions
+                            // Compute marker positions (orientation-aware)
                             const pos: Record<
                               string,
                               { x: number; y: number; role: string }
                             > = {};
                             for (const t of plan.targets) {
-                              const c = zoneCenter(t.team, t.zone);
+                              const z =
+                                t.team === nextService.servingSide
+                                  ? t.role === "server"
+                                    ? servingZone
+                                    : servingPartnerZone
+                                  : t.role === "receiver"
+                                  ? receiverZone
+                                  : receiverPartnerZone;
+                              const c = zoneCenter(t.team, z);
                               pos[t.player] = { x: c.x, y: c.y, role: t.role };
                             }
                             setTargetPositions(pos);
