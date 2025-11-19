@@ -95,6 +95,10 @@ function GameRecorderOverlay({
   const [selBBottom, setSelBBottom] = useState<string>("");
   // Which team is rendered on the left half (supports side switch)
   const [leftTeam, setLeftTeam] = useState<"A" | "B">("A");
+  // Scroll lock refs
+  const prevBodyOverflowRef = useRef<string>("");
+  const prevHtmlOverscrollRef = useRef<string>("");
+  const prevBodyTouchActionRef = useRef<string>("");
   const dupA = useMemo(
     () => Boolean(selATop) && Boolean(selABottom) && selATop === selABottom,
     [selATop, selABottom]
@@ -491,6 +495,17 @@ function GameRecorderOverlay({
       setServiceWarnings([]);
       setTargetPositions({});
       setShowServiceSetup(true);
+      // Lock scroll while umpire mode open
+      try {
+        prevBodyOverflowRef.current = document.body.style.overflow || "";
+        prevBodyTouchActionRef.current =
+          (document.body.style as any).touchAction || "";
+        prevHtmlOverscrollRef.current =
+          (document.documentElement.style as any).overscrollBehavior || "";
+        document.body.style.overflow = "hidden";
+        (document.body.style as any).touchAction = "none";
+        (document.documentElement.style as any).overscrollBehavior = "none";
+      } catch {}
       try {
         // Match device orientation at start so recording matches preview
         const isPortrait =
@@ -620,6 +635,14 @@ function GameRecorderOverlay({
       } catch {}
       setRecording(false);
       setPaused(false);
+      // Restore scroll lock
+      try {
+        document.body.style.overflow = prevBodyOverflowRef.current || "";
+        (document.body.style as any).touchAction =
+          prevBodyTouchActionRef.current || "";
+        (document.documentElement.style as any).overscrollBehavior =
+          prevHtmlOverscrollRef.current || "";
+      } catch {}
     };
   }, [open, facingMode]);
 
@@ -1865,8 +1888,20 @@ function GameRecorderOverlay({
               <div className="rounded-xl bg-black/80 border border-white/20 text-white p-4 w-[min(90vw,320px)]">
                 {setupStep === 1 ? (
                   <>
-                    <div className="text-sm font-semibold mb-2">
-                      Who serves first?
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="text-sm font-semibold">
+                        Who serves first?
+                      </div>
+                      <button
+                        onClick={() => {
+                          try {
+                            _onRequestClose();
+                          } catch {}
+                        }}
+                        className="rounded-md bg-white/10 px-2 py-1 text-xs border border-white/20"
+                      >
+                        Exit
+                      </button>
                     </div>
                     <div className="flex items-center gap-2 mb-3">
                       <button
@@ -1919,14 +1954,26 @@ function GameRecorderOverlay({
                       <div className="text-sm font-semibold">
                         Starting positions
                       </div>
-                      <button
-                        onClick={() =>
-                          setLeftTeam((lt) => (lt === "A" ? "B" : "A"))
-                        }
-                        className="rounded-md bg-white/10 px-2 py-1 text-xs border border-white/20"
-                      >
-                        Swap sides
-                      </button>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => {
+                            try {
+                              _onRequestClose();
+                            } catch {}
+                          }}
+                          className="rounded-md bg-white/10 px-2 py-1 text-xs border border-white/20"
+                        >
+                          Exit
+                        </button>
+                        <button
+                          onClick={() =>
+                            setLeftTeam((lt) => (lt === "A" ? "B" : "A"))
+                          }
+                          className="rounded-md bg-white/10 px-2 py-1 text-xs border border-white/20"
+                        >
+                          Swap sides
+                        </button>
+                      </div>
                     </div>
                     <div className="grid grid-cols-2 gap-2 mb-3 text-xs">
                       {/* Left column follows leftTeam */}
