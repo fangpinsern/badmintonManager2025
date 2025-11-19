@@ -709,7 +709,7 @@ function GameRecorderOverlay({
       const pos: Record<string, { x: number; y: number; role: string }> = {};
       // Recompute zones per role with current orientation to place markers
       for (const t of plan.targets) {
-        let z: "top" | "bottom" =
+        const z: "top" | "bottom" =
           t.team === service.servingSide
             ? t.role === "server"
               ? servingZone
