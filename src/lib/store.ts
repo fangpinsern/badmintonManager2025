@@ -500,6 +500,9 @@ const useStore = create<StoreState>()((set, _get) => ({
         c.pairB = [];
         c.inProgress = false;
         c.startedAt = undefined;
+        // clear any umpire lock
+        (c as any).umpireUid = undefined;
+        (c as any).umpireSince = undefined;
         // Auto-populate next game from queue, preferring nextA/nextB if valid
         const isSingles = (c.mode || "doubles") === "singles";
         const cap = isSingles ? 2 : 4;
@@ -644,6 +647,9 @@ const useStore = create<StoreState>()((set, _get) => ({
         c.pairB = [];
         c.inProgress = false;
         c.startedAt = undefined;
+        // clear any umpire lock
+        (c as any).umpireUid = undefined;
+        (c as any).umpireSince = undefined;
         // Auto-populate next game from queue, preferring nextA/nextB if valid
         const isSingles = (c.mode || "doubles") === "singles";
         const cap = isSingles ? 2 : 4;

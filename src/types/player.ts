@@ -33,6 +33,9 @@ type Court = {
   queue?: string[];
   nextA?: string[];
   nextB?: string[];
+  // If set, this court is locked for Umpire mode by this uid
+  umpireUid?: string;
+  umpireSince?: string;
 };
 
 type Game = {

@@ -7,6 +7,8 @@ import { useState, useMemo } from "react";
 import { auth } from "@/lib/firebase";
 import { Select } from "@/components/layout";
 import { GameRecorderOverlay } from "@/components/session/GameRecorderOverlay";
+import { detectInstalledPwa, detectPlatform } from "@/lib/notifications";
+import { claimUmpire, releaseUmpire } from "@/lib/firestoreSessions";
 
 function CourtCard({
   session,
@@ -56,6 +58,9 @@ function CourtCard({
   const [queueAdds, setQueueAdds] = useState<string[]>([]);
   const [queueOpen, setQueueOpen] = useState(false);
   const [recOpen, setRecOpen] = useState(false);
+  const [showInstallModal, setShowInstallModal] = useState(false);
+  const [umpireConflictOpen, setUmpireConflictOpen] = useState(false);
+  const [umpireBusy, setUmpireBusy] = useState(false);
 
   // Detect if any player on this court is currently in another ongoing match (other courts)
   const busyElsewhere = useMemo(() => {
@@ -216,8 +221,60 @@ function CourtCard({
             <div className="flex items-center gap-2">
               {isOrganizer && (
                 <button
-                  onClick={() => setRecOpen(true)}
-                  disabled={!!session.ended}
+                  onClick={() => {
+                    // Gate to PWA
+                    try {
+                      // const installed = detectInstalledPwa();
+                      // if (!installed) {
+                      //   setShowInstallModal(true);
+                      //   return;
+                      // }
+                    } catch {}
+                    // Enforce single active umpire per court
+                    try {
+                      const myUid = auth.currentUser?.uid || null;
+                      if (!myUid) return;
+                      const current = (court as any)?.umpireUid || null;
+                      if (current && current !== myUid) {
+                        setUmpireConflictOpen(true);
+                        return;
+                      }
+                      const owner =
+                        (window as any).__sessionOwners?.get?.(session.id) ||
+                        auth.currentUser?.uid;
+                      if (!owner) {
+                        setUmpireConflictOpen(true);
+                        return;
+                      }
+                      if (!current) {
+                        setUmpireBusy(true);
+                        claimUmpire(String(owner), session.id, idx, myUid)
+                          .then(() => {
+                            setRecOpen(true);
+                          })
+                          .catch(() => {
+                            setUmpireConflictOpen(true);
+                          })
+                          .finally(() => setUmpireBusy(false));
+                      } else {
+                        setRecOpen(true);
+                      }
+                    } catch {
+                      setUmpireConflictOpen(true);
+                    }
+                  }}
+                  disabled={
+                    !!session.ended ||
+                    (!!(court as any)?.umpireUid &&
+                      (court as any).umpireUid !== auth.currentUser?.uid) ||
+                    umpireBusy
+                  }
+                  title={
+                    (court as any)?.umpireUid &&
+                    (court as any).umpireUid !== auth.currentUser?.uid
+                      ? "Umpire mode in use on another device"
+                      : undefined
+                  }
                   className="rounded-lg border border-blue-300 bg-blue-50 px-2 py-1 text-xs text-blue-700 disabled:opacity-50"
                 >
                   Umpire
@@ -225,7 +282,18 @@ function CourtCard({
               )}
               <button
                 onClick={() => setOpen(true)}
-                disabled={!!session.ended || !isOrganizer}
+                disabled={
+                  !!session.ended ||
+                  !isOrganizer ||
+                  (!!(court as any)?.umpireUid &&
+                    (court as any).umpireUid !== auth.currentUser?.uid)
+                }
+                title={
+                  (court as any)?.umpireUid &&
+                  (court as any).umpireUid !== auth.currentUser?.uid
+                    ? "Umpire mode is active; only the umpire can end the game"
+                    : undefined
+                }
                 className="rounded-lg border border-gray-300 px-2 py-1 text-xs disabled:opacity-50"
               >
                 End game
@@ -835,7 +903,19 @@ function CourtCard({
             ? " · " + new Date(court.startedAt).toLocaleTimeString()
             : ""
         }`}
-        onRequestClose={() => setRecOpen(false)}
+        onRequestClose={async () => {
+          setRecOpen(false);
+          try {
+            const myUid = auth.currentUser?.uid || null;
+            const current = (court as any)?.umpireUid || null;
+            const owner =
+              (window as any).__sessionOwners?.get?.(session.id) ||
+              auth.currentUser?.uid;
+            if (myUid && current === myUid && owner) {
+              await releaseUmpire(String(owner), session.id, idx, myUid);
+            }
+          } catch {}
+        }}
         onRequestEndGame={(a, b) => {
           setRecOpen(false);
           setScoreA(String(a));
@@ -854,6 +934,58 @@ function CourtCard({
           removeCourt(session.id, idx);
           setRemoveOpen(false);
         }}
+      />
+      <ConfirmModal
+        open={showInstallModal}
+        title="Install app to use Umpire mode"
+        body={
+          (() => {
+            try {
+              const platform = detectPlatform();
+              if (platform === "ios") {
+                return "To use Umpire mode, add this app to your Home Screen. We'll show you how.";
+              }
+              return "Install the PWA to access Umpire mode. You'll be prompted to install.";
+            } catch {
+              return "Install the PWA to access Umpire mode.";
+            }
+          })() as string
+        }
+        confirmText={
+          (() => {
+            try {
+              return detectPlatform() === "ios"
+                ? "How to install"
+                : "Install app";
+            } catch {
+              return "Install app";
+            }
+          })() as string
+        }
+        onCancel={() => setShowInstallModal(false)}
+        onConfirm={async () => {
+          try {
+            const platform = detectPlatform();
+            if (platform === "ios") {
+              window.location.href = "/guide/ios";
+              return;
+            }
+            const promptEvt = (window as any).__deferredInstallPrompt;
+            if (promptEvt) {
+              promptEvt.prompt();
+              await promptEvt.userChoice;
+            }
+          } catch {}
+          setShowInstallModal(false);
+        }}
+      />
+      <ConfirmModal
+        open={umpireConflictOpen}
+        title="Umpire in progress on another device"
+        body="This court is currently being controlled in Umpire mode by someone else. Please wait until they finish or exit Umpire mode."
+        confirmText="OK"
+        onCancel={() => setUmpireConflictOpen(false)}
+        onConfirm={() => setUmpireConflictOpen(false)}
       />
     </div>
   );

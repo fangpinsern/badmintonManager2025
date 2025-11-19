@@ -396,6 +396,99 @@ export async function addAndLinkPlayerByUsername(
   return result;
 }
 
+// Claim Umpire mode on a court if not already claimed
+export async function claimUmpire(
+  organizerUid: string,
+  sessionId: string,
+  courtIndex: number,
+  claimerUid: string
+): Promise<boolean> {
+  if (!organizerUid || !sessionId || typeof courtIndex !== "number")
+    return false;
+  const ref = doc(sessionsCollectionForUid(organizerUid), sessionId);
+  await runTransaction(db, async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists()) throw new Error("Session not found");
+    const data = snap.data() as FirestoreSession;
+    const payload: any = data.payload || {};
+    const courts: any[] = Array.isArray(payload.courts) ? payload.courts : [];
+    const c = courts[courtIndex];
+    if (!c) throw new Error("Court not found");
+    const current = (c && c.umpireUid) || null;
+    if (current && current !== claimerUid) {
+      throw new Error("Umpire already claimed");
+    }
+    // Set claim to claimer (idempotent if same)
+    const nextCourts = courts.map((cc, i) =>
+      i === courtIndex
+        ? {
+            ...cc,
+            umpireUid: claimerUid,
+            umpireSince: serverTimestamp(),
+          }
+        : cc
+    );
+    const nextPayload = stripUndefinedDeep({ ...payload, courts: nextCourts });
+    const linkedUids = collectLinkedUids(nextPayload);
+    tx.set(
+      ref,
+      {
+        id: sessionId,
+        payload: nextPayload,
+        linkedUids,
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true }
+    );
+  });
+  return true;
+}
+
+// Release Umpire mode if held by this uid
+export async function releaseUmpire(
+  organizerUid: string,
+  sessionId: string,
+  courtIndex: number,
+  claimerUid: string
+): Promise<boolean> {
+  if (!organizerUid || !sessionId || typeof courtIndex !== "number")
+    return false;
+  const ref = doc(sessionsCollectionForUid(organizerUid), sessionId);
+  await runTransaction(db, async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists()) return;
+    const data = snap.data() as FirestoreSession;
+    const payload: any = data.payload || {};
+    const courts: any[] = Array.isArray(payload.courts) ? payload.courts : [];
+    const c = courts[courtIndex];
+    if (!c) return;
+    const current = (c && c.umpireUid) || null;
+    if (current !== claimerUid) return;
+    const nextCourts = courts.map((cc, i) =>
+      i === courtIndex
+        ? {
+            ...cc,
+            umpireUid: undefined,
+            umpireSince: undefined,
+          }
+        : cc
+    );
+    const nextPayload = stripUndefinedDeep({ ...payload, courts: nextCourts });
+    const linkedUids = collectLinkedUids(nextPayload);
+    tx.set(
+      ref,
+      {
+        id: sessionId,
+        payload: nextPayload,
+        linkedUids,
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true }
+    );
+  });
+  return true;
+}
+
 export async function saveSession(sessionId: string, payload: unknown) {
   const uid = auth.currentUser?.uid;
   if (!uid) return; // not signed in; skip
