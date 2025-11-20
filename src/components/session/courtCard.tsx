@@ -15,11 +15,15 @@ function CourtCard({
   court,
   idx,
   isOrganizer,
+  isMainOrganizer,
+  organizerUid,
 }: {
   session: Session;
   court: Court;
   idx: number;
   isOrganizer?: boolean;
+  isMainOrganizer?: boolean;
+  organizerUid?: string;
 }) {
   const endGame = useStore((s) => s.endGame);
   const voidGame = useStore((s) => s.voidGame);
@@ -61,6 +65,7 @@ function CourtCard({
   const [showInstallModal, setShowInstallModal] = useState(false);
   const [umpireConflictOpen, setUmpireConflictOpen] = useState(false);
   const [umpireBusy, setUmpireBusy] = useState(false);
+  const [organizerEndedOpen, setOrganizerEndedOpen] = useState(false);
 
   // Detect if any player on this court is currently in another ongoing match (other courts)
   const busyElsewhere = useMemo(() => {
@@ -76,6 +81,15 @@ function CourtCard({
     busyElsewhere.has(pid)
   );
   const hasBusyElsewhere = blockingBusyIds.length > 0;
+
+  // If overlay is open and court stops being inProgress, auto-close and show message
+  if (recOpen && !court.inProgress) {
+    // Close overlay and show organizer-ended modal (best-effort distinguish)
+    try {
+      setRecOpen(false);
+      setOrganizerEndedOpen(true);
+    } catch {}
+  }
 
   // Compute how many times two players have previously been on the same side (pair) in past games
   const pairKey = (a: string, b: string) => (a < b ? `${a}|${b}` : `${b}|${a}`);
@@ -280,18 +294,38 @@ function CourtCard({
                   Umpire
                 </button>
               )}
+              {(court as any)?.umpireUid && (
+                <span className="text-[11px] text-gray-500">
+                  {(() => {
+                    const uid = String((court as any).umpireUid || "");
+                    const player = session.players.find(
+                      (p) => p.accountUid === uid
+                    );
+                    const who =
+                      (player && player.accountUsername) ||
+                      (player && player.name) ||
+                      (organizerUid && organizerUid === uid && "Organizer") ||
+                      (uid ? `${uid.slice(0, 6)}…` : "Unknown");
+                    return `Umpire: ${who}`;
+                  })()}
+                </span>
+              )}
               <button
                 onClick={() => setOpen(true)}
                 disabled={
                   !!session.ended ||
                   !isOrganizer ||
+                  // Allow main organizer to override; co-organizers blocked by foreign umpire lock
                   (!!(court as any)?.umpireUid &&
-                    (court as any).umpireUid !== auth.currentUser?.uid)
+                    (court as any).umpireUid !== auth.currentUser?.uid &&
+                    !isMainOrganizer)
                 }
                 title={
                   (court as any)?.umpireUid &&
                   (court as any).umpireUid !== auth.currentUser?.uid
-                    ? "Umpire mode is active; only the umpire can end the game"
+                    ? isMainOrganizer
+                      ? "You are the organizer and can override umpire mode"
+                      : "Umpire mode is active; only the umpire can end the game"
                     : undefined
                 }
                 className="rounded-lg border border-gray-300 px-2 py-1 text-xs disabled:opacity-50"
@@ -909,6 +943,7 @@ function CourtCard({
             const myUid = auth.currentUser?.uid || null;
             const current = (court as any)?.umpireUid || null;
             const owner =
+              organizerUid ||
               (window as any).__sessionOwners?.get?.(session.id) ||
               auth.currentUser?.uid;
             if (myUid && current === myUid && owner) {
@@ -934,6 +969,14 @@ function CourtCard({
           removeCourt(session.id, idx);
           setRemoveOpen(false);
         }}
+      />
+      <ConfirmModal
+        open={organizerEndedOpen}
+        title="The organizer has ended the game"
+        body="Umpire mode has been closed for this court."
+        confirmText="OK"
+        onCancel={() => setOrganizerEndedOpen(false)}
+        onConfirm={() => setOrganizerEndedOpen(false)}
       />
       <ConfirmModal
         open={showInstallModal}

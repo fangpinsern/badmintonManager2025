@@ -1723,6 +1723,8 @@ function SessionManager({ onBack }: { onBack: () => void }) {
                 court={court}
                 idx={idx}
                 isOrganizer={canManage}
+                isMainOrganizer={isOrganizer}
+                organizerUid={organizerUid || undefined}
               />
             ))}
           </div>
