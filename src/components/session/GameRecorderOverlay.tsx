@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
+import type { ReasonCode } from "@/types/player";
+import { REASONS } from "@/types/player";
 // Drag-and-drop removed
 import {
   computeNextService,
@@ -12,6 +14,8 @@ type GameRecorderOverlayProps = {
   open: boolean;
   teamA: string[];
   teamB: string[];
+  teamAIds?: string[];
+  teamBIds?: string[];
   onRequestClose: () => void;
   onRequestEndGame: (scoreA: number, scoreB: number) => void;
   gameLabel?: string;
@@ -21,6 +25,8 @@ function GameRecorderOverlay({
   open,
   teamA,
   teamB,
+  teamAIds,
+  teamBIds,
   onRequestClose: _onRequestClose,
   onRequestEndGame,
   gameLabel,
@@ -95,6 +101,11 @@ function GameRecorderOverlay({
   const [selBBottom, setSelBBottom] = useState<string>("");
   // Which team is rendered on the left half (supports side switch)
   const [leftTeam, setLeftTeam] = useState<"A" | "B">("A");
+  // Optional per-point annotations (recorded on history entries)
+  const [reasonMenuOpen, setReasonMenuOpen] = useState<boolean>(false);
+  const [pendingEventIndex, setPendingEventIndex] = useState<number | null>(
+    null
+  );
   // Scroll lock refs
   const prevBodyOverflowRef = useRef<string>("");
   const prevHtmlOverscrollRef = useRef<string>("");
@@ -138,6 +149,17 @@ function GameRecorderOverlay({
     showServiceSetup: boolean;
     setupStep: 1 | 2;
     serviceWarnings: string[];
+    // Optional rally annotation (set when a point is recorded)
+    rallyNo?: number;
+    winnerSide?: "A" | "B";
+    reason?: {
+      code: ReasonCode;
+      attr: "WINNER" | "LOSER" | "NONE";
+      attributedTo?: {
+        side: "A" | "B";
+        playerId?: string;
+      };
+    };
   };
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const cloneAssign = useCallback(
@@ -207,6 +229,9 @@ function GameRecorderOverlay({
         setShowServiceSetup(last.showServiceSetup);
         setSetupStep(last.setupStep);
         setServiceWarnings(last.serviceWarnings);
+        // Close reason menu after undo
+        setReasonMenuOpen(false);
+        setPendingEventIndex(null);
         return next;
       });
     } catch {}
@@ -362,6 +387,140 @@ function GameRecorderOverlay({
     [speechEnabled, unlockAudioAndSpeech]
   );
 
+  const setReasonForPending = useCallback(
+    (code: ReasonCode) => {
+      try {
+        if (pendingEventIndex === null) return;
+        // SERVICE-FAULT: only when server lost; attribute to server immediately, then close
+        if (code === "SERVICE-FAULT") {
+          const idx = Math.min(pendingEventIndex, (history?.length || 1) - 1);
+          const evt = (history[idx] || {}) as any;
+          const servingSide = evt.servingSide as "A" | "B" | null;
+          const winnerSide = evt.winnerSide as "A" | "B" | undefined;
+          if (servingSide && winnerSide && winnerSide !== servingSide) {
+            const targetSide: "A" | "B" = servingSide;
+            const arr = targetSide === "A" ? teamA : teamB;
+            const ids = targetSide === "A" ? teamAIds || [] : teamBIds || [];
+            let pid: string | undefined;
+            if (typeof evt.serverName === "string") {
+              const nameIdx = (arr || []).findIndex(
+                (n: string) => n === evt.serverName
+              );
+              pid = nameIdx >= 0 ? ids[nameIdx] : ids[0];
+            } else {
+              pid = ids[0];
+            }
+            setHistory((prev) => {
+              if (!prev.length) return prev;
+              const nidx = Math.min(pendingEventIndex, prev.length - 1);
+              const next = [...prev];
+              const cur = (next as any)[nidx];
+              (next as any)[nidx] = {
+                ...cur,
+                reason: {
+                  code,
+                  attr: "LOSER",
+                  attributedTo: { playerId: pid },
+                },
+              };
+              return next;
+            });
+            setReasonMenuOpen(false);
+            setPendingEventIndex(null);
+          }
+          return;
+        }
+        setHistory((prev) => {
+          if (!prev.length) return prev;
+          const idx = Math.min(pendingEventIndex, prev.length - 1);
+          const next = [...prev];
+          const meta = REASONS.find((r) => r.code === code);
+          const attr = (meta?.attr || "NONE") as "WINNER" | "LOSER" | "NONE";
+          (next as any)[idx] = {
+            ...(next as any)[idx],
+            reason: { code, attr },
+          };
+          return next;
+        });
+        // Stage 2 attribution rules based on reason type
+        try {
+          const idx = pendingEventIndex;
+          const evt = (history[idx] || {}) as any;
+          const meta = REASONS.find((r) => r.code === code);
+          const attr = (meta?.attr || "NONE") as "WINNER" | "LOSER" | "NONE";
+          if (attr === "NONE") {
+            setReasonMenuOpen(false);
+            setPendingEventIndex(null);
+            return;
+          }
+          let targetSide: "A" | "B" =
+            attr === "WINNER"
+              ? evt.winnerSide
+              : evt.winnerSide === "A"
+              ? "B"
+              : "A";
+          const targetNames = targetSide === "A" ? teamA : teamB;
+          const targetIds =
+            targetSide === "A" ? teamAIds || [] : teamBIds || [];
+          const isDoubles = (targetNames || []).length === 2;
+          if (!isDoubles) {
+            const pid = targetIds[0];
+            if (pid) {
+              setHistory((prev) => {
+                if (!prev.length) return prev;
+                const i2 = Math.min(pendingEventIndex, prev.length - 1);
+                const next2 = [...prev];
+                const cur = (next2 as any)[i2];
+                (next2 as any)[i2] = {
+                  ...cur,
+                  reason: {
+                    ...(cur.reason || { code, attr }),
+                    attributedTo: { playerId: pid },
+                  },
+                };
+                return next2;
+              });
+            }
+            setReasonMenuOpen(false);
+            setPendingEventIndex(null);
+          }
+          // else keep panel open for manual attribution
+        } catch {}
+      } catch {}
+    },
+    [pendingEventIndex, history, teamA, teamB, teamAIds, teamBIds]
+  );
+
+  const setBlameForPending = useCallback(
+    (playerId: string) => {
+      try {
+        if (pendingEventIndex === null) return;
+        setHistory((prev) => {
+          if (!prev.length) return prev;
+          const idx = Math.min(pendingEventIndex, prev.length - 1);
+          const next = [...prev];
+          const cur = (next as any)[idx];
+          const side =
+            (cur &&
+              cur.reason &&
+              cur.reason.attributedTo &&
+              cur.reason.attributedTo.side) ||
+            (cur && cur.winnerSide) ||
+            "A";
+          (next as any)[idx] = {
+            ...cur,
+            reason: {
+              ...(cur.reason || {}),
+              attributedTo: { playerId },
+            },
+          };
+          return next;
+        });
+      } catch {}
+    },
+    [pendingEventIndex]
+  );
+
   // Player pools shown by side orientation (display-only)
   const poolLeft = (leftTeam === "A" ? teamA : teamB) || [];
   const poolRight = (leftTeam === "A" ? teamB : teamA) || [];
@@ -489,6 +648,25 @@ function GameRecorderOverlay({
       setError(null);
       setScoreA(0);
       setScoreB(0);
+      // Hard reset all umpire-mode state so each entry starts fresh
+      setHistory([]);
+      setCourtAssign({
+        A: { top: [], bottom: [] },
+        B: { top: [], bottom: [] },
+      });
+      setTargetPositions({});
+      setChipsLocked(false);
+      setSetupStep(1);
+      setSelATop("");
+      setSelABottom("");
+      setSelBTop("");
+      setSelBBottom("");
+      setLeftTeam("A");
+      setBubbleA(false);
+      setBubbleB(false);
+      setDebugRects([]);
+      setReasonMenuOpen(false);
+      setPendingEventIndex(null);
       setServingSide(null);
       setServerName(null);
       setServiceCourt("right");
@@ -813,11 +991,26 @@ function GameRecorderOverlay({
         setTargetPositions(pos);
         setServiceWarnings(plan.warnings || []);
         if (!chipsLocked) setChipsLocked(true);
-        if (winner === "A") {
-          setScoreA((s) => s + 1);
-        } else {
-          setScoreB((s) => s + 1);
-        }
+        const nextA =
+          winner === "A" ? scoreARef.current + 1 : scoreARef.current;
+        const nextB =
+          winner === "B" ? scoreBRef.current + 1 : scoreBRef.current;
+        if (winner === "A") setScoreA((s) => s + 1);
+        else setScoreB((s) => s + 1);
+        // Annotate last history entry (this rally)
+        setHistory((prev) => {
+          if (!prev.length) return prev;
+          const idx = prev.length - 1;
+          const next = [...prev];
+          (next as any)[idx] = {
+            ...(next as any)[idx],
+            rallyNo: (next as any)[idx]?.rallyNo || prev.length,
+            winnerSide: winner,
+          };
+          return next;
+        });
+        setPendingEventIndex(() => Math.max(0, history.length));
+        setReasonMenuOpen(true);
         speakScore(winner);
       } catch {}
     },
@@ -1846,6 +2039,11 @@ function GameRecorderOverlay({
             <div className="pointer-events-auto">
               <button
                 onClick={() => {
+                  try {
+                    // Debug: log full history including reason/blame annotations
+                    // eslint-disable-next-line no-console
+                    console.log("Umpire history entries:", history);
+                  } catch {}
                   stopAndSave();
                   onRequestEndGame(scoreA, scoreB);
                 }}
@@ -1866,6 +2064,127 @@ function GameRecorderOverlay({
               </div>
             )}
           </div>
+
+          {/* Optional reason/blame picker for last point (non-blocking) */}
+          {reasonMenuOpen &&
+          pendingEventIndex !== null &&
+          history &&
+          history[pendingEventIndex] ? (
+            <div className="pointer-events-auto fixed left-0 right-0 bottom-[92px] z-[6] px-3">
+              <div className="mx-auto max-w-md w-full rounded-xl bg-white text-black shadow-lg border border-gray-200 p-3">
+                <div className="flex items-center justify-between">
+                  <div className="text-sm font-semibold">
+                    Why was the point lost?
+                  </div>
+                  <button
+                    onClick={() => {
+                      setReasonMenuOpen(false);
+                      setPendingEventIndex(null);
+                    }}
+                    className="rounded-md px-2 py-1 text-xs border border-gray-300"
+                    title="Done"
+                  >
+                    Done
+                  </button>
+                </div>
+                {(() => {
+                  const idx = pendingEventIndex as number;
+                  const selectedCode = (history[idx] as any)?.reason?.code as
+                    | ReasonCode
+                    | undefined;
+                  const evt = history[idx] as any;
+                  // Filter: SERVICE-FAULT appears only when server loses
+                  const canShowServiceFault =
+                    evt &&
+                    evt.servingSide &&
+                    evt.winnerSide &&
+                    evt.winnerSide !== evt.servingSide;
+                  const reasonsList = REASONS.filter(
+                    (r) => r.code !== "SERVICE-FAULT" || canShowServiceFault
+                  );
+                  const btnCls = (code: ReasonCode) =>
+                    `rounded-md border px-2 py-1 ${
+                      selectedCode === code
+                        ? "bg-black text-white border-black"
+                        : ""
+                    }`;
+                  return (
+                    <div className="mt-2 grid grid-cols-2 gap-2 text-sm">
+                      {reasonsList.map((r) => (
+                        <button
+                          key={r.code}
+                          onClick={() => setReasonForPending(r.code)}
+                          className={btnCls(r.code)}
+                        >
+                          {r.label}
+                        </button>
+                      ))}
+                    </div>
+                  );
+                })()}
+                {(() => {
+                  const evt = history[pendingEventIndex] as any;
+                  const code =
+                    (evt?.reason?.code as ReasonCode | undefined) || undefined;
+                  const meta = REASONS.find((r) => r.code === code);
+                  const attr = (meta?.attr || "NONE") as
+                    | "WINNER"
+                    | "LOSER"
+                    | "NONE";
+                  if (attr === "NONE") return null;
+                  const targetSide =
+                    attr === "WINNER"
+                      ? evt.winnerSide
+                      : evt.winnerSide === "A"
+                      ? "B"
+                      : "A";
+                  const targetNames = targetSide === "A" ? teamA : teamB;
+                  const targetIds =
+                    targetSide === "A" ? teamAIds || [] : teamBIds || [];
+                  const isDoubles = (targetNames || []).length === 2;
+                  return isDoubles ? (
+                    <div className="mt-3">
+                      <div className="text-xs text-gray-600 mb-1">
+                        Attribute to player (optional)
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <button
+                          onClick={() => {
+                            const pid = targetIds[0];
+                            if (pid) setBlameForPending(pid);
+                            setReasonMenuOpen(false);
+                            setPendingEventIndex(null);
+                          }}
+                          className={`rounded-md border px-2 py-1 text-sm ${
+                            evt?.reason?.attributedTo?.playerId === targetIds[0]
+                              ? "border-black"
+                              : ""
+                          }`}
+                        >
+                          {targetNames[0] || "Player 1"}
+                        </button>
+                        <button
+                          onClick={() => {
+                            const pid = targetIds[1];
+                            if (pid) setBlameForPending(pid);
+                            setReasonMenuOpen(false);
+                            setPendingEventIndex(null);
+                          }}
+                          className={`rounded-md border px-2 py-1 text-sm ${
+                            evt?.reason?.attributedTo?.playerId === targetIds[1]
+                              ? "border-black"
+                              : ""
+                          }`}
+                        >
+                          {targetNames[1] || "Player 2"}
+                        </button>
+                      </div>
+                    </div>
+                  ) : null;
+                })()}
+              </div>
+            </div>
+          ) : null}
 
           {error ? (
             <div className="absolute left-0 right-0 top-16 mx-3 rounded-md bg-red-500/90 text-white text-sm p-2 text-center">

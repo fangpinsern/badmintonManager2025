@@ -164,6 +164,37 @@ type Session = {
   };
 };
 
+// Unified reason code taxonomy for rally outcomes (optional in Umpire mode)
+type ReasonAttrType = "WINNER" | "LOSER" | "NONE";
+type ReasonCode =
+  | "SMASH-WIN"
+  | "NET-KILL"
+  | "DRIVE-WIN"
+  | "DROP-WIN"
+  | "SERVICE-FAULT"
+  | "OUT-L"
+  | "OUT-W"
+  | "MISHIT"
+  | "UNFORCED-ERROR"
+  | "UNSPECIFIED";
+
+// Canonical reason list with display labels
+const REASONS: { code: ReasonCode; label: string; attr: ReasonAttrType }[] = [
+  // Winner-attributed
+  { code: "SMASH-WIN", label: "Smash winner", attr: "WINNER" },
+  { code: "NET-KILL", label: "Net kill", attr: "WINNER" },
+  { code: "DRIVE-WIN", label: "Drive winner", attr: "WINNER" },
+  { code: "DROP-WIN", label: "Drop winner", attr: "WINNER" },
+  // Loser-attributed
+  { code: "SERVICE-FAULT", label: "Service fault", attr: "LOSER" },
+  { code: "OUT-L", label: "Out - long", attr: "LOSER" },
+  { code: "OUT-W", label: "Out - wide", attr: "LOSER" },
+  { code: "MISHIT", label: "Mishit", attr: "LOSER" },
+  { code: "UNFORCED-ERROR", label: "Unforced error", attr: "LOSER" },
+  // Catch-all
+  { code: "UNSPECIFIED", label: "Unspecified", attr: "NONE" },
+];
+
 export type {
   Player,
   PlatformPlayer,
@@ -172,4 +203,7 @@ export type {
   PlayerAggregate,
   SessionStats,
   Session,
+  ReasonCode,
+  ReasonAttrType,
 };
+export { REASONS };

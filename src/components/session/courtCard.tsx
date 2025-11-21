@@ -932,6 +932,8 @@ function CourtCard({
           (pid) =>
             session.players.find((pp) => pp.id === pid)?.name || "(deleted)"
         )}
+        teamAIds={pairA}
+        teamBIds={pairB}
         gameLabel={`Session ${session.id} · Court ${idx + 1}${
           court.startedAt
             ? " · " + new Date(court.startedAt).toLocaleTimeString()
@@ -951,8 +953,20 @@ function CourtCard({
             }
           } catch {}
         }}
-        onRequestEndGame={(a, b) => {
+        onRequestEndGame={async (a, b) => {
           setRecOpen(false);
+          try {
+            // Also release umpire lock on endgame
+            const myUid = auth.currentUser?.uid || null;
+            const current = (court as any)?.umpireUid || null;
+            const owner =
+              organizerUid ||
+              (window as any).__sessionOwners?.get?.(session.id) ||
+              auth.currentUser?.uid;
+            if (myUid && current === myUid && owner) {
+              await releaseUmpire(String(owner), session.id, idx, myUid);
+            }
+          } catch {}
           setScoreA(String(a));
           setScoreB(String(b));
           setOpen(true);
