@@ -108,6 +108,8 @@ function GameRecorderOverlay({
   );
   const [reasonStage, setReasonStage] = useState<1 | 2>(1);
   const [reasonEnabled, setReasonEnabled] = useState<boolean>(true);
+  // Timing: timestamp of last completed point (or lineup confirmation for the first point)
+  const lastPointAtRef = useRef<number | null>(null);
   // Scroll lock refs
   const prevBodyOverflowRef = useRef<string>("");
   const prevHtmlOverscrollRef = useRef<string>("");
@@ -154,6 +156,8 @@ function GameRecorderOverlay({
     // Optional rally annotation (set when a point is recorded)
     rallyNo?: number;
     winnerSide?: "A" | "B";
+    // Time between this rally and the previous point (ms). For first point, measured from lineup confirmation.
+    rallyDurationMs?: number;
     reason?: {
       code: ReasonCode;
       attr: "WINNER" | "LOSER" | "NONE";
@@ -967,6 +971,11 @@ function GameRecorderOverlay({
   const onPoint = useCallback(
     (winner: "A" | "B") => {
       try {
+        const nowTs = Date.now();
+        const durationMs =
+          typeof lastPointAtRef.current === "number"
+            ? Math.max(0, nowTs - lastPointAtRef.current)
+            : undefined;
         // Snapshot current state for undo
         pushHistory();
         const countA =
@@ -1055,9 +1064,12 @@ function GameRecorderOverlay({
             ...(next as any)[idx],
             rallyNo: (next as any)[idx]?.rallyNo || prev.length,
             winnerSide: winner,
+            rallyDurationMs: durationMs,
           };
           return next;
         });
+        // Set baseline for next rally duration
+        lastPointAtRef.current = nowTs;
         if (reasonEnabled) {
           setPendingEventIndex(() => Math.max(0, history.length));
           setReasonMenuOpen(true);
@@ -2605,6 +2617,10 @@ function GameRecorderOverlay({
                             setTargetPositions(pos);
                             setServiceWarnings(plan.warnings || []);
                             setShowServiceSetup(false);
+                            // Initialize rally timer start: lineup confirmed now; measure first rally from here
+                            try {
+                              lastPointAtRef.current = Date.now();
+                            } catch {}
                           } catch {}
                         }}
                         className={`flex-1 rounded-md px-3 py-2 border border-white/20 ${
