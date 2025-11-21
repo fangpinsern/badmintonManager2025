@@ -54,6 +54,17 @@ type Game = {
   players: string[]; // snapshot A+B (ids)
   /** Optional compact per-rally annotations recorded via Umpire mode */
   umpireHistory?: UmpireRally[];
+  /** Optional summary stats derived from umpireHistory */
+  umpireSummary?: {
+    totalRallies: number;
+    avgRallyDurationMs?: number;
+    longestRallyDurationMs?: number;
+    mvps?: {
+      playerId: string;
+      winners?: number;
+      losers?: number;
+    }[];
+  };
   voided?: boolean;
   // accountability: which user ended (submitted score for) this game
   endedByUid?: string;

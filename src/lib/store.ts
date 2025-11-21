@@ -538,6 +538,77 @@ const useStore = create<StoreState>()((set, _get) => ({
                   }
                 : undefined,
             }));
+            // Derive compact summary stats for quick display
+            try {
+              const hist = (game as any).umpireHistory || [];
+              const durations: number[] = hist
+                .map((h: any) =>
+                  typeof h?.rallyDurationMs === "number"
+                    ? h.rallyDurationMs
+                    : null
+                )
+                .filter((v: any) => typeof v === "number") as number[];
+              const avgRallyDurationMs =
+                durations.length > 0
+                  ? Math.floor(
+                      durations.reduce((acc, cur) => acc + cur, 0) /
+                        durations.length
+                    )
+                  : undefined;
+              const longestRallyDurationMs =
+                durations.length > 0 ? Math.max(...durations) : undefined;
+              const winnersCount: Record<string, number> = {};
+              const losersCount: Record<string, number> = {};
+              for (const h of hist) {
+                try {
+                  const r = (h as any)?.reason;
+                  const pid = r?.attributedTo?.playerId;
+                  if (!pid) continue;
+                  if (r?.attr === "WINNER") {
+                    winnersCount[pid] = (winnersCount[pid] || 0) + 1;
+                  } else if (r?.attr === "LOSER") {
+                    losersCount[pid] = (losersCount[pid] || 0) + 1;
+                  }
+                } catch {}
+              }
+              let mvps:
+                | { playerId: string; winners?: number; losers?: number }[]
+                | undefined = undefined;
+              if (winner !== "draw") {
+                const teamIds = winner === "A" ? sideA : sideB;
+                // Primary: most winners among winning team (allow ties)
+                const winnerVals = teamIds.map((pid) => winnersCount[pid] || 0);
+                const bestWinners =
+                  winnerVals.length > 0 ? Math.max(...winnerVals) : -1;
+                if (bestWinners > 0) {
+                  mvps = teamIds
+                    .filter((pid) => (winnersCount[pid] || 0) === bestWinners)
+                    .map((pid) => ({
+                      playerId: pid,
+                      winners: winnersCount[pid] || 0,
+                      losers: losersCount[pid] || 0,
+                    }));
+                } else {
+                  // Fallback: fewest losers among winning team (allow ties)
+                  const loserVals = teamIds.map((pid) => losersCount[pid] || 0);
+                  const fewestLosers =
+                    loserVals.length > 0 ? Math.min(...loserVals) : 0;
+                  mvps = teamIds
+                    .filter((pid) => (losersCount[pid] || 0) === fewestLosers)
+                    .map((pid) => ({
+                      playerId: pid,
+                      winners: winnersCount[pid] || 0,
+                      losers: losersCount[pid] || 0,
+                    }));
+                }
+              }
+              (game as any).umpireSummary = {
+                totalRallies: hist.length,
+                avgRallyDurationMs,
+                longestRallyDurationMs,
+                mvps,
+              };
+            } catch {}
           }
         } catch {}
         const courts = ss.courts.map((c) => ({ ...c }));

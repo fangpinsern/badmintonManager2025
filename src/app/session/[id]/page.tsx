@@ -1873,6 +1873,58 @@ function SessionManager({ onBack }: { onBack: () => void }) {
                         null as any
                       )}
                   </div>
+                  {g.umpireSummary && (
+                    <div className="mt-1 flex flex-wrap items-center gap-2">
+                      {typeof g.umpireSummary.avgRallyDurationMs ===
+                        "number" && (
+                        <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[10px] text-gray-700">
+                          {(() => {
+                            const s = g.umpireSummary!;
+                            const secs =
+                              (s.avgRallyDurationMs as number) / 1000;
+                            return `${secs.toFixed(1)}s avg rally`;
+                          })()}
+                        </span>
+                      )}
+                      {typeof g.umpireSummary.longestRallyDurationMs ===
+                        "number" && (
+                        <span className="rounded-full bg-indigo-50 px-2 py-0.5 text-[10px] text-indigo-700">
+                          {(() => {
+                            const s = g.umpireSummary!;
+                            const secs =
+                              (s.longestRallyDurationMs as number) / 1000;
+                            return `Longest ${secs.toFixed(1)}s`;
+                          })()}
+                        </span>
+                      )}
+                      {!!(
+                        g.umpireSummary.mvps && g.umpireSummary.mvps.length
+                      ) && (
+                        <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] text-emerald-700">
+                          {(() => {
+                            const mvps = g.umpireSummary!.mvps!;
+                            const parts = mvps.map((mvp: any) => {
+                              const pl =
+                                session.players.find(
+                                  (pp) => pp.id === mvp.playerId
+                                ) || null;
+                              const name = pl?.name || "(deleted)";
+                              const w =
+                                typeof mvp.winners === "number"
+                                  ? mvp.winners
+                                  : 0;
+                              const l =
+                                typeof mvp.losers === "number" ? mvp.losers : 0;
+                              return `${name} (${w}W, ${l}E)`;
+                            });
+                            return `${
+                              mvps.length > 1 ? "MVPs" : "MVP"
+                            }: ${parts.join(" & ")}`;
+                          })()}
+                        </span>
+                      )}
+                    </div>
+                  )}
                   {!session.ended && (
                     <div className="mt-2 flex justify-end">
                       <button
