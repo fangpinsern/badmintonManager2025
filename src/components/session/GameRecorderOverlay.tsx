@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
-import type { ReasonCode } from "@/types/player";
+import type { ReasonCode, UmpireRally } from "@/types/player";
 import { REASONS } from "@/types/player";
 // Drag-and-drop removed
 import {
@@ -17,7 +17,13 @@ type GameRecorderOverlayProps = {
   teamAIds?: string[];
   teamBIds?: string[];
   onRequestClose: () => void;
-  onRequestEndGame: (scoreA: number, scoreB: number) => void;
+  onRequestEndGame: (
+    scoreA: number,
+    scoreB: number,
+    opts?: {
+      umpireHistory?: UmpireRally[];
+    }
+  ) => void;
   gameLabel?: string;
 };
 
@@ -2142,7 +2148,48 @@ function GameRecorderOverlay({
                     console.log("Umpire history entries:", history);
                   } catch {}
                   stopAndSave();
-                  onRequestEndGame(scoreA, scoreB);
+                  try {
+                    // Build compact history and durations for persistence
+                    const compact: UmpireRally[] = (history || [])
+                      .filter(
+                        (h) =>
+                          typeof (h as any)?.rallyNo === "number" &&
+                          ((h as any)?.winnerSide === "A" ||
+                            (h as any)?.winnerSide === "B")
+                      )
+                      .map((h) => {
+                        const r = (h as any)?.reason;
+                        return {
+                          rallyNo: (h as any).rallyNo as number,
+                          winnerSide: ((h as any).winnerSide || "A") as
+                            | "A"
+                            | "B",
+                          rallyDurationMs:
+                            typeof (h as any)?.rallyDurationMs === "number"
+                              ? ((h as any).rallyDurationMs as number)
+                              : undefined,
+                          reason: r
+                            ? {
+                                code: r.code,
+                                attr: r.attr,
+                                attributedTo: r.attributedTo
+                                  ? {
+                                      side: r.attributedTo.side,
+                                      playerId: r.attributedTo.playerId,
+                                    }
+                                  : undefined,
+                              }
+                            : undefined,
+                        } as UmpireRally;
+                      });
+                    const opts =
+                      compact.length > 0
+                        ? { umpireHistory: compact }
+                        : undefined;
+                    onRequestEndGame(scoreA, scoreB, opts);
+                  } catch {
+                    onRequestEndGame(scoreA, scoreB);
+                  }
                 }}
                 className="rounded-xl bg-red-600 text-white px-4 py-2 text-sm font-semibold shadow-lg"
               >

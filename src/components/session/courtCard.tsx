@@ -2,6 +2,7 @@
 import { ScoreModal } from "@/components/session/scoreModal";
 import { ConfirmModal } from "@/components/session/confirmModal";
 import { Session, Court } from "@/types/player";
+import type { UmpireRally } from "@/types/player";
 import { useStore } from "@/lib/store";
 import { useState, useMemo } from "react";
 import { auth } from "@/lib/firebase";
@@ -66,6 +67,12 @@ function CourtCard({
   const [umpireConflictOpen, setUmpireConflictOpen] = useState(false);
   const [umpireBusy, setUmpireBusy] = useState(false);
   const [organizerEndedOpen, setOrganizerEndedOpen] = useState(false);
+  const [pendingUmpireOpts, setPendingUmpireOpts] = useState<
+    | {
+        umpireHistory?: UmpireRally[];
+      }
+    | undefined
+  >(undefined);
 
   // Detect if any player on this court is currently in another ongoing match (other courts)
   const busyElsewhere = useMemo(() => {
@@ -136,10 +143,11 @@ function CourtCard({
         ? "co-organizer"
         : undefined
       : undefined;
-    endGame(session.id, idx, a, b, uid, role as any);
+    endGame(session.id, idx, a, b, uid, role as any, pendingUmpireOpts);
     setScoreA("");
     setScoreB("");
     setOpen(false);
+    setPendingUmpireOpts(undefined);
   };
 
   return (
@@ -941,6 +949,7 @@ function CourtCard({
         }`}
         onRequestClose={async () => {
           setRecOpen(false);
+          setPendingUmpireOpts(undefined);
           try {
             const myUid = auth.currentUser?.uid || null;
             const current = (court as any)?.umpireUid || null;
@@ -953,8 +962,9 @@ function CourtCard({
             }
           } catch {}
         }}
-        onRequestEndGame={async (a, b) => {
+        onRequestEndGame={async (a, b, opts) => {
           setRecOpen(false);
+          setPendingUmpireOpts(opts);
           try {
             // Also release umpire lock on endgame
             const myUid = auth.currentUser?.uid || null;

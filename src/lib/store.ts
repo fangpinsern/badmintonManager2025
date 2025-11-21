@@ -48,7 +48,19 @@ interface StoreState {
     scoreA: number,
     scoreB: number,
     endedByUid?: string | null,
-    endedByRole?: "organizer" | "co-organizer"
+    endedByRole?: "organizer" | "co-organizer",
+    opts?: {
+      umpireHistory?: {
+        rallyNo: number;
+        winnerSide: "A" | "B";
+        rallyDurationMs?: number;
+        reason?: {
+          code: string;
+          attr: "WINNER" | "LOSER" | "NONE";
+          attributedTo?: { playerId?: string };
+        };
+      }[];
+    }
   ) => void;
   voidGame: (
     sessionId: string,
@@ -443,7 +455,15 @@ const useStore = create<StoreState>()((set, _get) => ({
       }),
     })),
 
-  endGame: (sessionId, courtIndex, scoreA, scoreB, endedByUid, endedByRole) =>
+  endGame: (
+    sessionId,
+    courtIndex,
+    scoreA,
+    scoreB,
+    endedByUid,
+    endedByRole,
+    opts
+  ) =>
     set((s) => ({
       sessions: s.sessions.map((ss) => {
         if (ss.id !== sessionId) return ss;
@@ -492,6 +512,34 @@ const useStore = create<StoreState>()((set, _get) => ({
           endedByUid: endedByUid || undefined,
           endedByRole: endedByRole || undefined,
         };
+        // Attach optional umpire insights if provided and valid
+        try {
+          const totalPoints = a + b;
+          if (
+            Array.isArray(opts?.umpireHistory) &&
+            opts!.umpireHistory.length === totalPoints
+          ) {
+            (game as any).umpireHistory = opts!.umpireHistory.map((e) => ({
+              rallyNo: e.rallyNo,
+              winnerSide: e.winnerSide,
+              rallyDurationMs:
+                typeof e.rallyDurationMs === "number"
+                  ? e.rallyDurationMs
+                  : undefined,
+              reason: e.reason
+                ? {
+                    code: e.reason.code,
+                    attr: e.reason.attr,
+                    attributedTo: e.reason.attributedTo
+                      ? {
+                          playerId: e.reason.attributedTo.playerId,
+                        }
+                      : undefined,
+                  }
+                : undefined,
+            }));
+          }
+        } catch {}
         const courts = ss.courts.map((c) => ({ ...c }));
         const c = courts[courtIndex];
         // clear current court state

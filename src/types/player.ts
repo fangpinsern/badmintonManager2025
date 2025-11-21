@@ -52,6 +52,8 @@ type Game = {
   scoreB: number; // side B points
   winner: "A" | "B" | "draw";
   players: string[]; // snapshot A+B (ids)
+  /** Optional compact per-rally annotations recorded via Umpire mode */
+  umpireHistory?: UmpireRally[];
   voided?: boolean;
   // accountability: which user ended (submitted score for) this game
   endedByUid?: string;
@@ -195,6 +197,20 @@ const REASONS: { code: ReasonCode; label: string; attr: ReasonAttrType }[] = [
   { code: "UNSPECIFIED", label: "Unspecified", attr: "NONE" },
 ];
 
+// Compact per-point history entry for Umpire mode
+type UmpireRally = {
+  rallyNo: number;
+  winnerSide: "A" | "B";
+  rallyDurationMs?: number;
+  reason?: {
+    code: ReasonCode;
+    attr: ReasonAttrType;
+    attributedTo?: {
+      playerId?: string;
+    };
+  };
+};
+
 export type {
   Player,
   PlatformPlayer,
@@ -205,5 +221,6 @@ export type {
   Session,
   ReasonCode,
   ReasonAttrType,
+  UmpireRally,
 };
 export { REASONS };
