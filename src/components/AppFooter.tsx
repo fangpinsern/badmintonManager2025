@@ -12,6 +12,16 @@ export default function AppFooter() {
 
   useEffect(() => {
     setIsMounted(true);
+
+    // Set atOptions for the banner ad
+    (window as any).atOptions = {
+      key: "09c8df8ca5a627fcaf1e80312b05f28c",
+      format: "iframe",
+      height: 60,
+      width: 468,
+      params: {},
+    };
+
     return onAuthStateChanged(auth, (u) => setHasUser(!!u));
   }, []);
   return (
@@ -64,6 +74,13 @@ export default function AppFooter() {
             data-cfasync="false"
           />
           <div id="container-b1ad1a35e88531eeff779525e033ccae"></div>
+
+          <div className="mt-4">
+            <Script
+              src="//www.highperformanceformat.com/09c8df8ca5a627fcaf1e80312b05f28c/invoke.js"
+              strategy="afterInteractive"
+            />
+          </div>
         </>
       )}
     </footer>
