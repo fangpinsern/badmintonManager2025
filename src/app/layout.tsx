@@ -1,6 +1,5 @@
 import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
-import Script from "next/script";
 import "./globals.css";
 import AppHeader from "@/components/AppHeader";
 import ServiceWorkerRegister from "@/components/ServiceWorkerRegister";
@@ -60,12 +59,6 @@ export default function RootLayout({
           <AnalyticsListener />
         </Suspense>
         <AppFooter />
-        <Script
-          src="//pl28108992.effectivegatecpm.com/b1ad1a35e88531eeff779525e033ccae/invoke.js"
-          strategy="afterInteractive"
-          data-cfasync="false"
-        />
-        <div id="container-b1ad1a35e88531eeff779525e033ccae"></div>
       </body>
     </html>
   );

@@ -4,10 +4,14 @@ import { useEffect, useState } from "react";
 import { auth } from "@/lib/firebase";
 import { onAuthStateChanged, signOut } from "firebase/auth";
 import { deployedAtIso } from "@/buildInfo";
+import Script from "next/script";
 
 export default function AppFooter() {
   const [hasUser, setHasUser] = useState(!!auth.currentUser);
+  const [isMounted, setIsMounted] = useState(false);
+
   useEffect(() => {
+    setIsMounted(true);
     return onAuthStateChanged(auth, (u) => setHasUser(!!u));
   }, []);
   return (
@@ -52,6 +56,16 @@ export default function AppFooter() {
           return null;
         })()}
       </div>
+      {isMounted && (
+        <>
+          <Script
+            src="//pl28108992.effectivegatecpm.com/b1ad1a35e88531eeff779525e033ccae/invoke.js"
+            strategy="afterInteractive"
+            data-cfasync="false"
+          />
+          <div id="container-b1ad1a35e88531eeff779525e033ccae"></div>
+        </>
+      )}
     </footer>
   );
 }
