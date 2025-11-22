@@ -4,24 +4,11 @@ import { useEffect, useState } from "react";
 import { auth } from "@/lib/firebase";
 import { onAuthStateChanged, signOut } from "firebase/auth";
 import { deployedAtIso } from "@/buildInfo";
-import Script from "next/script";
 
 export default function AppFooter() {
   const [hasUser, setHasUser] = useState(!!auth.currentUser);
-  const [isMounted, setIsMounted] = useState(false);
 
   useEffect(() => {
-    setIsMounted(true);
-
-    // Set atOptions for the banner ad
-    (window as any).atOptions = {
-      key: "09c8df8ca5a627fcaf1e80312b05f28c",
-      format: "iframe",
-      height: 60,
-      width: 468,
-      params: {},
-    };
-
     return onAuthStateChanged(auth, (u) => setHasUser(!!u));
   }, []);
   return (
@@ -66,23 +53,6 @@ export default function AppFooter() {
           return null;
         })()}
       </div>
-      {isMounted && (
-        <>
-          <Script
-            src="//pl28108992.effectivegatecpm.com/b1ad1a35e88531eeff779525e033ccae/invoke.js"
-            strategy="afterInteractive"
-            data-cfasync="false"
-          />
-          <div id="container-b1ad1a35e88531eeff779525e033ccae"></div>
-
-          <div className="mt-4">
-            <Script
-              src="//www.highperformanceformat.com/09c8df8ca5a627fcaf1e80312b05f28c/invoke.js"
-              strategy="afterInteractive"
-            />
-          </div>
-        </>
-      )}
     </footer>
   );
 }
