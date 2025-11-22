@@ -13,6 +13,7 @@ import { EndSessionModal } from "@/components/session/endSessionModal";
 import { AddCourtButton } from "@/components/session/addCourtButton";
 import { CourtCard } from "@/components/session/courtCard";
 import { GameEditModal } from "@/components/session/gameEditModal";
+import { GameDetailsModal } from "@/components/session/GameDetailsModal";
 import { ConfirmModal } from "@/components/session/confirmModal";
 import LoadingScreen from "@/components/LoadingScreen";
 import Link from "next/link";
@@ -292,6 +293,7 @@ function SessionManager({ onBack }: { onBack: () => void }) {
   const [endShuttleCostMoney, setEndShuttleCostMoney] = useState<string>("0");
   const [endRequestPayment, setEndRequestPayment] = useState<boolean>(false);
   const [editGameId, setEditGameId] = useState<string | null>(null);
+  const [detailsGameId, setDetailsGameId] = useState<string | null>(null);
   const [gamesFilter, setGamesFilter] = useState<string>("");
   const [gamesPage, setGamesPage] = useState<number>(1); // 10 per page
   const [usernameMap, setUsernameMap] = useState<Record<string, string>>({});
@@ -1925,16 +1927,26 @@ function SessionManager({ onBack }: { onBack: () => void }) {
                       )}
                     </div>
                   )}
-                  {!session.ended && (
-                    <div className="mt-2 flex justify-end">
+                  <div className="mt-2 flex justify-end gap-2">
+                    {(g.umpireHistory &&
+                      (g.umpireHistory as any[]).length > 0) ||
+                    g.umpireSummary ? (
+                      <button
+                        onClick={() => setDetailsGameId(g.id)}
+                        className="rounded border px-2 py-0.5 text-xs"
+                      >
+                        Details
+                      </button>
+                    ) : null}
+                    {!session.ended && (
                       <button
                         onClick={() => setEditGameId(g.id)}
                         className="rounded border px-2 py-0.5 text-xs"
                       >
                         Edit
                       </button>
-                    </div>
-                  )}
+                    )}
+                  </div>
                 </div>
               );
             })}
@@ -1959,6 +1971,11 @@ function SessionManager({ onBack }: { onBack: () => void }) {
         session={session}
         gameId={editGameId}
         onClose={() => setEditGameId(null)}
+      />
+      <GameDetailsModal
+        session={session}
+        gameId={detailsGameId}
+        onClose={() => setDetailsGameId(null)}
       />
     </div>
   );
