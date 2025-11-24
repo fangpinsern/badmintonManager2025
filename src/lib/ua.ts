@@ -8,8 +8,10 @@ export function isTelegramInAppBrowser(): boolean {
   try {
     // Telegram WebApp JS object presence
     const hasTelegramWebApp =
-      typeof window !== "undefined" && !!(window as any)?.Telegram?.WebApp;
-    // User agent check
+      typeof window !== "undefined" &&
+      (!!(window as any)?.Telegram?.WebApp ||
+        typeof (window as any).TelegramWebview !== "undefined" ||
+        !!(window as any).TelegramWebviewProxy);
     const ua = (typeof navigator !== "undefined" && navigator.userAgent) || "";
     const hasTelegramUA = /Telegram/i.test(ua);
     return hasTelegramWebApp || hasTelegramUA;

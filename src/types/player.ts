@@ -33,6 +33,9 @@ type Court = {
   queue?: string[];
   nextA?: string[];
   nextB?: string[];
+  // If set, this court is locked for Umpire mode by this uid
+  umpireUid?: string;
+  umpireSince?: string;
 };
 
 type Game = {
@@ -41,6 +44,10 @@ type Game = {
   endedAt: string; // ISO timestamp
   startedAt?: string; // ISO timestamp
   durationMs?: number; // derived when known
+  // Optional gameplay effort metadata
+  intensity?: "low" | "mid" | "high";
+  /** Estimated calories burned per player for this game (kcal) */
+  caloriesEstimate?: number;
   sideA: string[]; // player IDs on side A
   sideB: string[]; // player IDs on side B
   sideAPlayers?: { id: string; name: string }[]; // legacy snapshot of names at game end
@@ -49,6 +56,19 @@ type Game = {
   scoreB: number; // side B points
   winner: "A" | "B" | "draw";
   players: string[]; // snapshot A+B (ids)
+  /** Optional compact per-rally annotations recorded via Umpire mode */
+  umpireHistory?: UmpireRally[];
+  /** Optional summary stats derived from umpireHistory */
+  umpireSummary?: {
+    totalRallies: number;
+    avgRallyDurationMs?: number;
+    longestRallyDurationMs?: number;
+    mvps?: {
+      playerId: string;
+      winners?: number;
+      losers?: number;
+    }[];
+  };
   voided?: boolean;
   // accountability: which user ended (submitted score for) this game
   endedByUid?: string;
@@ -163,6 +183,51 @@ type Session = {
   };
 };
 
+// Unified reason code taxonomy for rally outcomes (optional in Umpire mode)
+type ReasonAttrType = "WINNER" | "LOSER" | "NONE";
+type ReasonCode =
+  | "SMASH-WIN"
+  | "NET-KILL"
+  | "DRIVE-WIN"
+  | "DROP-WIN"
+  | "SERVICE-FAULT"
+  | "OUT-L"
+  | "OUT-W"
+  | "MISHIT"
+  | "UNFORCED-ERROR"
+  | "UNSPECIFIED";
+
+// Canonical reason list with display labels
+const REASONS: { code: ReasonCode; label: string; attr: ReasonAttrType }[] = [
+  // Winner-attributed
+  { code: "SMASH-WIN", label: "Smash winner", attr: "WINNER" },
+  { code: "NET-KILL", label: "Net kill", attr: "WINNER" },
+  { code: "DRIVE-WIN", label: "Drive winner", attr: "WINNER" },
+  { code: "DROP-WIN", label: "Drop winner", attr: "WINNER" },
+  // Loser-attributed
+  { code: "SERVICE-FAULT", label: "Service fault", attr: "LOSER" },
+  { code: "OUT-L", label: "Out - long", attr: "LOSER" },
+  { code: "OUT-W", label: "Out - wide", attr: "LOSER" },
+  { code: "MISHIT", label: "Mishit", attr: "LOSER" },
+  { code: "UNFORCED-ERROR", label: "Unforced error", attr: "LOSER" },
+  // Catch-all
+  { code: "UNSPECIFIED", label: "Unspecified", attr: "NONE" },
+];
+
+// Compact per-point history entry for Umpire mode
+type UmpireRally = {
+  rallyNo: number;
+  winnerSide: "A" | "B";
+  rallyDurationMs?: number;
+  reason?: {
+    code: ReasonCode;
+    attr: ReasonAttrType;
+    attributedTo?: {
+      playerId?: string;
+    };
+  };
+};
+
 export type {
   Player,
   PlatformPlayer,
@@ -171,4 +236,8 @@ export type {
   PlayerAggregate,
   SessionStats,
   Session,
+  ReasonCode,
+  ReasonAttrType,
+  UmpireRally,
 };
+export { REASONS };
