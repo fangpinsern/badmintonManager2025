@@ -10,6 +10,7 @@ import { Select } from "@/components/layout";
 import { GameRecorderOverlay } from "@/components/session/GameRecorderOverlay";
 import { detectInstalledPwa, detectPlatform } from "@/lib/notifications";
 import { claimUmpire, releaseUmpire } from "@/lib/firestoreSessions";
+import { logAnalyticsEvent } from "@/lib/analytics";
 
 function CourtCard({
   session,
@@ -256,6 +257,13 @@ function CourtCard({
                       const installed = detectInstalledPwa();
                       if (!installed) {
                         setShowInstallModal(true);
+                        try {
+                          void logAnalyticsEvent("umpire_pwa_block", {
+                            session_id: session.id,
+                            court_index: idx,
+                            platform: detectPlatform(),
+                          });
+                        } catch {}
                         return;
                       }
                     } catch {}
@@ -280,6 +288,13 @@ function CourtCard({
                         claimUmpire(String(owner), session.id, idx, myUid)
                           .then(() => {
                             setRecOpen(true);
+                            try {
+                              void logAnalyticsEvent("umpire_mode_opened", {
+                                session_id: session.id,
+                                court_index: idx,
+                                platform: detectPlatform(),
+                              });
+                            } catch {}
                           })
                           .catch(() => {
                             setUmpireConflictOpen(true);
@@ -287,6 +302,13 @@ function CourtCard({
                           .finally(() => setUmpireBusy(false));
                       } else {
                         setRecOpen(true);
+                        try {
+                          void logAnalyticsEvent("umpire_mode_opened", {
+                            session_id: session.id,
+                            court_index: idx,
+                            platform: detectPlatform(),
+                          });
+                        } catch {}
                       }
                     } catch {
                       setUmpireConflictOpen(true);
@@ -1040,15 +1062,33 @@ function CourtCard({
         onCancel={() => setShowInstallModal(false)}
         onConfirm={async () => {
           try {
+            try {
+              localStorage.setItem("pwa_install_source", "umpire");
+            } catch {}
             const platform = detectPlatform();
             if (platform === "ios") {
+              try {
+                void logAnalyticsEvent("umpire_pwa_ios_guide_opened", {
+                  session_id: session.id,
+                  court_index: idx,
+                  platform,
+                });
+              } catch {}
               window.location.href = "/guide/ios";
               return;
             }
             const promptEvt = (window as any).__deferredInstallPrompt;
             if (promptEvt) {
               promptEvt.prompt();
-              await promptEvt.userChoice;
+              const res = await promptEvt.userChoice;
+              try {
+                void logAnalyticsEvent("umpire_pwa_prompt_choice", {
+                  session_id: session.id,
+                  court_index: idx,
+                  platform,
+                  outcome: (res && res.outcome) || "unknown",
+                });
+              } catch {}
             }
           } catch {}
           setShowInstallModal(false);

@@ -8,6 +8,7 @@ import {
   setAnalyticsUserId,
   setAnalyticsUserProperties,
 } from "@/lib/analytics";
+import { detectInstalledPwa, detectPlatform } from "@/lib/notifications";
 
 export default function AnalyticsListener() {
   const pathname = usePathname();
@@ -43,6 +44,49 @@ export default function AnalyticsListener() {
       }
     });
     return () => unsub();
+  }, []);
+
+  // Track PWA install conversions (Chromium: appinstalled; iOS: detect installed on next load)
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const onInstalled = () => {
+      try {
+        const source =
+          (typeof localStorage !== "undefined" &&
+            localStorage.getItem("pwa_install_source")) ||
+          "unknown";
+        void logAnalyticsEvent("pwa_installed", {
+          source,
+          platform: detectPlatform(),
+        });
+        try {
+          localStorage.removeItem("pwa_install_source");
+        } catch {}
+      } catch {}
+    };
+    window.addEventListener("appinstalled", onInstalled);
+    return () => window.removeEventListener("appinstalled", onInstalled);
+  }, []);
+
+  useEffect(() => {
+    // iOS: no appinstalled event. If user followed guide and app is now installed,
+    // treat as a conversion the next time the app runs.
+    try {
+      const installed = detectInstalledPwa();
+      const source =
+        (typeof localStorage !== "undefined" &&
+          localStorage.getItem("pwa_install_source")) ||
+        null;
+      if (installed && source) {
+        void logAnalyticsEvent("pwa_installed", {
+          source,
+          platform: detectPlatform(),
+        });
+        try {
+          localStorage.removeItem("pwa_install_source");
+        } catch {}
+      }
+    } catch {}
   }, []);
 
   return null;

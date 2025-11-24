@@ -9,6 +9,7 @@ import {
   computeTargetPlan,
   sideZoneForServiceCourt,
 } from "../../lib/rules/service";
+import { logAnalyticsEvent } from "@/lib/analytics";
 
 type GameRecorderOverlayProps = {
   open: boolean;
@@ -2072,6 +2073,11 @@ function GameRecorderOverlay({
                 onClick={() => {
                   const next = !reasonEnabled;
                   setReasonEnabled(next);
+                  try {
+                    void logAnalyticsEvent("umpire_reasons_toggle", {
+                      enabled: next,
+                    });
+                  } catch {}
                   if (!next) {
                     setReasonMenuOpen(false);
                     setPendingEventIndex(null);
