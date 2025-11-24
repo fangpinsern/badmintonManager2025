@@ -13,7 +13,6 @@ import { EndSessionModal } from "@/components/session/endSessionModal";
 import { AddCourtButton } from "@/components/session/addCourtButton";
 import { CourtCard } from "@/components/session/courtCard";
 import { GameEditModal } from "@/components/session/gameEditModal";
-import { GameDetailsModal } from "@/components/session/GameDetailsModal";
 import { ConfirmModal } from "@/components/session/confirmModal";
 import LoadingScreen from "@/components/LoadingScreen";
 import Link from "next/link";
@@ -295,7 +294,6 @@ function SessionManager({ onBack }: { onBack: () => void }) {
   const [endPaymentRecipientId, setEndPaymentRecipientId] =
     useState<string>("");
   const [editGameId, setEditGameId] = useState<string | null>(null);
-  const [detailsGameId, setDetailsGameId] = useState<string | null>(null);
   const [gamesFilter, setGamesFilter] = useState<string>("");
   const [gamesPage, setGamesPage] = useState<number>(1); // 10 per page
   const [usernameMap, setUsernameMap] = useState<Record<string, string>>({});
@@ -976,42 +974,6 @@ function SessionManager({ onBack }: { onBack: () => void }) {
               <div className="text-xs text-gray-500">Total games</div>
               <div className="font-medium">{session.stats.totalGames}</div>
             </div>
-            {(() => {
-              try {
-                const uid = auth.currentUser?.uid || null;
-                if (!uid) return null;
-                const myIds = (session.players || [])
-                  .filter((p) => p.accountUid === uid)
-                  .map((p) => p.id);
-                if (!myIds.length) return null;
-                const nonVoided = (session.games || []).filter(
-                  (g) => !g.voided && typeof g.caloriesEstimate === "number"
-                );
-                const seen = new Set<string>();
-                let sum = 0;
-                for (const g of nonVoided) {
-                  const ids =
-                    (g.players && g.players.length
-                      ? g.players
-                      : [...(g.sideA || []), ...(g.sideB || [])]) || [];
-                  const participated = myIds.some((id) => ids.includes(id));
-                  if (participated && !seen.has(g.id)) {
-                    sum += Number(g.caloriesEstimate || 0);
-                    seen.add(g.id);
-                  }
-                }
-                return (
-                  <div className="rounded-lg bg-orange-50 p-2">
-                    <div className="text-xs text-orange-700">
-                      Your estimated calories
-                    </div>
-                    <div className="font-medium">{sum} kcal</div>
-                  </div>
-                );
-              } catch {
-                return null;
-              }
-            })()}
             {typeof session.stats.shuttlesUsed !== "undefined" && (
               <div className="rounded-lg bg-lime-50 p-2">
                 <div className="text-xs text-lime-700">Shuttlecocks used</div>
@@ -1770,8 +1732,6 @@ function SessionManager({ onBack }: { onBack: () => void }) {
                 court={court}
                 idx={idx}
                 isOrganizer={canManage}
-                isMainOrganizer={isOrganizer}
-                organizerUid={organizerUid || undefined}
               />
             ))}
           </div>
@@ -1841,26 +1801,19 @@ function SessionManager({ onBack }: { onBack: () => void }) {
                         Voided
                       </span>
                     ) : (
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="whitespace-nowrap">
-                          Score: {g.scoreA}–{g.scoreB} · Winner: {g.winner}
-                        </span>
+                      <>
+                        Score: {g.scoreA}–{g.scoreB} · Winner: {g.winner}
                         {g.endedByRole && (
-                          <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[10px] text-gray-700 whitespace-nowrap">
+                          <span className="ml-2 rounded-full bg-gray-100 px-2 py-0.5 text-[10px] text-gray-700">
                             Ended By{" "}
                             {g.endedByRole === "organizer"
                               ? "Organizer"
                               : "Co-organizer"}
                           </span>
                         )}
-                        {typeof g.caloriesEstimate === "number" && (
-                          <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[10px] text-gray-700 whitespace-nowrap">
-                            Est. {g.caloriesEstimate} kcal
-                          </span>
-                        )}
                         {selected && (playedA || playedB) && !g.voided && (
                           <span
-                            className={`whitespace-nowrap rounded px-2 py-0.5 text-[10px] ${
+                            className={`ml-2 rounded px-2 py-0.5 text-[10px] ${
                               resultForSelected === "win"
                                 ? "bg-green-50 text-green-700"
                                 : resultForSelected === "loss"
@@ -1871,7 +1824,7 @@ function SessionManager({ onBack }: { onBack: () => void }) {
                             {resultForSelected}
                           </span>
                         )}
-                      </div>
+                      </>
                     )}
                   </div>
                   <div className="mt-1 text-xs text-gray-500 truncate">
@@ -1927,78 +1880,16 @@ function SessionManager({ onBack }: { onBack: () => void }) {
                         null as any
                       )}
                   </div>
-                  {g.umpireSummary && (
-                    <div className="mt-1 flex flex-wrap items-center gap-2">
-                      {typeof g.umpireSummary.avgRallyDurationMs ===
-                        "number" && (
-                        <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[10px] text-gray-700">
-                          {(() => {
-                            const s = g.umpireSummary!;
-                            const secs =
-                              (s.avgRallyDurationMs as number) / 1000;
-                            return `${secs.toFixed(1)}s avg rally`;
-                          })()}
-                        </span>
-                      )}
-                      {typeof g.umpireSummary.longestRallyDurationMs ===
-                        "number" && (
-                        <span className="rounded-full bg-indigo-50 px-2 py-0.5 text-[10px] text-indigo-700">
-                          {(() => {
-                            const s = g.umpireSummary!;
-                            const secs =
-                              (s.longestRallyDurationMs as number) / 1000;
-                            return `Longest ${secs.toFixed(1)}s`;
-                          })()}
-                        </span>
-                      )}
-                      {!!(
-                        g.umpireSummary.mvps && g.umpireSummary.mvps.length
-                      ) && (
-                        <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] text-emerald-700">
-                          {(() => {
-                            const mvps = g.umpireSummary!.mvps!;
-                            const parts = mvps.map((mvp: any) => {
-                              const pl =
-                                session.players.find(
-                                  (pp) => pp.id === mvp.playerId
-                                ) || null;
-                              const name = pl?.name || "(deleted)";
-                              const w =
-                                typeof mvp.winners === "number"
-                                  ? mvp.winners
-                                  : 0;
-                              const l =
-                                typeof mvp.losers === "number" ? mvp.losers : 0;
-                              return `${name} (${w}W, ${l}E)`;
-                            });
-                            return `${
-                              mvps.length > 1 ? "MVPs" : "MVP"
-                            }: ${parts.join(" & ")}`;
-                          })()}
-                        </span>
-                      )}
-                    </div>
-                  )}
-                  <div className="mt-2 flex justify-end gap-2">
-                    {(g.umpireHistory &&
-                      (g.umpireHistory as any[]).length > 0) ||
-                    g.umpireSummary ? (
-                      <button
-                        onClick={() => setDetailsGameId(g.id)}
-                        className="rounded border px-2 py-0.5 text-xs"
-                      >
-                        Details
-                      </button>
-                    ) : null}
-                    {!session.ended && (
+                  {!session.ended && (
+                    <div className="mt-2 flex justify-end">
                       <button
                         onClick={() => setEditGameId(g.id)}
                         className="rounded border px-2 py-0.5 text-xs"
                       >
                         Edit
                       </button>
-                    )}
-                  </div>
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -2023,11 +1914,6 @@ function SessionManager({ onBack }: { onBack: () => void }) {
         session={session}
         gameId={editGameId}
         onClose={() => setEditGameId(null)}
-      />
-      <GameDetailsModal
-        session={session}
-        gameId={detailsGameId}
-        onClose={() => setDetailsGameId(null)}
       />
     </div>
   );

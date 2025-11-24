@@ -48,21 +48,7 @@ interface StoreState {
     scoreA: number,
     scoreB: number,
     endedByUid?: string | null,
-    endedByRole?: "organizer" | "co-organizer",
-    opts?: {
-      umpireHistory?: {
-        rallyNo: number;
-        winnerSide: "A" | "B";
-        rallyDurationMs?: number;
-        reason?: {
-          code: string;
-          attr: "WINNER" | "LOSER" | "NONE";
-          attributedTo?: { playerId?: string };
-        };
-      }[];
-      intensity?: "low" | "mid" | "high";
-      caloriesEstimate?: number;
-    }
+    endedByRole?: "organizer" | "co-organizer"
   ) => void;
   voidGame: (
     sessionId: string,
@@ -462,15 +448,7 @@ const useStore = create<StoreState>()((set, _get) => ({
       }),
     })),
 
-  endGame: (
-    sessionId,
-    courtIndex,
-    scoreA,
-    scoreB,
-    endedByUid,
-    endedByRole,
-    opts
-  ) =>
+  endGame: (sessionId, courtIndex, scoreA, scoreB, endedByUid, endedByRole) =>
     set((s) => ({
       sessions: s.sessions.map((ss) => {
         if (ss.id !== sessionId) return ss;
@@ -502,8 +480,6 @@ const useStore = create<StoreState>()((set, _get) => ({
           endedAt: endedAt.toISOString(),
           startedAt: target.startedAt,
           durationMs,
-          intensity: opts?.intensity,
-          caloriesEstimate: opts?.caloriesEstimate,
           sideA,
           sideB,
           sideAPlayers: sideA.map((pid) => ({
@@ -521,105 +497,6 @@ const useStore = create<StoreState>()((set, _get) => ({
           endedByUid: endedByUid || undefined,
           endedByRole: endedByRole || undefined,
         };
-        // Attach optional umpire insights if provided and valid
-        try {
-          const totalPoints = a + b;
-          if (
-            Array.isArray(opts?.umpireHistory) &&
-            opts!.umpireHistory.length === totalPoints
-          ) {
-            (game as any).umpireHistory = opts!.umpireHistory.map((e) => ({
-              rallyNo: e.rallyNo,
-              winnerSide: e.winnerSide,
-              rallyDurationMs:
-                typeof e.rallyDurationMs === "number"
-                  ? e.rallyDurationMs
-                  : undefined,
-              reason: e.reason
-                ? {
-                    code: e.reason.code,
-                    attr: e.reason.attr,
-                    attributedTo: e.reason.attributedTo
-                      ? {
-                          playerId: e.reason.attributedTo.playerId,
-                        }
-                      : undefined,
-                  }
-                : undefined,
-            }));
-            // Derive compact summary stats for quick display
-            try {
-              const hist = (game as any).umpireHistory || [];
-              const durations: number[] = hist
-                .map((h: any) =>
-                  typeof h?.rallyDurationMs === "number"
-                    ? h.rallyDurationMs
-                    : null
-                )
-                .filter((v: any) => typeof v === "number") as number[];
-              const avgRallyDurationMs =
-                durations.length > 0
-                  ? Math.floor(
-                      durations.reduce((acc, cur) => acc + cur, 0) /
-                        durations.length
-                    )
-                  : undefined;
-              const longestRallyDurationMs =
-                durations.length > 0 ? Math.max(...durations) : undefined;
-              const winnersCount: Record<string, number> = {};
-              const losersCount: Record<string, number> = {};
-              for (const h of hist) {
-                try {
-                  const r = (h as any)?.reason;
-                  const pid = r?.attributedTo?.playerId;
-                  if (!pid) continue;
-                  if (r?.attr === "WINNER") {
-                    winnersCount[pid] = (winnersCount[pid] || 0) + 1;
-                  } else if (r?.attr === "LOSER") {
-                    losersCount[pid] = (losersCount[pid] || 0) + 1;
-                  }
-                } catch {}
-              }
-              let mvps:
-                | { playerId: string; winners?: number; losers?: number }[]
-                | undefined = undefined;
-              if (winner !== "draw") {
-                const teamIds = winner === "A" ? sideA : sideB;
-                // Primary: most winners among winning team (allow ties)
-                const winnerVals = teamIds.map((pid) => winnersCount[pid] || 0);
-                const bestWinners =
-                  winnerVals.length > 0 ? Math.max(...winnerVals) : -1;
-                if (bestWinners > 0) {
-                  mvps = teamIds
-                    .filter((pid) => (winnersCount[pid] || 0) === bestWinners)
-                    .map((pid) => ({
-                      playerId: pid,
-                      winners: winnersCount[pid] || 0,
-                      losers: losersCount[pid] || 0,
-                    }));
-                } else {
-                  // Fallback: fewest losers among winning team (allow ties)
-                  const loserVals = teamIds.map((pid) => losersCount[pid] || 0);
-                  const fewestLosers =
-                    loserVals.length > 0 ? Math.min(...loserVals) : 0;
-                  mvps = teamIds
-                    .filter((pid) => (losersCount[pid] || 0) === fewestLosers)
-                    .map((pid) => ({
-                      playerId: pid,
-                      winners: winnersCount[pid] || 0,
-                      losers: losersCount[pid] || 0,
-                    }));
-                }
-              }
-              (game as any).umpireSummary = {
-                totalRallies: hist.length,
-                avgRallyDurationMs,
-                longestRallyDurationMs,
-                mvps,
-              };
-            } catch {}
-          }
-        } catch {}
         const courts = ss.courts.map((c) => ({ ...c }));
         const c = courts[courtIndex];
         // clear current court state
@@ -628,9 +505,6 @@ const useStore = create<StoreState>()((set, _get) => ({
         c.pairB = [];
         c.inProgress = false;
         c.startedAt = undefined;
-        // clear any umpire lock
-        (c as any).umpireUid = undefined;
-        (c as any).umpireSince = undefined;
         // Auto-populate next game from queue, preferring nextA/nextB if valid
         const isSingles = (c.mode || "doubles") === "singles";
         const cap = isSingles ? 2 : 4;
@@ -775,9 +649,6 @@ const useStore = create<StoreState>()((set, _get) => ({
         c.pairB = [];
         c.inProgress = false;
         c.startedAt = undefined;
-        // clear any umpire lock
-        (c as any).umpireUid = undefined;
-        (c as any).umpireSince = undefined;
         // Auto-populate next game from queue, preferring nextA/nextB if valid
         const isSingles = (c.mode || "doubles") === "singles";
         const cap = isSingles ? 2 : 4;

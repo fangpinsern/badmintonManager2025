@@ -4,8 +4,6 @@ import {
   signInWithPopup,
   signInWithRedirect,
 } from "firebase/auth";
-import { isTelegramInAppBrowser } from "@/lib/ua";
-import { detectPlatform } from "@/lib/notifications";
 
 /**
  * Attempts Google sign-in via popup, with automatic fallback to redirect for
@@ -14,12 +12,6 @@ import { detectPlatform } from "@/lib/notifications";
 export async function signInWithGoogleSafe(auth: Auth): Promise<void> {
   const provider = new GoogleAuthProvider();
   provider.setCustomParameters({ prompt: "select_account" });
-
-  if (isTelegramInAppBrowser()) {
-    await signInWithRedirect(auth, provider);
-    return;
-  }
-
   try {
     await signInWithPopup(auth, provider);
     return;
