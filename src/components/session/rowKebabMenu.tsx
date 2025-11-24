@@ -1,16 +1,20 @@
 "use client";
 import { Session } from "@/types/player";
-import { useState } from "react";
+import { useRef, useEffect, useState } from "react";
 import { auth } from "@/lib/firebase";
-import { organizerUnlinkPlayer } from "@/lib/firestoreSessions";
-import { unlinkAccountInOrganizerSession } from "@/lib/firestoreSessions";
-import { linkAccountInOrganizerSession } from "@/lib/firestoreSessions";
+import {
+  getProfileByUsername,
+  organizerUnlinkPlayer,
+  suggestUsernames,
+  unlinkAccountInOrganizerSession,
+  linkAccountInOrganizerSession,
+} from "@/lib/firestoreSessions";
 import { QRCodeSVG } from "qrcode.react";
-import { useRef, useEffect } from "react";
 import { Player } from "@/types/player";
 import { ConfirmModal } from "@/components/session/confirmModal";
 import { useStore } from "@/lib/store";
 import { useRouter } from "next/navigation";
+import { Input } from "@/components/layout";
 
 function RowKebabMenu({
   session,
@@ -203,6 +207,8 @@ function RowKebabMenu({
           sessionId={session.id}
           playerId={player.id}
           playerName={player.name}
+          organizerUid={organizerUid || undefined}
+          isOrganizer={!!isOrganizer}
           onClose={() => setShowQr(false)}
         />
       )}
@@ -259,24 +265,34 @@ function ClaimQrButton({
   sessionId,
   playerId,
   playerName,
+  organizerUid,
+  isOrganizer,
   forceOpen,
   onClose,
 }: {
   sessionId: string;
   playerId: string;
   playerName: string;
+  organizerUid?: string;
+  isOrganizer?: boolean;
   forceOpen?: boolean;
   onClose?: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const [qrSize, setQrSize] = useState(240);
-  const organizerUid = auth.currentUser?.uid || "";
+  const resolvedOrganizerUid = organizerUid || auth.currentUser?.uid || "";
   const url = `${
     typeof location !== "undefined" ? location.origin : ""
   }/claim?claim=1&ouid=${encodeURIComponent(
-    organizerUid
+    resolvedOrganizerUid
   )}&sid=${encodeURIComponent(sessionId)}&pid=${encodeURIComponent(playerId)}`;
+  // Organizer: link by username (optional)
+  const [uname, setUname] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [suggestions, setSuggestions] = useState<string[]>([]);
+  const suggestTimerRef = useRef<number | null>(null);
   return (
     <>
       {!forceOpen && (
@@ -304,6 +320,119 @@ function ClaimQrButton({
             <div className="rounded border bg-gray-50 p-2 text-xs break-all">
               {url}
             </div>
+            {isOrganizer && resolvedOrganizerUid && (
+              <div className="mt-3 rounded border bg-gray-50 p-2">
+                <div className="mb-1 text-[11px] font-medium text-gray-700">
+                  Organizer: link this player by username
+                </div>
+                <form
+                  onSubmit={async (e) => {
+                    e.preventDefault();
+                    setError("");
+                    const q = (uname || "").trim().toLowerCase();
+                    if (!q) return;
+                    setBusy(true);
+                    try {
+                      const prof = await getProfileByUsername(q);
+                      if (!prof?.uid) throw new Error("Username not found");
+                      await linkAccountInOrganizerSession(
+                        resolvedOrganizerUid,
+                        sessionId,
+                        playerId,
+                        prof.uid
+                      );
+                      setUname("");
+                      setSuggestions([]);
+                    } catch (err: any) {
+                      setError(err?.message || "Failed to link by username");
+                    } finally {
+                      setBusy(false);
+                    }
+                  }}
+                  className="space-y-1"
+                >
+                  <div className="flex items-center gap-2">
+                    <Input
+                      placeholder="Username (without @)"
+                      value={uname}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setUname(v);
+                        setError("");
+                        if (suggestTimerRef.current)
+                          window.clearTimeout(suggestTimerRef.current);
+                        suggestTimerRef.current = window.setTimeout(
+                          async () => {
+                            try {
+                              const q = v.trim().toLowerCase();
+                              if (!q) {
+                                setSuggestions([]);
+                                return;
+                              }
+                              const list = await suggestUsernames(q, 5);
+                              setSuggestions(list);
+                            } catch {
+                              setSuggestions([]);
+                            }
+                          },
+                          200
+                        );
+                      }}
+                      className="flex-1"
+                      disabled={busy}
+                    />
+                    <button
+                      type="submit"
+                      disabled={busy}
+                      className="rounded bg-black px-2 py-1 text-xs text-white disabled:opacity-50"
+                    >
+                      {busy ? "Linking…" : "Link"}
+                    </button>
+                  </div>
+                  {!!suggestions.length && (
+                    <div className="rounded border bg-white">
+                      {suggestions.map((s) => (
+                        <button
+                          type="button"
+                          key={s}
+                          onClick={async () => {
+                            if (busy) return;
+                            setUname(s);
+                            setError("");
+                            setBusy(true);
+                            try {
+                              const prof = await getProfileByUsername(s);
+                              if (!prof?.uid)
+                                throw new Error("Username not found");
+                              await linkAccountInOrganizerSession(
+                                resolvedOrganizerUid,
+                                sessionId,
+                                playerId,
+                                prof.uid
+                              );
+                              setUname("");
+                              setSuggestions([]);
+                            } catch (err: any) {
+                              setError(
+                                err?.message || "Failed to link by username"
+                              );
+                            } finally {
+                              setBusy(false);
+                            }
+                          }}
+                          className="block w-full px-2 py-1 text-left text-[12px] hover:bg-gray-50"
+                        >
+                          @{s}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  {!!error && (
+                    <div className="text-[11px] text-red-600">{error}</div>
+                  )}
+                </form>
+              </div>
+            )}
             <div className="mt-3 flex items-center justify-end gap-2">
               {copied && (
                 <span className="mr-auto rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] text-emerald-700">

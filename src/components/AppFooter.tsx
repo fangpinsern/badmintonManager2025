@@ -7,6 +7,7 @@ import { deployedAtIso } from "@/buildInfo";
 
 export default function AppFooter() {
   const [hasUser, setHasUser] = useState(!!auth.currentUser);
+
   useEffect(() => {
     return onAuthStateChanged(auth, (u) => setHasUser(!!u));
   }, []);

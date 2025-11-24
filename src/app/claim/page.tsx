@@ -11,6 +11,7 @@ import {
   claimUsername,
 } from "@/lib/firestoreSessions";
 import UsernameModal from "@/components/UsernameModal";
+import TelegramBrowserOverlay from "@/components/TelegramBrowserOverlay";
 
 function ClaimPageInner() {
   const sp = useSearchParams();
@@ -92,6 +93,7 @@ function ClaimPageInner() {
   if (!params.valid) {
     return (
       <main className="mx-auto max-w-md p-4 text-sm">
+        <TelegramBrowserOverlay />
         <Card>
           <h1 className="text-base font-semibold">Invalid claim link</h1>
           <p className="mt-1 text-gray-600">Missing or malformed parameters.</p>
@@ -116,6 +118,7 @@ function ClaimPageInner() {
   if (needsUsername) {
     return (
       <main className="mx-auto max-w-md p-4 text-sm">
+        <TelegramBrowserOverlay />
         <UsernameModal
           open={true}
           onClose={() => {}}
@@ -146,6 +149,7 @@ function ClaimPageInner() {
 
   return (
     <main className="mx-auto max-w-md p-4 text-sm">
+      <TelegramBrowserOverlay />
       <Card>
         {status == "linking" && (
           <div>

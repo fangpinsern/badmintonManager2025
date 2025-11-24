@@ -292,6 +292,8 @@ function SessionManager({ onBack }: { onBack: () => void }) {
   const [endCourtCost, setEndCourtCost] = useState<string>("0");
   const [endShuttleCostMoney, setEndShuttleCostMoney] = useState<string>("0");
   const [endRequestPayment, setEndRequestPayment] = useState<boolean>(false);
+  const [endPaymentRecipientId, setEndPaymentRecipientId] =
+    useState<string>("");
   const [editGameId, setEditGameId] = useState<string | null>(null);
   const [detailsGameId, setDetailsGameId] = useState<string | null>(null);
   const [gamesFilter, setGamesFilter] = useState<string>("");
@@ -575,6 +577,7 @@ function SessionManager({ onBack }: { onBack: () => void }) {
                   onClick={() => {
                     setEndOpen(true);
                     setEndShuttles("0");
+                    setEndPaymentRecipientId("");
                   }}
                   disabled={anyInProgress}
                   className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-1.5 text-amber-700 disabled:opacity-50"
@@ -912,6 +915,8 @@ function SessionManager({ onBack }: { onBack: () => void }) {
                       Number.isFinite(shuttle) && shuttle >= 0
                         ? shuttle
                         : undefined,
+                    recipientPlayerId:
+                      (endPaymentRecipientId || "").trim() || undefined,
                   });
                 } catch {}
                 const latest = (useStore.getState().sessions || []).find(
@@ -946,6 +951,10 @@ function SessionManager({ onBack }: { onBack: () => void }) {
               ss.players.some((p) => p.accountUid === myUid)
             );
           })()}
+          players={session.players.map((p) => ({ id: p.id, name: p.name }))}
+          paymentRecipientPlayerId={endPaymentRecipientId}
+          onPaymentRecipientChange={setEndPaymentRecipientId}
+          showPaymentOptions={!!session.clubId}
         />
       )}
       {session.ended && session.stats && (

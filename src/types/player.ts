@@ -178,6 +178,8 @@ type Session = {
     enabled?: boolean;
     courtCost?: number;
     shuttleCost?: number;
+    // Optional playerId in this session to receive payment; when absent, defaults to organizer
+    recipientPlayerId?: string;
   };
 };
 

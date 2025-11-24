@@ -1354,39 +1354,99 @@ export default {
                         totalC
                       )}\nPlayers: ${nPlayers}\nEach: $${fmt(each)}`;
 
-                    // Append organizer 'pay to' line using organizer's username when available
+                    // Append 'pay to' line:
+                    // If a specific recipientPlayerId is provided, use that player;
+                    // otherwise fall back to organizer username as before.
                     try {
-                      let organizerUsername = "";
-                      // Preferred: users/{uid}.username
-                      try {
-                        const ures = await fetch(
-                          `${baseUrl}/${userCol}/${organizerUid}`,
-                          { headers: { authorization: `Bearer ${token}` } }
-                        );
-                        if (ures.ok) {
-                          const udoc = await ures.json();
-                          const uf = udoc.fields || {};
-                          const uname = String(
-                            jsonFromFields(uf.username) || ""
-                          );
-                          if (uname) organizerUsername = uname;
+                      const recipientPidRaw = pr && pr.recipientPlayerId;
+                      const recipientPid =
+                        typeof recipientPidRaw === "string" &&
+                        recipientPidRaw.trim()
+                          ? String(recipientPidRaw)
+                          : "";
+                      let payToLine = "";
+                      if (recipientPid) {
+                        // Resolve recipient from players list
+                        const target = (
+                          Array.isArray(playersAll) ? playersAll : []
+                        ).find((p) => p && p.id === recipientPid);
+                        if (target) {
+                          const targetName = String(target.name || "").trim();
+                          const targetUid = String(
+                            target.accountUid || ""
+                          ).trim();
+                          let username = "";
+                          if (targetUid) {
+                            // Try user profile username first
+                            try {
+                              const ures = await fetch(
+                                `${baseUrl}/${userCol}/${targetUid}`,
+                                {
+                                  headers: { authorization: `Bearer ${token}` },
+                                }
+                              );
+                              if (ures.ok) {
+                                const udoc = await ures.json();
+                                const uf = udoc.fields || {};
+                                const uname = String(
+                                  jsonFromFields(uf.username) || ""
+                                );
+                                if (uname) username = uname;
+                              }
+                            } catch {}
+                            // Fallback to cached accountUsername on player snapshot
+                            if (!username) {
+                              try {
+                                const uname2 = String(
+                                  target.accountUsername || ""
+                                ).trim();
+                                if (uname2) username = uname2;
+                              } catch {}
+                            }
+                          }
+                          if (username) {
+                            payToLine = `\npay to @${escapeHtml(username)}`;
+                          } else if (targetName) {
+                            payToLine = `\npay to ${escapeHtml(targetName)}`;
+                          }
                         }
-                      } catch {}
-                      // Fallback: from session players snapshot
-                      if (!organizerUsername) {
+                      }
+                      if (!payToLine) {
+                        // Organizer fallback (previous behavior)
+                        let organizerUsername = "";
+                        // Preferred: users/{uid}.username
                         try {
-                          const owner = (
-                            Array.isArray(playersAll) ? playersAll : []
-                          ).find((p) => p && p.accountUid === organizerUid);
-                          const uname2 = (owner && owner.accountUsername) || "";
-                          if (uname2) organizerUsername = String(uname2);
+                          const ures = await fetch(
+                            `${baseUrl}/${userCol}/${organizerUid}`,
+                            { headers: { authorization: `Bearer ${token}` } }
+                          );
+                          if (ures.ok) {
+                            const udoc = await ures.json();
+                            const uf = udoc.fields || {};
+                            const uname = String(
+                              jsonFromFields(uf.username) || ""
+                            );
+                            if (uname) organizerUsername = uname;
+                          }
                         } catch {}
+                        // Fallback: from session players snapshot
+                        if (!organizerUsername) {
+                          try {
+                            const owner = (
+                              Array.isArray(playersAll) ? playersAll : []
+                            ).find((p) => p && p.accountUid === organizerUid);
+                            const uname2 =
+                              (owner && owner.accountUsername) || "";
+                            if (uname2) organizerUsername = String(uname2);
+                          } catch {}
+                        }
+                        if (organizerUsername) {
+                          payToLine = `\npay to @${escapeHtml(
+                            organizerUsername
+                          )}`;
+                        }
                       }
-                      if (organizerUsername) {
-                        paymentSection += `\npay to @${escapeHtml(
-                          organizerUsername
-                        )}`;
-                      }
+                      if (payToLine) paymentSection += payToLine;
                     } catch {}
                   }
                 } catch {}

@@ -469,6 +469,7 @@ function SessionList({ onOpen }: { onOpen: (id: string) => void }) {
   const [requestPayment, setRequestPayment] = useState<boolean>(false);
   const [courtCost, setCourtCost] = useState<string>("0");
   const [shuttleCost, setShuttleCost] = useState<string>("0");
+  const [paymentRecipient, setPaymentRecipient] = useState<string>("");
   const me = auth.currentUser?.uid || null;
 
   const nowIsoDate = new Date().toISOString().slice(0, 10);
@@ -556,6 +557,7 @@ function SessionList({ onOpen }: { onOpen: (id: string) => void }) {
                         setRequestPayment(false);
                         setCourtCost("0");
                         setShuttleCost("0");
+                        setPaymentRecipient("");
                       }}
                       disabled={(ss.courts || []).some((c) => c.inProgress)}
                       className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-1.5 text-amber-700 disabled:opacity-50"
@@ -637,6 +639,8 @@ function SessionList({ onOpen }: { onOpen: (id: string) => void }) {
                         Number.isFinite(cc) && cc >= 0 ? cc : undefined,
                       shuttleCost:
                         Number.isFinite(sc) && sc >= 0 ? sc : undefined,
+                      recipientPlayerId:
+                        (paymentRecipient || "").trim() || undefined,
                     });
                   } catch {}
                   const latest = (useStore.getState().sessions || []).find(
@@ -664,6 +668,15 @@ function SessionList({ onOpen }: { onOpen: (id: string) => void }) {
           }}
           organizerUid={auth.currentUser?.uid || null}
           sessionId={endFor || ""}
+          players={(() => {
+            const ss = (useStore.getState().sessions || []).find(
+              (s) => s.id === endFor
+            );
+            const arr = Array.isArray(ss?.players) ? ss!.players : [];
+            return arr.map((p) => ({ id: p.id, name: p.name }));
+          })()}
+          paymentRecipientPlayerId={paymentRecipient}
+          onPaymentRecipientChange={setPaymentRecipient}
           unlinkedPlayers={(() => {
             const ss = (useStore.getState().sessions || []).find(
               (s) => s.id === endFor
@@ -683,6 +696,12 @@ function SessionList({ onOpen }: { onOpen: (id: string) => void }) {
               ss &&
               ss.players.some((p) => p.accountUid === myUid)
             );
+          })()}
+          showPaymentOptions={(() => {
+            const ss = (useStore.getState().sessions || []).find(
+              (s) => s.id === endFor
+            );
+            return !!(ss && (ss as any).clubId);
           })()}
         />
       )}
