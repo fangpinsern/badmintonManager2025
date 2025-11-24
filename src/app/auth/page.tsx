@@ -97,47 +97,6 @@ function AuthPageInner() {
             setNeedsUsername(false);
           }}
         />
-        <p>{JSON.stringify(window)}</p>
-        <p>
-          {(window as any).TelegramWebview
-            ? "Found Telegram Webview"
-            : "No Telegram Webview"}
-        </p>
-        <p>
-          {(window as any).TelegramWebviewProxy
-            ? "Found Telegram Webview Proxy"
-            : "No Telegram Webview Proxy"}
-        </p>
-        <p>
-          {(window as any).TelegramWebviewProxyProto
-            ? "Found Telegram Webview Proxy Proto"
-            : "No Telegram Webview Proxy Proto"}
-        </p>
-        <p>
-          {(window as any).TelegramWebviewProxyProto.name
-            ? "Found Telegram Webview Proxy Proto Name"
-            : "No Telegram Webview Proxy Proto Name"}
-        </p>
-        <p>
-          {(window as any).TelegramWebviewProxyProto.version
-            ? "Found Telegram Webview Proxy Proto Version"
-            : "No Telegram Webview Proxy Proto Version"}
-        </p>
-        <p>
-          {(window as any).TelegramWebviewProxyProto.author
-            ? "Found Telegram Webview Proxy Proto Author"
-            : "No Telegram Webview Proxy Proto Author"}
-        </p>
-        <p>
-          {(window as any).TelegramWebviewProxyProto.authorEmail
-            ? "Found Telegram Webview Proxy Proto Author Email"
-            : "No Telegram Webview Proxy Proto Author Email"}
-        </p>
-        <p>
-          {(window as any).TelegramWebviewProxyProto.authorUrl
-            ? "Found Telegram Webview Proxy Proto Author Url"
-            : "No Telegram Webview Proxy Proto Author Url"}
-        </p>
       </main>
     );
   }
@@ -163,6 +122,47 @@ function AuthPageInner() {
           </button>
         </div>
       </Card>
+      <p>{JSON.stringify(window)}</p>
+      <p>
+        {(window as any).TelegramWebview
+          ? "Found Telegram Webview"
+          : "No Telegram Webview"}
+      </p>
+      <p>
+        {(window as any).TelegramWebviewProxy
+          ? "Found Telegram Webview Proxy"
+          : "No Telegram Webview Proxy"}
+      </p>
+      <p>
+        {(window as any).TelegramWebviewProxyProto
+          ? "Found Telegram Webview Proxy Proto"
+          : "No Telegram Webview Proxy Proto"}
+      </p>
+      <p>
+        {(window as any).TelegramWebviewProxyProto.name
+          ? "Found Telegram Webview Proxy Proto Name"
+          : "No Telegram Webview Proxy Proto Name"}
+      </p>
+      <p>
+        {(window as any).TelegramWebviewProxyProto.version
+          ? "Found Telegram Webview Proxy Proto Version"
+          : "No Telegram Webview Proxy Proto Version"}
+      </p>
+      <p>
+        {(window as any).TelegramWebviewProxyProto.author
+          ? "Found Telegram Webview Proxy Proto Author"
+          : "No Telegram Webview Proxy Proto Author"}
+      </p>
+      <p>
+        {(window as any).TelegramWebviewProxyProto.authorEmail
+          ? "Found Telegram Webview Proxy Proto Author Email"
+          : "No Telegram Webview Proxy Proto Author Email"}
+      </p>
+      <p>
+        {(window as any).TelegramWebviewProxyProto.authorUrl
+          ? "Found Telegram Webview Proxy Proto Author Url"
+          : "No Telegram Webview Proxy Proto Author Url"}
+      </p>
     </main>
   );
 }
