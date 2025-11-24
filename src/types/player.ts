@@ -44,6 +44,10 @@ type Game = {
   endedAt: string; // ISO timestamp
   startedAt?: string; // ISO timestamp
   durationMs?: number; // derived when known
+  // Optional gameplay effort metadata
+  intensity?: "low" | "mid" | "high";
+  /** Estimated calories burned per player for this game (kcal) */
+  caloriesEstimate?: number;
   sideA: string[]; // player IDs on side A
   sideB: string[]; // player IDs on side B
   sideAPlayers?: { id: string; name: string }[]; // legacy snapshot of names at game end

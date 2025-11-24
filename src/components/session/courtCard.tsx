@@ -127,7 +127,10 @@ function CourtCard({
     return set;
   }, [session.courts]);
 
-  const onSave = () => {
+  const onSave = (extras?: {
+    intensity?: "low" | "mid" | "high";
+    caloriesEstimate?: number;
+  }) => {
     const aStr = scoreA.trim();
     const bStr = scoreB.trim();
     const a = Number(aStr);
@@ -143,7 +146,11 @@ function CourtCard({
         ? "co-organizer"
         : undefined
       : undefined;
-    endGame(session.id, idx, a, b, uid, role as any, pendingUmpireOpts);
+    endGame(session.id, idx, a, b, uid, role as any, {
+      ...(pendingUmpireOpts || {}),
+      intensity: extras?.intensity,
+      caloriesEstimate: extras?.caloriesEstimate,
+    });
     setScoreA("");
     setScoreB("");
     setOpen(false);
@@ -908,6 +915,7 @@ function CourtCard({
         onChangeB={setScoreB}
         onCancel={() => setOpen(false)}
         onSave={onSave}
+        startedAt={court.startedAt}
         onVoid={() => {
           const uid = auth.currentUser?.uid || null;
           const role = uid

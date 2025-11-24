@@ -967,6 +967,42 @@ function SessionManager({ onBack }: { onBack: () => void }) {
               <div className="text-xs text-gray-500">Total games</div>
               <div className="font-medium">{session.stats.totalGames}</div>
             </div>
+            {(() => {
+              try {
+                const uid = auth.currentUser?.uid || null;
+                if (!uid) return null;
+                const myIds = (session.players || [])
+                  .filter((p) => p.accountUid === uid)
+                  .map((p) => p.id);
+                if (!myIds.length) return null;
+                const nonVoided = (session.games || []).filter(
+                  (g) => !g.voided && typeof g.caloriesEstimate === "number"
+                );
+                const seen = new Set<string>();
+                let sum = 0;
+                for (const g of nonVoided) {
+                  const ids =
+                    (g.players && g.players.length
+                      ? g.players
+                      : [...(g.sideA || []), ...(g.sideB || [])]) || [];
+                  const participated = myIds.some((id) => ids.includes(id));
+                  if (participated && !seen.has(g.id)) {
+                    sum += Number(g.caloriesEstimate || 0);
+                    seen.add(g.id);
+                  }
+                }
+                return (
+                  <div className="rounded-lg bg-orange-50 p-2">
+                    <div className="text-xs text-orange-700">
+                      Your estimated calories
+                    </div>
+                    <div className="font-medium">{sum} kcal</div>
+                  </div>
+                );
+              } catch {
+                return null;
+              }
+            })()}
             {typeof session.stats.shuttlesUsed !== "undefined" && (
               <div className="rounded-lg bg-lime-50 p-2">
                 <div className="text-xs text-lime-700">Shuttlecocks used</div>
@@ -1796,19 +1832,26 @@ function SessionManager({ onBack }: { onBack: () => void }) {
                         Voided
                       </span>
                     ) : (
-                      <>
-                        Score: {g.scoreA}–{g.scoreB} · Winner: {g.winner}
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="whitespace-nowrap">
+                          Score: {g.scoreA}–{g.scoreB} · Winner: {g.winner}
+                        </span>
                         {g.endedByRole && (
-                          <span className="ml-2 rounded-full bg-gray-100 px-2 py-0.5 text-[10px] text-gray-700">
+                          <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[10px] text-gray-700 whitespace-nowrap">
                             Ended By{" "}
                             {g.endedByRole === "organizer"
                               ? "Organizer"
                               : "Co-organizer"}
                           </span>
                         )}
+                        {typeof g.caloriesEstimate === "number" && (
+                          <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[10px] text-gray-700 whitespace-nowrap">
+                            Est. {g.caloriesEstimate} kcal
+                          </span>
+                        )}
                         {selected && (playedA || playedB) && !g.voided && (
                           <span
-                            className={`ml-2 rounded px-2 py-0.5 text-[10px] ${
+                            className={`whitespace-nowrap rounded px-2 py-0.5 text-[10px] ${
                               resultForSelected === "win"
                                 ? "bg-green-50 text-green-700"
                                 : resultForSelected === "loss"
@@ -1819,7 +1862,7 @@ function SessionManager({ onBack }: { onBack: () => void }) {
                             {resultForSelected}
                           </span>
                         )}
-                      </>
+                      </div>
                     )}
                   </div>
                   <div className="mt-1 text-xs text-gray-500 truncate">

@@ -135,7 +135,7 @@ function GameDetailsModal({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div className="absolute inset-0 bg-black/40" onClick={onClose}></div>
-      <div className="relative w-full max-w-md rounded-2xl bg-white p-4 shadow-lg mx-2">
+      <div className="relative w-full max-w-md rounded-2xl bg-white p-4 shadow-lg mx-4">
         <div className="mb-2 flex items-center justify-between">
           <div className="text-base font-semibold">Game details</div>
           <button
@@ -155,6 +155,17 @@ function GameDetailsModal({
         <div className="mb-2 text-sm">
           Score: {game.scoreA}–{game.scoreB} · Winner: {game.winner}
         </div>
+        {(game.intensity || typeof game.caloriesEstimate === "number") && (
+          <div className="mb-2 text-xs text-gray-700">
+            {game.intensity ? `Intensity: ${game.intensity}` : null}
+            {game.intensity && typeof game.caloriesEstimate === "number"
+              ? " · "
+              : ""}
+            {typeof game.caloriesEstimate === "number"
+              ? `Your est. calories: ${game.caloriesEstimate} kcal`
+              : null}
+          </div>
+        )}
         {insights?.summary && (
           <div className="mb-3 flex flex-wrap items-center gap-2">
             {typeof insights.summary.avgRallyDurationMs === "number" && (

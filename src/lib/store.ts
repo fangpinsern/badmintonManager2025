@@ -60,6 +60,8 @@ interface StoreState {
           attributedTo?: { playerId?: string };
         };
       }[];
+      intensity?: "low" | "mid" | "high";
+      caloriesEstimate?: number;
     }
   ) => void;
   voidGame: (
@@ -495,6 +497,8 @@ const useStore = create<StoreState>()((set, _get) => ({
           endedAt: endedAt.toISOString(),
           startedAt: target.startedAt,
           durationMs,
+          intensity: opts?.intensity,
+          caloriesEstimate: opts?.caloriesEstimate,
           sideA,
           sideB,
           sideAPlayers: sideA.map((pid) => ({
