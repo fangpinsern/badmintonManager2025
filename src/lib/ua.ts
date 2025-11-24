@@ -11,8 +11,7 @@ export function isTelegramInAppBrowser(): boolean {
       typeof window !== "undefined" &&
       (!!(window as any)?.Telegram?.WebApp ||
         typeof (window as any).TelegramWebview !== "undefined" ||
-        (window as any).TelegramWebviewProxy !== "undefined");
-    // User agent check
+        !!(window as any).TelegramWebviewProxy);
     const ua = (typeof navigator !== "undefined" && navigator.userAgent) || "";
     const hasTelegramUA = /Telegram/i.test(ua);
     return hasTelegramWebApp || hasTelegramUA;
