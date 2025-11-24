@@ -253,11 +253,11 @@ function CourtCard({
                   onClick={() => {
                     // Gate to PWA
                     try {
-                      // const installed = detectInstalledPwa();
-                      // if (!installed) {
-                      //   setShowInstallModal(true);
-                      //   return;
-                      // }
+                      const installed = detectInstalledPwa();
+                      if (!installed) {
+                        setShowInstallModal(true);
+                        return;
+                      }
                     } catch {}
                     // Enforce single active umpire per court
                     try {
