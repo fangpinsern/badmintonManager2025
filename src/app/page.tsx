@@ -26,6 +26,7 @@ import UsernameModal from "@/components/UsernameModal";
 import { subscribeUserProfile, claimUsername } from "@/lib/firestoreSessions";
 import Leaderboard from "@/components/Leaderboard";
 import { deployedAtIso } from "../buildInfo";
+import FaqContent from "@/components/FaqContent";
 
 /**
  * Single-file Next.js page (drop into app/page.tsx)
@@ -222,6 +223,31 @@ function Page() {
 
       {!authReady && <LoadingScreen message="Loading..." />}
       {authReady && !user && (
+        <section className="mx-auto mt-4 flex flex-col items-center justify-center rounded-2xl bg-gradient-to-b from-gray-50 to-white px-6 py-10 text-center md:py-14">
+          <h1 className="max-w-3xl text-2xl font-bold leading-tight text-gray-900 md:text-3xl">
+            Create and Manage Your Own Badminton Community
+          </h1>
+          <p className="mt-3 max-w-2xl text-sm text-gray-600 md:text-base">
+            Join over 30 badminton players in recording matches, keep track of
+            progress and improve as a player
+          </p>
+          <div className="mt-6 flex flex-col items-center gap-3 sm:flex-row">
+            <Link
+              href="/auth"
+              className="w-full rounded-xl bg-black px-5 py-2.5 text-sm font-medium text-white sm:w-auto"
+            >
+              Join BM25 Now
+            </Link>
+            <Link
+              href="/guide"
+              className="w-full rounded-xl border border-gray-300 px-5 py-2.5 text-center text-sm font-medium text-gray-800 sm:w-auto"
+            >
+              Install The App
+            </Link>
+          </div>
+        </section>
+      )}
+      {/* {authReady && !user && (
         <Card>
           <div className="flex items-center justify-between">
             <div>
@@ -240,10 +266,28 @@ function Page() {
             </button>
           </div>
         </Card>
-      )}
+      )} */}
 
       {authReady && !user && (
         <div className="mt-4 space-y-4">
+          <Card>
+            <h2 className="font-semibold text-center text-3xl font-bold leading-tight">
+              2+
+            </h2>
+            <p className="text-center">CLUBS WORLDWIDE</p>
+          </Card>
+          <Card>
+            <h2 className="font-semibold text-center text-3xl font-bold leading-tight">
+              30+
+            </h2>
+            <p className="text-center">MEMBERS</p>
+          </Card>
+          <Card>
+            <h2 className="font-semibold text-center text-3xl font-bold leading-tight">
+              100+
+            </h2>
+            <p className="text-center">MATCHES LOGGED</p>
+          </Card>
           <Card>
             <h2 className="text-base font-semibold">What you can do</h2>
             <ul className="mt-2 list-disc pl-5 text-sm text-gray-700">
@@ -322,6 +366,9 @@ function Page() {
             </div>
           </Card>
           <Leaderboard />
+          <Card>
+            <FaqContent />
+          </Card>
           <Card>
             <h2 className="text-base font-semibold">Privacy & data</h2>
             <ul className="mt-2 list-disc pl-5 text-sm text-gray-700">
