@@ -59,7 +59,7 @@ export default function RatingsCard({
       <div className="flex items-center justify-between">
         <h2 className="text-base font-semibold">Ratings</h2>
         <Link
-          href="/faq"
+          href="/ratings"
           className="text-[11px] text-gray-600 underline underline-offset-2"
         >
           How this works
