@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Card } from "@/components/layout";
 import { getUserProfile } from "@/lib/firestoreSessions";
+import Link from "next/link";
 
 type EloBlock = {
   R?: number;
@@ -87,9 +88,17 @@ export default function ClubEloLeaderboard({
 
   return (
     <Card className={className}>
-      <div className="flex items-center justify-between">
-        <h2 className="text-base font-semibold">{title}</h2>
-        <ModeToggle mode={mode} onChange={setMode} />
+      <div>
+        <div className="flex items-center justify-between">
+          <h2 className="text-base font-semibold">{title}</h2>
+          <ModeToggle mode={mode} onChange={setMode} />
+        </div>
+        <Link
+          href="/ratings"
+          className="text-[11px] text-gray-600 underline underline-offset-2"
+        >
+          How this works
+        </Link>
       </div>
       {loading ? (
         <div className="mt-2 text-xs text-gray-600">Loading…</div>

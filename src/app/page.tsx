@@ -27,6 +27,11 @@ import { subscribeUserProfile, claimUsername } from "@/lib/firestoreSessions";
 import Leaderboard from "@/components/Leaderboard";
 import { deployedAtIso } from "../buildInfo";
 import FaqContent from "@/components/FaqContent";
+import {
+  subscribeMyClubs,
+  createClubSessionFeedMessage,
+  type FirestoreClub,
+} from "@/lib/firestoreClubs";
 
 /**
  * Single-file Next.js page (drop into app/page.tsx)
@@ -397,8 +402,7 @@ function Page() {
       )}
 
       {user && !selected && (
-        <div className="space-y-6">
-          <SessionForm onCreated={(id) => router.push(`/session/${id}`)} />
+        <div className="space-y-4">
           <SessionList onOpen={setSelectedSessionId} />
           <Leaderboard />
         </div>
@@ -431,6 +435,272 @@ export default function PageWithSearchParams() {
 // -----------------------------
 // Session Creation & List
 // -----------------------------
+
+function CreateSessionWizard({
+  onCreated,
+}: {
+  onCreated: (sessionId: string) => void;
+}) {
+  const createSession = useStore((s) => s.createSession);
+  const [open, setOpen] = useState<boolean>(false);
+  const [stage, setStage] = useState<"type" | "club" | "details">("type");
+  const [isClub, setIsClub] = useState<boolean | null>(null);
+  const [clubs, setClubs] = useState<FirestoreClub[]>([]);
+  const [selectedClubId, setSelectedClubId] = useState<string | null>(null);
+  const [busy, setBusy] = useState<boolean>(false);
+  const [error, setError] = useState<string | null>(null);
+  const me = auth.currentUser?.uid || null;
+
+  const [date, setDate] = useState<string>(
+    new Date().toISOString().slice(0, 10)
+  );
+  const [time, setTime] = useState<string>("19:00");
+  const [numCourts, setNumCourts] = useState<string>("3");
+  const [venueName, setVenueName] = useState<string>("");
+
+  useEffect(() => {
+    // Expose a global opener to avoid prop-drilling state through Page
+    (window as any).__openCreateSessionWizard = () => {
+      setOpen(true);
+      setStage("type");
+      setIsClub(null);
+      setSelectedClubId(null);
+      setError(null);
+      setBusy(false);
+      setDate(new Date().toISOString().slice(0, 10));
+      setTime("19:00");
+      setNumCourts("3");
+      setVenueName("");
+    };
+    return () => {
+      try {
+        delete (window as any).__openCreateSessionWizard;
+      } catch {}
+    };
+  }, []);
+
+  // Subscribe to user's clubs only when needed
+  useEffect(() => {
+    if (!open || stage !== "club" || !me) return;
+    const unsub = subscribeMyClubs(me, (arr) => setClubs(arr || []));
+    return () => unsub && unsub();
+  }, [open, stage, me]);
+
+  function close() {
+    if (busy) return;
+    setOpen(false);
+  }
+
+  async function handleCreate() {
+    setError(null);
+    const desired = Math.max(1, Number(numCourts || 1));
+    if (desired > 10) {
+      setError("Courts per session are limited to 10.");
+      return;
+    }
+    try {
+      setBusy(true);
+      const idCreated = createSession({
+        date,
+        time,
+        numCourts: desired,
+        venue: (() => {
+          const n = (venueName || "").trim();
+          return n ? { name: n } : undefined;
+        })(),
+        clubId: isClub ? selectedClubId || undefined : undefined,
+      });
+      // If club session, post a feed message and tag the session with message id
+      if (isClub && selectedClubId && me) {
+        try {
+          const msgId = await createClubSessionFeedMessage(
+            selectedClubId,
+            me,
+            idCreated
+          );
+          const current = (useStore.getState().sessions || []).find(
+            (s) => s.id === idCreated
+          );
+          if (current) {
+            const withTag = { ...current, clubFeedMessageId: msgId } as any;
+            await saveSession(idCreated, withTag);
+          }
+        } catch (e) {
+          // best-effort; ignore feed failures
+          console.warn("Failed to create club feed message", e);
+        }
+      }
+      setOpen(false);
+      onCreated(idCreated);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!open) return null;
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      <div className="absolute inset-0 bg-black/40" onClick={close}></div>
+      <div className="relative w-full max-w-sm rounded-2xl bg-white p-4 shadow-lg">
+        {stage === "type" && (
+          <div className="space-y-4">
+            <div className="text-base font-semibold">Create session</div>
+            <div className="text-sm text-gray-700">Is this a club session?</div>
+            <div className="flex gap-2">
+              <button
+                className="flex-1 rounded-xl border px-3 py-2 text-sm"
+                onClick={() => {
+                  setIsClub(true);
+                  setStage("club");
+                }}
+              >
+                Club session
+              </button>
+              <button
+                className="flex-1 rounded-xl border px-3 py-2 text-sm"
+                onClick={() => {
+                  setIsClub(false);
+                  setStage("details");
+                }}
+              >
+                Personal session
+              </button>
+            </div>
+            <div className="flex justify-end gap-2">
+              <button
+                className="rounded-xl px-3 py-2 text-sm text-gray-700"
+                onClick={close}
+                disabled={busy}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+
+        {stage === "club" && (
+          <div className="space-y-3">
+            <div className="mb-1 text-base font-semibold">Select club</div>
+            {clubs.length === 0 ? (
+              <div className="rounded border bg-gray-50 p-3 text-sm text-gray-700">
+                No clubs found.
+                <div className="mt-2">
+                  <a
+                    href="/clubs"
+                    className="text-blue-600 underline underline-offset-2"
+                  >
+                    Go to Clubs
+                  </a>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {clubs.map((c) => (
+                  <button
+                    key={c.id}
+                    onClick={() => setSelectedClubId(c.id)}
+                    className={`w-full rounded-xl border px-3 py-2 text-left text-sm ${
+                      selectedClubId === c.id
+                        ? "border-blue-300 bg-blue-50 text-blue-700"
+                        : "border-gray-300"
+                    }`}
+                  >
+                    {c.name || c.id}
+                  </button>
+                ))}
+              </div>
+            )}
+            <div className="flex justify-between">
+              <button
+                className="rounded-xl px-3 py-2 text-sm text-gray-700"
+                onClick={() => setStage("type")}
+                disabled={busy}
+              >
+                Back
+              </button>
+              <div className="flex gap-2">
+                <button
+                  className="rounded-xl px-3 py-2 text-sm text-gray-700"
+                  onClick={close}
+                  disabled={busy}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="rounded-xl bg-black px-3 py-2 text-sm text-white disabled:opacity-50"
+                  onClick={() => setStage("details")}
+                  disabled={!selectedClubId || busy}
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {stage === "details" && (
+          <div className="space-y-3">
+            <div className="mb-1 text-base font-semibold">Session details</div>
+            <div className="grid grid-cols-1 gap-3">
+              <Input
+                type="date"
+                label="Date"
+                value={date}
+                onChange={(e) => setDate(e.target.value)}
+              />
+              <Input
+                type="time"
+                label="Time"
+                value={time}
+                onChange={(e) => setTime(e.target.value)}
+              />
+              <Input
+                type="number"
+                label="# of courts"
+                min={1}
+                inputMode="numeric"
+                value={numCourts}
+                onChange={(e) => setNumCourts(e.target.value)}
+              />
+              <Input
+                label="Venue"
+                placeholder="e.g. ABC Sports Hall"
+                value={venueName}
+                onChange={(e) => setVenueName(e.target.value)}
+              />
+              {error && <div className="text-xs text-red-600">{error}</div>}
+            </div>
+            <div className="flex justify-between">
+              <button
+                className="rounded-xl px-3 py-2 text-sm text-gray-700"
+                onClick={() => setStage(isClub ? "club" : "type")}
+                disabled={busy}
+              >
+                Back
+              </button>
+              <div className="flex gap-2">
+                <button
+                  className="rounded-xl px-3 py-2 text-sm text-gray-700"
+                  onClick={close}
+                  disabled={busy}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="rounded-xl bg-black px-3 py-2 text-sm text-white disabled:opacity-50"
+                  onClick={handleCreate}
+                  disabled={busy}
+                >
+                  {busy ? "Creating..." : "Create"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
 
 function SessionForm({
   onCreated,
@@ -533,8 +803,8 @@ function SessionList({ onOpen }: { onOpen: (id: string) => void }) {
   const closed = useMemo(() => sorted.filter((s) => !!s.ended), [sorted]);
 
   // pagination (10 per page)
-  const [upShown, setUpShown] = useState<number>(10);
-  const [clShown, setClShown] = useState<number>(10);
+  const [upShown, setUpShown] = useState<number>(5);
+  const [clShown, setClShown] = useState<number>(5);
   const list = tab === "upcoming" ? upcoming : closed;
   const shown = tab === "upcoming" ? upShown : clShown;
   const canSeeMore = list.length > shown;
@@ -549,212 +819,227 @@ function SessionList({ onOpen }: { onOpen: (id: string) => void }) {
   }
 
   return (
-    <div className="space-y-3">
-      <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-        <div className="mb-1 flex items-center gap-2">
-          <button
-            onClick={() => setTab("upcoming")}
-            className={`rounded-xl border px-3 py-1.5 text-xs ${
-              tab === "upcoming"
-                ? "border-blue-300 bg-blue-50 text-blue-700"
-                : "border-gray-300"
-            }`}
-          >
-            Upcoming
-          </button>
-          <button
-            onClick={() => setTab("closed")}
-            className={`rounded-xl border px-3 py-1.5 text-xs ${
-              tab === "closed"
-                ? "border-gray-400 bg-gray-100 text-gray-700"
-                : "border-gray-300"
-            }`}
-          >
-            Closed
-          </button>
-        </div>
-      </div>
-
-      {display.length == 0 ? (
-        <Card>
-          <div className="text-gray-600">
-            No sessions yet. Create one above.
+    <Card>
+      <h2 className="text-base font-semibold">Sessions</h2>
+      <div className="space-y-3 mt-2">
+        <div className="flex gap-2 items-center justify-between">
+          <div className="mb-1 flex items-center gap-2">
+            <button
+              onClick={() => setTab("upcoming")}
+              className={`rounded-xl border px-3 py-1.5 text-xs ${
+                tab === "upcoming"
+                  ? "border-blue-300 bg-blue-50 text-blue-700"
+                  : "border-gray-300"
+              }`}
+            >
+              Upcoming
+            </button>
+            <button
+              onClick={() => setTab("closed")}
+              className={`rounded-xl border px-3 py-1.5 text-xs ${
+                tab === "closed"
+                  ? "border-gray-400 bg-gray-100 text-gray-700"
+                  : "border-gray-300"
+              }`}
+            >
+              Closed
+            </button>
           </div>
-        </Card>
-      ) : (
-        display.map((ss) => (
-          <UnifiedSessionCard
-            key={ss.id}
-            session={ss}
-            onOpen={(id) => {
-              onOpen(id);
-              router.push(`/session/${id}`);
+          <div className="mb-1 flex items-center">
+            <button
+              onClick={() => (window as any).__openCreateSessionWizard?.()}
+              className="rounded-xl bg-black px-3 py-1.5 text-xs text-white"
+            >
+              Create session +
+            </button>
+          </div>
+        </div>
+        <CreateSessionWizard
+          onCreated={(id) => router.push(`/session/${id}`)}
+        />
+
+        {display.length == 0 ? (
+          <Card>
+            <div className="text-gray-600">
+              No sessions yet. Create one above.
+            </div>
+          </Card>
+        ) : (
+          display.map((ss) => (
+            <UnifiedSessionCard
+              key={ss.id}
+              session={ss}
+              onOpen={(id) => {
+                onOpen(id);
+                router.push(`/session/${id}`);
+              }}
+              rightActions={(() => {
+                const owner =
+                  (window as any).__sessionOwners?.get?.(ss.id) || null;
+                const isOrganizer = owner && me ? owner === me : false;
+                if (!isOrganizer) return null;
+                return (
+                  <>
+                    {!ss.ended && isOrganizer && (
+                      <button
+                        onClick={() => {
+                          if ((ss.courts || []).some((c) => c.inProgress))
+                            return;
+                          setEndFor(ss.id);
+                          setShuttles("0");
+                          setRequestPayment(false);
+                          setCourtCost("0");
+                          setShuttleCost("0");
+                          setPaymentRecipient("");
+                        }}
+                        disabled={(ss.courts || []).some((c) => c.inProgress)}
+                        className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-1.5 text-amber-700 disabled:opacity-50"
+                      >
+                        End
+                      </button>
+                    )}
+                    {isOrganizer && (
+                      <button
+                        onClick={() => {
+                          if (confirm("Delete this session?"))
+                            deleteSession(ss.id);
+                        }}
+                        className="rounded-xl border border-red-200 bg-red-50 px-3 py-1.5 text-red-600"
+                      >
+                        Delete
+                      </button>
+                    )}
+                  </>
+                );
+              })()}
+            />
+          ))
+        )}
+
+        {canSeeMore && (
+          <div className="flex justify-center">
+            <button
+              className="rounded-xl border px-3 py-1.5 text-xs"
+              onClick={() =>
+                tab === "upcoming"
+                  ? setUpShown((n) => n + 10)
+                  : setClShown((n) => n + 10)
+              }
+            >
+              See more
+            </button>
+          </div>
+        )}
+
+        {!!endFor && (
+          <EndSessionModal
+            title={
+              endFor
+                ? `End ${formatSessionTitle(
+                    (tab === "upcoming" ? upcoming : closed).find(
+                      (s) => s.id === endFor
+                    )!
+                  )}?`
+                : "End session?"
+            }
+            shuttles={shuttles}
+            onShuttlesChange={setShuttles}
+            courtCost={courtCost}
+            onCourtCostChange={setCourtCost}
+            shuttleCost={shuttleCost}
+            onShuttleCostChange={setShuttleCost}
+            requestPayment={requestPayment}
+            onRequestPaymentChange={setRequestPayment}
+            onCancel={() => setEndFor(null)}
+            onConfirm={() => {
+              const num = Number(shuttles);
+              if (endFor)
+                endSession(
+                  endFor,
+                  Number.isFinite(num) && num >= 0 ? Math.floor(num) : undefined
+                );
+              if (endFor) {
+                (async () => {
+                  try {
+                    // Persist optional payment request before saving
+                    try {
+                      const enabled = !!requestPayment;
+                      const cc = Number(courtCost);
+                      const sc = Number(shuttleCost);
+                      (useStore.getState() as any).setPaymentRequest?.(endFor, {
+                        enabled,
+                        courtCost:
+                          Number.isFinite(cc) && cc >= 0 ? cc : undefined,
+                        shuttleCost:
+                          Number.isFinite(sc) && sc >= 0 ? sc : undefined,
+                        recipientPlayerId:
+                          (paymentRecipient || "").trim() || undefined,
+                      });
+                    } catch {}
+                    const latest = (useStore.getState().sessions || []).find(
+                      (s) => s.id === endFor
+                    );
+                    if (latest) await saveSession(endFor, latest);
+                  } catch {}
+                  const res = await triggerStatsRecalc(
+                    auth.currentUser?.uid,
+                    endFor,
+                    {
+                      fireAndForget: false,
+                    }
+                  );
+                  if (!res || !res.ok) {
+                    await recordStatsRecalcFailure(
+                      auth.currentUser?.uid || null,
+                      endFor,
+                      res ? res.status : "fetch-error"
+                    );
+                  }
+                })();
+              }
+              setEndFor(null);
             }}
-            rightActions={(() => {
-              const owner =
-                (window as any).__sessionOwners?.get?.(ss.id) || null;
-              const isOrganizer = owner && me ? owner === me : false;
-              if (!isOrganizer) return null;
-              return (
-                <>
-                  {!ss.ended && isOrganizer && (
-                    <button
-                      onClick={() => {
-                        if ((ss.courts || []).some((c) => c.inProgress)) return;
-                        setEndFor(ss.id);
-                        setShuttles("0");
-                        setRequestPayment(false);
-                        setCourtCost("0");
-                        setShuttleCost("0");
-                        setPaymentRecipient("");
-                      }}
-                      disabled={(ss.courts || []).some((c) => c.inProgress)}
-                      className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-1.5 text-amber-700 disabled:opacity-50"
-                    >
-                      End
-                    </button>
-                  )}
-                  {isOrganizer && (
-                    <button
-                      onClick={() => {
-                        if (confirm("Delete this session?"))
-                          deleteSession(ss.id);
-                      }}
-                      className="rounded-xl border border-red-200 bg-red-50 px-3 py-1.5 text-red-600"
-                    >
-                      Delete
-                    </button>
-                  )}
-                </>
+            organizerUid={auth.currentUser?.uid || null}
+            sessionId={endFor || ""}
+            players={(() => {
+              const ss = (useStore.getState().sessions || []).find(
+                (s) => s.id === endFor
+              );
+              const arr = Array.isArray(ss?.players) ? ss!.players : [];
+              return arr.map((p) => ({ id: p.id, name: p.name }));
+            })()}
+            paymentRecipientPlayerId={paymentRecipient}
+            onPaymentRecipientChange={setPaymentRecipient}
+            unlinkedPlayers={(() => {
+              const ss = (useStore.getState().sessions || []).find(
+                (s) => s.id === endFor
+              );
+              const arr = Array.isArray(ss?.players) ? ss!.players : [];
+              return arr
+                .filter((p) => !p.accountUid)
+                .map((p) => ({ id: p.id, name: p.name }));
+            })()}
+            organizerLinked={(() => {
+              const ss = (useStore.getState().sessions || []).find(
+                (s) => s.id === endFor
+              );
+              const myUid = auth.currentUser?.uid;
+              return !!(
+                myUid &&
+                ss &&
+                ss.players.some((p) => p.accountUid === myUid)
               );
             })()}
-          />
-        ))
-      )}
-
-      {canSeeMore && (
-        <div className="flex justify-center">
-          <button
-            className="rounded-xl border px-3 py-1.5 text-xs"
-            onClick={() =>
-              tab === "upcoming"
-                ? setUpShown((n) => n + 10)
-                : setClShown((n) => n + 10)
-            }
-          >
-            See more
-          </button>
-        </div>
-      )}
-
-      {!!endFor && (
-        <EndSessionModal
-          title={
-            endFor
-              ? `End ${formatSessionTitle(
-                  (tab === "upcoming" ? upcoming : closed).find(
-                    (s) => s.id === endFor
-                  )!
-                )}?`
-              : "End session?"
-          }
-          shuttles={shuttles}
-          onShuttlesChange={setShuttles}
-          courtCost={courtCost}
-          onCourtCostChange={setCourtCost}
-          shuttleCost={shuttleCost}
-          onShuttleCostChange={setShuttleCost}
-          requestPayment={requestPayment}
-          onRequestPaymentChange={setRequestPayment}
-          onCancel={() => setEndFor(null)}
-          onConfirm={() => {
-            const num = Number(shuttles);
-            if (endFor)
-              endSession(
-                endFor,
-                Number.isFinite(num) && num >= 0 ? Math.floor(num) : undefined
+            showPaymentOptions={(() => {
+              const ss = (useStore.getState().sessions || []).find(
+                (s) => s.id === endFor
               );
-            if (endFor) {
-              (async () => {
-                try {
-                  // Persist optional payment request before saving
-                  try {
-                    const enabled = !!requestPayment;
-                    const cc = Number(courtCost);
-                    const sc = Number(shuttleCost);
-                    (useStore.getState() as any).setPaymentRequest?.(endFor, {
-                      enabled,
-                      courtCost:
-                        Number.isFinite(cc) && cc >= 0 ? cc : undefined,
-                      shuttleCost:
-                        Number.isFinite(sc) && sc >= 0 ? sc : undefined,
-                      recipientPlayerId:
-                        (paymentRecipient || "").trim() || undefined,
-                    });
-                  } catch {}
-                  const latest = (useStore.getState().sessions || []).find(
-                    (s) => s.id === endFor
-                  );
-                  if (latest) await saveSession(endFor, latest);
-                } catch {}
-                const res = await triggerStatsRecalc(
-                  auth.currentUser?.uid,
-                  endFor,
-                  {
-                    fireAndForget: false,
-                  }
-                );
-                if (!res || !res.ok) {
-                  await recordStatsRecalcFailure(
-                    auth.currentUser?.uid || null,
-                    endFor,
-                    res ? res.status : "fetch-error"
-                  );
-                }
-              })();
-            }
-            setEndFor(null);
-          }}
-          organizerUid={auth.currentUser?.uid || null}
-          sessionId={endFor || ""}
-          players={(() => {
-            const ss = (useStore.getState().sessions || []).find(
-              (s) => s.id === endFor
-            );
-            const arr = Array.isArray(ss?.players) ? ss!.players : [];
-            return arr.map((p) => ({ id: p.id, name: p.name }));
-          })()}
-          paymentRecipientPlayerId={paymentRecipient}
-          onPaymentRecipientChange={setPaymentRecipient}
-          unlinkedPlayers={(() => {
-            const ss = (useStore.getState().sessions || []).find(
-              (s) => s.id === endFor
-            );
-            const arr = Array.isArray(ss?.players) ? ss!.players : [];
-            return arr
-              .filter((p) => !p.accountUid)
-              .map((p) => ({ id: p.id, name: p.name }));
-          })()}
-          organizerLinked={(() => {
-            const ss = (useStore.getState().sessions || []).find(
-              (s) => s.id === endFor
-            );
-            const myUid = auth.currentUser?.uid;
-            return !!(
-              myUid &&
-              ss &&
-              ss.players.some((p) => p.accountUid === myUid)
-            );
-          })()}
-          showPaymentOptions={(() => {
-            const ss = (useStore.getState().sessions || []).find(
-              (s) => s.id === endFor
-            );
-            return !!(ss && (ss as any).clubId);
-          })()}
-        />
-      )}
-    </div>
+              return !!(ss && (ss as any).clubId);
+            })()}
+          />
+        )}
+      </div>
+    </Card>
   );
 }
 
