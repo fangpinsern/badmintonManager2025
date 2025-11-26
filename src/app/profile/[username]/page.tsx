@@ -27,6 +27,7 @@ import TopOpponentsTable from "@/components/profile/TopOpponentsTable";
 import DuoFriendshipCard from "@/components/profile/DuoFriendshipCard";
 import HeadToHeadCard from "@/components/profile/HeadToHeadCard";
 import { auth } from "@/lib/firebase";
+import RatingsCard from "@/components/profile/RatingsCard";
 
 export default function PublicProfilePage() {
   const { username } = useParams<{ username: string }>();
@@ -173,6 +174,23 @@ export default function PublicProfilePage() {
             />
           </div>
         </Card>
+      </section>
+
+      <section className="mb-4">
+        <RatingsCard
+          singles={(profileInfo as any)?.elo?.singles}
+          doubles={(profileInfo as any)?.elo?.doubles}
+          version={
+            typeof (profileInfo as any)?.elo?.version === "string"
+              ? (profileInfo as any)?.elo?.version
+              : null
+          }
+          updatedAt={
+            typeof (profileInfo as any)?.elo?.updatedAt === "string"
+              ? (profileInfo as any)?.elo?.updatedAt
+              : null
+          }
+        />
       </section>
 
       {viewerUid && viewerUid !== profile?.uid && (

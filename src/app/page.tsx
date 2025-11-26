@@ -367,6 +367,8 @@ function Page() {
           </Card>
           <Leaderboard />
           <Card>
+            <h2 className="text-xl font-semibold">FAQ</h2>
+            <p className="mt-1 text-gray-600">Answers to common questions.</p>
             <FaqContent />
           </Card>
           <Card>

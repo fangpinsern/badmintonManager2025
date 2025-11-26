@@ -32,6 +32,7 @@ import {
 import TopPartnersTable from "@/components/profile/TopPartnersTable";
 import TopOpponentsTable from "@/components/profile/TopOpponentsTable";
 import NotificationSettingsModal from "@/components/profile/NotificationSettingsModal";
+import RatingsCard from "@/components/profile/RatingsCard";
 import {
   getUserSensitive,
   saveUserSensitive,
@@ -85,6 +86,12 @@ export default function ProfilePage() {
   const [notiEmail, setNotiEmail] = useState("");
   const [allowInvites, setAllowInvites] = useState(false);
   const [savingNoti, setSavingNoti] = useState(false);
+  const [elo, setElo] = useState<{
+    singles?: { R?: number; K?: number; matches?: number } | null;
+    doubles?: { R?: number; K?: number; matches?: number } | null;
+    version?: string | null;
+    updatedAt?: string | null;
+  } | null>(null);
 
   useEffect(() => {
     return onAuthStateChanged(auth, (u) => {
@@ -115,6 +122,15 @@ export default function ProfilePage() {
             : "",
         bio: typeof p?.bio === "string" ? p?.bio : "",
         level: typeof p?.level === "string" ? p?.level : "",
+      });
+      const eloBlock = (p?.elo as any) || {};
+      setElo({
+        singles: (eloBlock?.singles as any) || null,
+        doubles: (eloBlock?.doubles as any) || null,
+        version:
+          typeof eloBlock?.version === "string" ? eloBlock.version : null,
+        updatedAt:
+          typeof eloBlock?.updatedAt === "string" ? eloBlock.updatedAt : null,
       });
       try {
         const [sum, months, fr, opp] = await Promise.all([
@@ -260,6 +276,16 @@ export default function ProfilePage() {
             </div>
           )}
         </Card>
+      </section>
+
+      <section className="mb-4">
+        <RatingsCard
+          singles={elo?.singles}
+          doubles={elo?.doubles}
+          version={elo?.version || null}
+          updatedAt={elo?.updatedAt || null}
+          isSelf={true}
+        />
       </section>
 
       <section className="mb-4">
