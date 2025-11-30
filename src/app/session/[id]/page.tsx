@@ -8,7 +8,6 @@ import { Card } from "@/components/layout";
 import { formatSessionTitle } from "@/lib/helper";
 import { AutoAssignSettingsButton } from "@/components/session/autoAssignSettingsButton";
 import { formatDuration } from "@/lib/helper";
-import { ShareClaimsButton } from "@/components/session/rowKebabMenu";
 import { EndSessionModal } from "@/components/session/endSessionModal";
 import { AddCourtButton } from "@/components/session/addCourtButton";
 import { CourtCard } from "@/components/session/courtCard";
@@ -17,7 +16,7 @@ import { GameDetailsModal } from "@/components/session/GameDetailsModal";
 import { ConfirmModal } from "@/components/session/confirmModal";
 import LoadingScreen from "@/components/LoadingScreen";
 import Link from "next/link";
-import { toUsernameSlug } from "@/lib/helper";
+import { SessionStatsPanel } from "@/components/session/SessionStatsPanel";
 import UsernameModal from "@/components/UsernameModal";
 import { Select } from "@/components/layout";
 import { RowKebabMenu } from "@/components/session/rowKebabMenu";
@@ -957,260 +956,62 @@ function SessionManager({ onBack }: { onBack: () => void }) {
           showPaymentOptions={!!session.clubId}
         />
       )}
-      {session.ended && session.stats && (
+      <SessionStatsPanel session={session} usernameMap={usernameMap} />
+
+      {((isOrganizer && !session.ended && !session.clubId) ||
+        session.clubId) && (
         <Card>
-          <div className="mb-2 flex items-center justify-between">
-            <h3 className="text-base font-semibold">Session statistics</h3>
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => downloadSessionJson(session)}
-                className="rounded-lg border border-gray-300 px-2 py-1 text-xs"
-              >
-                Export JSON
-              </button>
-              {!session.ended && <ShareClaimsButton sessionId={session.id} />}
-            </div>
-          </div>
-          <div className="grid grid-cols-2 gap-2 text-sm">
-            <div className="rounded-lg bg-gray-50 p-2">
-              <div className="text-xs text-gray-500">Total games</div>
-              <div className="font-medium">{session.stats.totalGames}</div>
-            </div>
-            {(() => {
-              try {
-                const uid = auth.currentUser?.uid || null;
-                if (!uid) return null;
-                const myIds = (session.players || [])
-                  .filter((p) => p.accountUid === uid)
-                  .map((p) => p.id);
-                if (!myIds.length) return null;
-                const nonVoided = (session.games || []).filter(
-                  (g) => !g.voided && typeof g.caloriesEstimate === "number"
-                );
-                const seen = new Set<string>();
-                let sum = 0;
-                for (const g of nonVoided) {
-                  const ids =
-                    (g.players && g.players.length
-                      ? g.players
-                      : [...(g.sideA || []), ...(g.sideB || [])]) || [];
-                  const participated = myIds.some((id) => ids.includes(id));
-                  if (participated && !seen.has(g.id)) {
-                    sum += Number(g.caloriesEstimate || 0);
-                    seen.add(g.id);
-                  }
-                }
-                return (
-                  <div className="rounded-lg bg-orange-50 p-2">
-                    <div className="text-xs text-orange-700">
-                      Your estimated calories
-                    </div>
-                    <div className="font-medium">{sum} kcal</div>
-                  </div>
-                );
-              } catch {
-                return null;
-              }
-            })()}
-            {typeof session.stats.shuttlesUsed !== "undefined" && (
-              <div className="rounded-lg bg-lime-50 p-2">
-                <div className="text-xs text-lime-700">Shuttlecocks used</div>
-                <div className="font-medium">{session.stats.shuttlesUsed}</div>
+          {isOrganizer && !session.ended && !session.clubId && (
+            <button
+              onClick={() => {
+                setSelectedClubId(session.clubId || "");
+                setClubLinkOpen(true);
+              }}
+              title="Add session to a club"
+              aria-label="Add session to a club"
+              className="rounded-xl border px-2 py-1.5"
+            >
+              Add to club
+            </button>
+          )}
+          {session.clubId && (
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="text-[11px] text-gray-600">
+                This is a club session
               </div>
-            )}
-            {session.stats.topWinner && (
-              <div className="rounded-lg bg-green-50 p-2">
-                <div className="text-xs text-green-700">Top winner</div>
-                <div className="font-medium">
-                  {session.stats.topWinner.name}
-                </div>
-                <div className="text-xs text-green-700">
-                  {session.stats.topWinner.wins} wins ·{" "}
-                  {Math.round(session.stats.topWinner.winRate * 100)}%
-                </div>
+              <div className="flex items-center gap-2">
+                <Link
+                  href={`/clubs/${session.clubId}`}
+                  className="rounded border px-2 py-1 text-xs"
+                >
+                  Club
+                </Link>
+                {isOrganizer && !session.ended && (
+                  <>
+                    <button
+                      onClick={() => {
+                        setSelectedClubId(session.clubId || "");
+                        setClubLinkOpen(true);
+                      }}
+                      className="rounded border px-2 py-1 text-xs"
+                    >
+                      Change club
+                    </button>
+                    <button
+                      onClick={() => {
+                        setRemoveClubOpen(true);
+                      }}
+                      className="rounded border px-2 py-1 text-xs"
+                    >
+                      Remove from club
+                    </button>
+                  </>
+                )}
               </div>
-            )}
-            {session.stats.topLoser && (
-              <div className="rounded-lg bg-red-50 p-2">
-                <div className="text-xs text-red-700">Top loser</div>
-                <div className="font-medium">{session.stats.topLoser.name}</div>
-                <div className="text-xs text-red-700">
-                  {session.stats.topLoser.wins} wins ·{" "}
-                  {session.stats.topLoser.losses} losses
-                </div>
-              </div>
-            )}
-            {session.stats.topScorer && (
-              <div className="rounded-lg bg-indigo-50 p-2">
-                <div className="text-xs text-indigo-700">Top scorer</div>
-                <div className="font-medium">
-                  {session.stats.topScorer.name}
-                </div>
-                <div className="text-xs text-indigo-700">
-                  {session.stats.topScorer.points} pts
-                </div>
-              </div>
-            )}
-            {session.stats.mostActive && (
-              <div className="rounded-lg bg-amber-50 p-2">
-                <div className="text-xs text-amber-700">Most active</div>
-                <div className="font-medium">
-                  {session.stats.mostActive.name}
-                </div>
-                <div className="text-xs text-amber-700">
-                  {session.stats.mostActive.games} games
-                </div>
-              </div>
-            )}
-            {session.stats.bestPair && (
-              <div className="col-span-2 rounded-lg bg-teal-50 p-2">
-                <div className="text-xs text-teal-700">Best pair</div>
-                <div className="font-medium">
-                  {session.stats.bestPair.names.join(" & ")}
-                </div>
-                <div className="text-xs text-teal-700">
-                  {session.stats.bestPair.wins} wins together
-                </div>
-              </div>
-            )}
-            {session.stats.longestDuration && (
-              <div className="col-span-2 rounded-lg bg-fuchsia-50 p-2">
-                <div className="text-xs text-fuchsia-700">
-                  Longest duration on court
-                </div>
-                <div className="font-medium">
-                  {session.stats.longestDuration.names.join(" & ")}
-                </div>
-                <div className="text-xs text-fuchsia-700">
-                  {formatDuration(session.stats.longestDuration.durationMs)}
-                </div>
-              </div>
-            )}
-            {session.stats.mostIntenseGame && (
-              <div className="col-span-2 rounded-lg bg-sky-50 p-2">
-                <div className="text-xs text-sky-700">Most intense game</div>
-                <div className="text-xs text-sky-700">
-                  Court {session.stats.mostIntenseGame.courtIndex + 1} ·{" "}
-                  {new Date(
-                    session.stats.mostIntenseGame.endedAt
-                  ).toLocaleTimeString([], {
-                    hour: "2-digit",
-                    minute: "2-digit",
-                  })}
-                </div>
-                <div className="font-medium">
-                  {session.stats.mostIntenseGame.namesA.join(" & ")} vs{" "}
-                  {session.stats.mostIntenseGame.namesB.join(" & ")}
-                </div>
-                <div className="text-xs text-sky-700">
-                  {session.stats.mostIntenseGame.scoreA}–
-                  {session.stats.mostIntenseGame.scoreB} ·{" "}
-                  {session.stats.mostIntenseGame.totalPoints} pts in{" "}
-                  {formatDuration(session.stats.mostIntenseGame.durationMs)} (
-                  {Math.round(session.stats.mostIntenseGame.secondsPerPoint)}{" "}
-                  s/pt)
-                </div>
-              </div>
-            )}
-          </div>
-          {!!(
-            session.stats.leaderboard && session.stats.leaderboard.length
-          ) && (
-            <div className="mt-3">
-              <div className="mb-1 text-xs font-medium text-gray-600">
-                Leaderboard
-              </div>
-              <ul className="divide-y rounded-lg border">
-                {session.stats.leaderboard.map((p) => (
-                  <li
-                    key={p.playerId}
-                    className="flex items-center justify-between px-2 py-1 text-sm"
-                  >
-                    <div className="truncate">
-                      {(() => {
-                        const sp = session.players.find(
-                          (pp) => pp.id === p.playerId
-                        );
-                        console.log("sp", sp);
-                        const uid = sp?.accountUid;
-                        const uname = uid ? usernameMap[uid] : undefined;
-                        const slug = uname ? toUsernameSlug(uname) : null;
-                        const finalUname = uname || sp?.accountUsername;
-                        return uid && finalUname ? (
-                          <Link
-                            href={`/profile/${finalUname}`}
-                            className="text-sky-700 hover:underline"
-                          >
-                            {p.name}
-                          </Link>
-                        ) : (
-                          <span>{p.name}</span>
-                        );
-                      })()}
-                    </div>
-                    <div className="ml-2 shrink-0 text-xs text-gray-600">
-                      {p.wins}W {p.losses}L · {Math.round(p.winRate * 100)}% ·{" "}
-                      {p.points}pts
-                    </div>
-                  </li>
-                ))}
-              </ul>
             </div>
           )}
         </Card>
       )}
-
-      <Card>
-        {isOrganizer && !session.ended && !session.clubId && (
-          <button
-            onClick={() => {
-              setSelectedClubId(session.clubId || "");
-              setClubLinkOpen(true);
-            }}
-            title="Add session to a club"
-            aria-label="Add session to a club"
-            className="rounded-xl border px-2 py-1.5"
-          >
-            Add to club
-          </button>
-        )}
-        {session.clubId && (
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="text-[11px] text-gray-600">
-              This is a club session
-            </div>
-            <div className="flex items-center gap-2">
-              <Link
-                href={`/clubs/${session.clubId}`}
-                className="rounded border px-2 py-1 text-xs"
-              >
-                Club
-              </Link>
-              {isOrganizer && !session.ended && (
-                <>
-                  <button
-                    onClick={() => {
-                      setSelectedClubId(session.clubId || "");
-                      setClubLinkOpen(true);
-                    }}
-                    className="rounded border px-2 py-1 text-xs"
-                  >
-                    Change club
-                  </button>
-                  <button
-                    onClick={() => {
-                      setRemoveClubOpen(true);
-                    }}
-                    className="rounded border px-2 py-1 text-xs"
-                  >
-                    Remove from club
-                  </button>
-                </>
-              )}
-            </div>
-          </div>
-        )}
-      </Card>
 
       {removeClubOpen && isOrganizer && (
         <ConfirmModal

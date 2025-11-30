@@ -34,6 +34,8 @@ export default function ClubEloLeaderboard({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showAll, setShowAll] = useState(false);
+  const [averageRating, setAverageRating] = useState<number | null>(null);
+  const [averageCount, setAverageCount] = useState<number>(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -65,6 +67,17 @@ export default function ClubEloLeaderboard({
           .filter(Boolean) as Row[];
         data.sort((a, b) => b.rating - a.rating);
         setRows(limit > 0 ? data.slice(0, limit) : data);
+        // Compute average across all rated members (not just the visible slice)
+        const count = data.length;
+        const avg =
+          count > 0
+            ? data.reduce(
+                (sum, r) => sum + (Number.isFinite(r.rating) ? r.rating : 0),
+                0
+              ) / count
+            : null;
+        setAverageRating(avg);
+        setAverageCount(count);
       } catch (e: any) {
         if (!cancelled) setError("Failed to load leaderboard");
       } finally {
@@ -99,6 +112,11 @@ export default function ClubEloLeaderboard({
         >
           How this works
         </Link>
+        {averageRating !== null && averageCount > 0 && (
+          <div className="mt-1 text-[11px] text-gray-600">
+            Average: {Math.round(averageRating)} ({averageCount} rated)
+          </div>
+        )}
       </div>
       {loading ? (
         <div className="mt-2 text-xs text-gray-600">Loading…</div>
