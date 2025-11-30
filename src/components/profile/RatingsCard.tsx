@@ -81,7 +81,7 @@ export default function RatingsCard({
           )}
         </div>
       ) : (
-        <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
+        <div className="mt-3 grid grid-cols-2 gap-3">
           <div className="rounded-lg border p-3">
             <div className="text-[11px] text-gray-600">Doubles</div>
             {hasDoubles ? (

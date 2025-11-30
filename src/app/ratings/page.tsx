@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import MathBlock from "@/components/MathBlock";
 
 export default function RatingsExplainerPage() {
   return (
@@ -126,6 +127,112 @@ export default function RatingsExplainerPage() {
           </ul>
         </div>
 
+        <div>
+          <h2 className="text-base font-semibold">Math Details</h2>
+          <p className="mt-2 text-gray-700">
+            We use an Elo‑style update. For each match, we compute expected win
+            probability, then apply a bounded update scaled by experience, trust
+            and score margin:
+          </p>
+          <div className="mt-2 rounded-lg border bg-gray-50 p-3 overflow-x-auto">
+            <div className="text-[12px] font-medium text-gray-800">
+              Expected win (team A)
+            </div>
+            <MathBlock
+              latex={`E_A = \\frac{1}{1 + 10^{\\frac{T_B - T_A}{400}}}`}
+              className="mt-1 text-[12px]"
+            />
+            <div className="mt-3 text-[12px] font-medium text-gray-800">
+              Team strength (Singles)
+            </div>
+            <MathBlock latex={`T_A = R_A`} className="mt-1 text-[12px]" />
+            <div className="mt-3 text-[12px] font-medium text-gray-800">
+              Team strength (Doubles)
+            </div>
+            <MathBlock
+              latex={`T_A = R_{A1} + R_{A2} + \\delta_{\\mathrm{chem}}(A)`}
+              className="mt-1 text-[12px]"
+            />
+            <div className="mt-1 text-[11px] text-gray-600">
+              δ<sub>chem</sub> applies only when both partners are linked.
+            </div>
+            <div className="mt-3 text-[12px] font-medium text-gray-800">
+              Rating update (team i ∈ {`{A, B}`})
+            </div>
+            <MathBlock
+              latex={`\\Delta R_i = K_{\\mathrm{eff}}\\,\\cdot\\, w_{\\mathrm{trust}}\\,\\cdot\\, f_{\\mathrm{mov}}\\,\\cdot\\,(S_i - E_i)`}
+              className="mt-1 text-[12px]"
+            />
+            <div className="mt-3 text-[12px] font-medium text-gray-800">
+              Where
+            </div>
+            <MathBlock
+              latex={`K_{\\mathrm{eff}} = \\tfrac{K_A + K_B}{2}`}
+              className="mt-1 text-[12px]"
+            />
+            <MathBlock
+              latex={`f_{\\mathrm{mov}} = \\min\\bigl(1.2,\\; \\ln\\bigl(1 + \\tfrac{|\\mathrm{points}_A - \\mathrm{points}_B|}{8}\\bigr)\\bigr)`}
+              className="mt-1 text-[12px]"
+            />
+            <div className="mt-1 text-[11px] text-gray-600">
+              If points are unknown, use f<sub>mov</sub> = 1.0.
+            </div>
+          </div>
+          <div className="mt-3 rounded-lg border bg-white p-3">
+            <div className="text-[12px] font-medium text-gray-800">
+              Symbols and legends
+            </div>
+            <ul className="mt-2 list-disc space-y-1 pl-5 text-[12px] text-gray-700">
+              <li>
+                <strong>R</strong>: player rating (per‑mode; Singles or Doubles)
+              </li>
+              <li>
+                <strong>T</strong>
+                <sub>A</sub>, <strong>T</strong>
+                <sub>B</sub>: team strengths used to compute expectation (sum of
+                player ratings; in Doubles includes δ<sub>chem</sub> when both
+                partners are linked)
+              </li>
+              <li>
+                <strong>E</strong>
+                <sub>i</sub>: expected score for team i from the Elo logistic
+                with τ = 400
+              </li>
+              <li>
+                <strong>S</strong>
+                <sub>i</sub>: actual score (win=1, loss=0) for team i
+              </li>
+              <li>
+                <strong>K</strong>
+                <sub>A</sub>, <strong>K</strong>
+                <sub>B</sub>: per‑team average K based on players’ experience;
+                movement decreases after more matches (stabilizes around ~20)
+              </li>
+              <li>
+                <strong>w</strong>
+                <sub>trust</sub>: weight by linked composition:
+                <div className="mt-1 ml-3">
+                  <div className="text-[11px]">• 4 linked players: 1.00</div>
+                  <div className="text-[11px]">
+                    • 2–3 linked players (both sides linked): 0.75
+                  </div>
+                  <div className="text-[11px]">• exactly 1 linked: 0.25</div>
+                  <div className="text-[11px]">• 0 linked: ignored</div>
+                </div>
+              </li>
+              <li>
+                <strong>f</strong>
+                <sub>mov</sub>: capped margin‑of‑victory multiplier (at most
+                1.2)
+              </li>
+              <li>
+                δ<sub>chem</sub>: small partner chemistry adjustment (for
+                Doubles, linked–linked pairs only); gently decays with
+                inactivity
+              </li>
+            </ul>
+          </div>
+        </div>
         <div className="rounded-lg border bg-gray-50 p-4 text-gray-700">
           <div className="font-medium">Quick notes</div>
           <ul className="mt-2 list-disc space-y-1 pl-5">
