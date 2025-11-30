@@ -98,6 +98,23 @@ function AutoAssignSettingsModal({
             </div>
             <ExcludeEditor session={session} />
           </div>
+          <div className="rounded-xl border p-2">
+            <div className="flex items-center justify-between text-sm">
+              <span>Auto Assign preset</span>
+              <select
+                className="rounded border px-2 py-1 text-xs"
+                value={cfg.priority || "variety"}
+                onChange={(e) => setCfg({ priority: e.target.value })}
+              >
+                <option value="competitiveness">Competitiveness</option>
+                <option value="variety">Variety</option>
+                <option value="rest">Rest</option>
+              </select>
+            </div>
+            <div className="mt-1 text-[11px] text-gray-500">
+              Choose the primary objective for auto-assignment.
+            </div>
+          </div>
           <div className="border p-2 rounded-xl">
             <button
               type="button"
@@ -121,23 +138,6 @@ function AutoAssignSettingsModal({
                 id="auto-assign-advanced"
                 className="grid grid-cols-1 gap-2 mt-2"
               >
-                <div className="rounded-xl border p-2">
-                  <div className="flex items-center justify-between text-sm">
-                    <span>Priority preset</span>
-                    <select
-                      className="rounded border px-2 py-1 text-xs"
-                      value={cfg.priority || "competitiveness"}
-                      onChange={(e) => setCfg({ priority: e.target.value })}
-                    >
-                      <option value="competitiveness">Competitiveness</option>
-                      <option value="variety">Variety</option>
-                      <option value="rest">Rest</option>
-                    </select>
-                  </div>
-                  <div className="mt-1 text-[11px] text-gray-500">
-                    Choose the primary objective for auto-assignment.
-                  </div>
-                </div>
                 <div className="rounded-xl border p-2">
                   <div className="flex items-center justify-between text-sm">
                     <span>Respect gender</span>
