@@ -297,6 +297,9 @@ function SessionManager({ onBack }: { onBack: () => void }) {
   const [editGameId, setEditGameId] = useState<string | null>(null);
   const [detailsGameId, setDetailsGameId] = useState<string | null>(null);
   const [usernameMap, setUsernameMap] = useState<Record<string, string>>({});
+  const [playerSort, setPlayerSort] = useState<"alpha" | "games" | "gameOpp">(
+    "alpha"
+  );
 
   // Drag-and-drop removed; assignments are via dropdowns only
 
@@ -352,13 +355,20 @@ function SessionManager({ onBack }: { onBack: () => void }) {
       const aIn = inGameIdSet.has(a.id);
       const bIn = inGameIdSet.has(b.id);
       if (aIn !== bIn) return aIn ? 1 : -1; // in-game at bottom
-      const aGames = a.gamesPlayed ?? 0;
-      const bGames = b.gamesPlayed ?? 0;
-      if (aGames !== bGames) return aGames - bGames; // least to most
+      if (playerSort === "games") {
+        const aGames = a.gamesPlayed ?? 0;
+        const bGames = b.gamesPlayed ?? 0;
+        if (aGames !== bGames) return aGames - bGames; // least to most
+      }
+      if (playerSort === "gameOpp") {
+        const aGames = a.gamesPlayed ?? 0;
+        const bGames = b.gamesPlayed ?? 0;
+        if (aGames !== bGames) return bGames - aGames; // most to least
+      }
       return a.name.localeCompare(b.name);
     });
     return clone;
-  }, [session, inGameIdSet]);
+  }, [session, inGameIdSet, playerSort]);
 
   // Games list filtering and pagination moved into GamesList component
 
@@ -1014,7 +1024,7 @@ function SessionManager({ onBack }: { onBack: () => void }) {
         />
       )}
 
-      {canManage && (
+      {canManage && !session.ended && (
         <Card>
           <h3 className="mb-3 text-base font-semibold">Add players</h3>
           <div className="space-y-2">
@@ -1259,7 +1269,21 @@ function SessionManager({ onBack }: { onBack: () => void }) {
       {/* Players and Courts */}
       <div className="space-y-3 layout-grid">
         <Card>
-          <h3 className="mb-2 text-base font-semibold">Players</h3>
+          <div className="mb-2 flex items-center justify-between">
+            <h3 className="text-base font-semibold">Players</h3>
+            <div className="flex items-center gap-2 w-1/2">
+              <span className="text-gray-600">Sort</span>
+              <Select
+                value={playerSort}
+                onChange={(v) => setPlayerSort(v as any)}
+                aria-label="Sort players"
+              >
+                <option value="alpha">Alphabetical (A–Z)</option>
+                <option value="games">Games played (fewest first)</option>
+                <option value="gameOpp">Games played (most first)</option>
+              </Select>
+            </div>
+          </div>
           <div className="mb-3 flex flex-wrap items-center gap-3 text-[11px] text-gray-600">
             <span
               className="inline-flex items-center gap-1"
@@ -1341,7 +1365,7 @@ function SessionManager({ onBack }: { onBack: () => void }) {
           {session.players.length === 0 ? (
             <p className="text-gray-500">No players yet. Add some above.</p>
           ) : (
-            <div className="space-y-2">
+            <div className="space-y-3">
               {sortedPlayers.map((p) => {
                 const currentIdx = getPlayerCourtIndex(session, p.id);
                 const inGame = inGameIdSet.has(p.id);
@@ -1418,7 +1442,9 @@ function SessionManager({ onBack }: { onBack: () => void }) {
                         )}
                       </div>
                       <div className="col-span-8 min-w-0 truncate">
-                        <span className="block truncate">{p.name}</span>
+                        <span className="block truncate text-base">
+                          {p.name}
+                        </span>
                       </div>
                       <div className="col-span-2 flex items-center gap-2 justify-start shrink-0">
                         {/* no separate dot; icon color indicates Me */}
@@ -1538,32 +1564,34 @@ function SessionManager({ onBack }: { onBack: () => void }) {
           )}
         </Card>
 
-        <Card>
-          <div className="mb-3 flex items-center justify-between">
-            <h3 className="text-base font-semibold">Courts</h3>
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-gray-500">
-                Unassigned: {unassigned.length}
-              </span>
-              {!session.ended && canManage && (
-                <AddCourtButton sessionId={session.id} />
-              )}
+        {!session.ended && (
+          <Card>
+            <div className="mb-3 flex items-center justify-between">
+              <h3 className="text-base font-semibold">Courts</h3>
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-gray-500">
+                  Unassigned: {unassigned.length}
+                </span>
+                {!session.ended && canManage && (
+                  <AddCourtButton sessionId={session.id} />
+                )}
+              </div>
             </div>
-          </div>
-          <div className="grid grid-cols-1 gap-3">
-            {session.courts.map((court, idx) => (
-              <CourtCard
-                key={court.id}
-                session={session}
-                court={court}
-                idx={idx}
-                isOrganizer={canManage}
-                isMainOrganizer={isOrganizer}
-                organizerUid={organizerUid || undefined}
-              />
-            ))}
-          </div>
-        </Card>
+            <div className="grid grid-cols-1 gap-3">
+              {session.courts.map((court, idx) => (
+                <CourtCard
+                  key={court.id}
+                  session={session}
+                  court={court}
+                  idx={idx}
+                  isOrganizer={canManage}
+                  isMainOrganizer={isOrganizer}
+                  organizerUid={organizerUid || undefined}
+                />
+              ))}
+            </div>
+          </Card>
+        )}
       </div>
       <GamesList
         session={session}
