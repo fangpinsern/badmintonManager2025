@@ -11,10 +11,24 @@ import {
 
 let analyticsInstance: Analytics | null | undefined;
 
+function analyticsDisabled(): boolean {
+  try {
+    const disabled = process.env.NEXT_PUBLIC_DISABLE_ANALYTICS;
+    if (disabled && disabled !== "false" && disabled !== "0") return true;
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 async function ensureAnalytics(): Promise<Analytics | null> {
   if (typeof window === "undefined") return null;
   if (analyticsInstance !== undefined) return analyticsInstance || null;
   try {
+    if (analyticsDisabled()) {
+      analyticsInstance = null;
+      return null;
+    }
     const supported = await isSupported();
     if (!supported) {
       analyticsInstance = null;
