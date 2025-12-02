@@ -91,7 +91,8 @@ function buildCoCounts(ss: Session): Map<string, Map<string, number>> {
     const m = co.get(x)!;
     m.set(y, (m.get(y) || 0) + 1);
   };
-  for (const g of ss.games || []) {
+  // Ignore voided games for partner history
+  for (const g of (ss.games || []).filter((gg) => !gg.voided)) {
     const ids =
       g.players && g.players.length ? g.players : [...g.sideA, ...g.sideB];
     for (let i = 0; i < ids.length; i++) {

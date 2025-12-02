@@ -1572,9 +1572,44 @@ function SessionManager({ onBack }: { onBack: () => void }) {
                 <span className="text-xs text-gray-500">
                   Unassigned: {unassigned.length}
                 </span>
-                {!session.ended && canManage && (
-                  <AddCourtButton sessionId={session.id} />
-                )}
+                {!session.ended &&
+                  canManage &&
+                  (() => {
+                    const allFull = (session.courts || []).every((c) => {
+                      const cap = (c.mode || "doubles") === "singles" ? 2 : 4;
+                      return c.playerIds.length >= cap;
+                    });
+                    return (
+                      <>
+                        {allFull ? (
+                          <button
+                            onClick={() =>
+                              (useStore.getState() as any).clearAllCourts?.(
+                                session.id
+                              )
+                            }
+                            className="rounded border px-2 py-1 text-xs"
+                            title="Clear all courts (skip those in progress)"
+                          >
+                            Clear all
+                          </button>
+                        ) : (
+                          <button
+                            onClick={() =>
+                              (
+                                useStore.getState() as any
+                              ).autoAssignAllCourts?.(session.id)
+                            }
+                            className="rounded border px-2 py-1 text-xs"
+                            title="Auto-assign players to all courts with empty slots"
+                          >
+                            Auto-assign all
+                          </button>
+                        )}
+                        <AddCourtButton sessionId={session.id} />
+                      </>
+                    );
+                  })()}
               </div>
             </div>
             <div className="grid grid-cols-1 gap-3">
