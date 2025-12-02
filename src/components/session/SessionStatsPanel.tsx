@@ -59,8 +59,28 @@ export function SessionStatsPanel({ session, usernameMap }: Props) {
             }
             return (
               <div className="rounded-lg bg-orange-50 p-2">
-                <div className="text-xs text-orange-700">
-                  Your estimated calories
+                <div className="text-xs text-orange-700 flex items-center">
+                  <span>Your estimated calories</span>
+                  <Link
+                    href="/guide/calories"
+                    aria-label="Learn how we estimate calories"
+                    className="ml-1 text-orange-700 hover:text-orange-800"
+                  >
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.8"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      className="h-3.5 w-3.5"
+                    >
+                      <circle cx="12" cy="12" r="9" />
+                      <line x1="12" y1="10" x2="12" y2="16" />
+                      <circle cx="12" cy="7.5" r="0.75" />
+                    </svg>
+                  </Link>
                 </div>
                 <div className="font-medium">{sum} kcal</div>
               </div>
