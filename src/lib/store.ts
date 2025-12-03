@@ -12,6 +12,8 @@ import {
 interface StoreState {
   sessions: Session[];
   platformPlayers: PlatformPlayer[];
+  // UI-only transient error for auto-assign, not persisted to Firestore
+  lastAutoAssignError?: { msg: string; courtIndex?: number };
   linkPlayerToAccount: (
     sessionId: string,
     playerId: string,
@@ -94,7 +96,10 @@ interface StoreState {
   removeCourt: (sessionId: string, courtIndex: number) => void;
   autoAssignAvailable: (sessionId: string) => void;
   autoAssignCourt: (sessionId: string, courtIndex: number) => void;
+  autoAssignAllCourts: (sessionId: string) => void;
   autoAssignNext: (sessionId: string, courtIndex: number) => void;
+  clearCourtAssignments: (sessionId: string, courtIndex: number) => void;
+  clearAllCourts: (sessionId: string) => void;
   enqueueToCourt: (
     sessionId: string,
     courtIndex: number,
@@ -1118,8 +1123,9 @@ const useStore = create<StoreState>()((set, _get) => ({
     })),
 
   autoAssignCourt: (sessionId, courtIndex) =>
-    set((s) => ({
-      sessions: s.sessions.map((ss) => {
+    set((s) => {
+      let errorMsg: string | undefined = undefined;
+      const nextSessions = s.sessions.map((ss) => {
         if (ss.id !== sessionId) return ss;
         if (ss.ended) return ss;
         const courts = ss.courts.map((c) => ({
@@ -1133,7 +1139,7 @@ const useStore = create<StoreState>()((set, _get) => ({
           courtIndex
         );
         if (!result) {
-          (ss as any).__lastAutoAssignError =
+          errorMsg =
             "Auto-assign could not find a valid assignment for this court.";
           return ss;
         }
@@ -1149,13 +1155,12 @@ const useStore = create<StoreState>()((set, _get) => ({
             court.playerIds = proposedIds.slice(0, cap);
             court.pairA = pairA.slice(0);
             court.pairB = pairB.slice(0);
-            (ss as any).__lastAutoAssignError = undefined;
+            errorMsg = undefined;
           } else {
             // Fallback to preserving existing players if proposal invalid
             court.pairA = pairA.slice(0);
             court.pairB = pairB.slice(0);
-            (ss as any).__lastAutoAssignError =
-              "Reroll proposed invalid players; kept current players.";
+            errorMsg = "Reroll proposed invalid players; kept current players.";
           }
         } else {
           // Gap-fill / initial assignment: only add missing players
@@ -1165,20 +1170,137 @@ const useStore = create<StoreState>()((set, _get) => ({
           }
           court.pairA = pairA.slice(0);
           court.pairB = pairB.slice(0);
-          if (playerIdsToAdd.length === 0) {
-            (ss as any).__lastAutoAssignError =
-              "Auto-assign found no eligible players to add.";
-          } else {
-            (ss as any).__lastAutoAssignError = undefined;
-          }
+          errorMsg =
+            playerIdsToAdd.length === 0
+              ? "Auto-assign found no eligible players to add."
+              : undefined;
         }
         return { ...ss, courts };
-      }),
-    })),
+      });
+      const out: Partial<StoreState> = { sessions: nextSessions };
+      // Set transient error scoped to this court
+      if (typeof errorMsg !== "undefined") {
+        out.lastAutoAssignError = errorMsg
+          ? { msg: errorMsg, courtIndex }
+          : undefined;
+        // Auto-clear after 3 seconds
+        setTimeout(() => {
+          try {
+            set((st) => {
+              if (
+                st.lastAutoAssignError &&
+                st.lastAutoAssignError.courtIndex === courtIndex &&
+                st.lastAutoAssignError.msg === errorMsg
+              ) {
+                return { lastAutoAssignError: undefined } as any;
+              }
+              return {} as any;
+            });
+          } catch {}
+        }, 3000);
+      }
+      return out as any;
+    }),
+
+  autoAssignAllCourts: (sessionId) =>
+    set((s) => {
+      let errorMsg: string | undefined = undefined;
+      const nextSessions = s.sessions.map((ss) => {
+        if (ss.id !== sessionId) return ss;
+        if (ss.ended) return ss;
+        // Work on a cloned courts array so we can iteratively assign and keep state consistent
+        const courts = ss.courts.map((c) => ({
+          ...c,
+          playerIds: [...c.playerIds],
+          pairA: [...(c.pairA || [])],
+          pairB: [...(c.pairB || [])],
+        }));
+        // Build eligible courts (not in progress, not full)
+        const eligible: { index: number; need: number; cap: number }[] = [];
+        for (let i = 0; i < courts.length; i++) {
+          const c = courts[i];
+          if (c.inProgress) continue;
+          const cap = (c.mode || "doubles") === "singles" ? 2 : 4;
+          const need = cap - c.playerIds.length;
+          if (need > 0) {
+            eligible.push({ index: i, need, cap });
+          }
+        }
+        if (!eligible.length) {
+          errorMsg = "No courts with empty slots to auto-assign.";
+          return ss;
+        }
+        // Count currently unassigned players (only these are available)
+        const assigned = new Set<string>(courts.flatMap((c) => c.playerIds));
+        let remainingAvailable = ss.players.filter(
+          (p) => !assigned.has(p.id)
+        ).length;
+        // To maximize fully filled courts, prioritize those needing fewer players first
+        eligible.sort((a, b) => a.need - b.need);
+        let anyAssigned = false;
+        for (const e of eligible) {
+          if (remainingAvailable < e.need) {
+            // Skip courts we cannot fully fill; avoid partial fills
+            continue;
+          }
+          const res = computeCompetitiveAssignmentForCourt(
+            { ...ss, courts },
+            e.index
+          );
+          if (!res) continue;
+          const { playerIdsToAdd, pairA, pairB } = res;
+          // Only accept if we can fully fill this court in one go
+          if (
+            !Array.isArray(playerIdsToAdd) ||
+            playerIdsToAdd.length !== e.need
+          )
+            continue;
+          // Apply assignment (gap-fill only; do not change existing players)
+          const c = courts[e.index];
+          for (const pid of playerIdsToAdd) {
+            if (c.playerIds.length >= e.cap) break;
+            if (!c.playerIds.includes(pid)) {
+              c.playerIds.push(pid);
+              remainingAvailable--;
+            }
+          }
+          // Update suggested pairs (these include existing players)
+          c.pairA = pairA.slice(0);
+          c.pairB = pairB.slice(0);
+          anyAssigned = true;
+        }
+        if (!anyAssigned) {
+          errorMsg =
+            "No eligible full assignments found. Add more players or relax constraints.";
+        }
+        return { ...ss, courts };
+      });
+      const out: Partial<StoreState> = {
+        sessions: nextSessions,
+        lastAutoAssignError: errorMsg ? { msg: errorMsg } : undefined,
+      };
+      if (errorMsg) {
+        setTimeout(() => {
+          try {
+            set((st) => {
+              if (
+                st.lastAutoAssignError &&
+                st.lastAutoAssignError.msg === errorMsg
+              ) {
+                return { lastAutoAssignError: undefined } as any;
+              }
+              return {} as any;
+            });
+          } catch {}
+        }, 3000);
+      }
+      return out as any;
+    }),
 
   autoAssignNext: (sessionId, courtIndex) =>
-    set((s) => ({
-      sessions: s.sessions.map((ss) => {
+    set((s) => {
+      let errorMsg: string | undefined = undefined;
+      const nextSessions = s.sessions.map((ss) => {
         if (ss.id !== sessionId) return ss;
         if (ss.ended) return ss;
         const courts = ss.courts.map((c) => ({
@@ -1192,15 +1314,72 @@ const useStore = create<StoreState>()((set, _get) => ({
           courtIndex
         );
         if (!result) {
-          (ss as any).__lastAutoAssignError =
-            "Not enough eligible players to auto-assign next teams.";
+          errorMsg = "Not enough eligible players to auto-assign next teams.";
           return ss;
         }
         const { queue, nextA, nextB } = result;
         courts[courtIndex].queue = queue;
         courts[courtIndex].nextA = nextA;
         courts[courtIndex].nextB = nextB;
-        (ss as any).__lastAutoAssignError = undefined;
+        return { ...ss, courts };
+      });
+      const out: Partial<StoreState> = {
+        sessions: nextSessions,
+        lastAutoAssignError: errorMsg
+          ? { msg: errorMsg, courtIndex }
+          : undefined,
+      };
+      if (errorMsg) {
+        setTimeout(() => {
+          try {
+            set((st) => {
+              if (
+                st.lastAutoAssignError &&
+                st.lastAutoAssignError.courtIndex === courtIndex &&
+                st.lastAutoAssignError.msg === errorMsg
+              ) {
+                return { lastAutoAssignError: undefined } as any;
+              }
+              return {} as any;
+            });
+          } catch {}
+        }, 3000);
+      }
+      return out as any;
+    }),
+
+  clearCourtAssignments: (sessionId, courtIndex) =>
+    set((s) => ({
+      sessions: s.sessions.map((ss) => {
+        if (ss.id !== sessionId) return ss;
+        const courts = ss.courts.map((c, i) => {
+          if (i !== courtIndex) return c;
+          if (c.inProgress) return c; // do not clear active court
+          return {
+            ...c,
+            playerIds: [],
+            pairA: [],
+            pairB: [],
+            // keep queue/nextA/nextB unchanged to preserve organizer planning if any
+          };
+        });
+        return { ...ss, courts };
+      }),
+    })),
+
+  clearAllCourts: (sessionId) =>
+    set((s) => ({
+      sessions: s.sessions.map((ss) => {
+        if (ss.id !== sessionId) return ss;
+        const courts = ss.courts.map((c) => {
+          if (c.inProgress) return c; // skip active courts
+          return {
+            ...c,
+            playerIds: [],
+            pairA: [],
+            pairB: [],
+          };
+        });
         return { ...ss, courts };
       }),
     })),

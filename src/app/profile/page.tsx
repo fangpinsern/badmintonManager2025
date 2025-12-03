@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { auth } from "@/lib/firebase";
 import { Card } from "@/components/layout";
 import LoadingScreen from "@/components/LoadingScreen";
@@ -32,6 +33,7 @@ import {
 import TopPartnersTable from "@/components/profile/TopPartnersTable";
 import TopOpponentsTable from "@/components/profile/TopOpponentsTable";
 import NotificationSettingsModal from "@/components/profile/NotificationSettingsModal";
+import RatingsCard from "@/components/profile/RatingsCard";
 import {
   getUserSensitive,
   saveUserSensitive,
@@ -40,6 +42,7 @@ import {
 } from "@/lib/firestoreUserSensitive";
 
 export default function ProfilePage() {
+  const router = useRouter();
   const [user, setUser] = useState<{
     uid: string;
     displayName?: string | null;
@@ -85,6 +88,12 @@ export default function ProfilePage() {
   const [notiEmail, setNotiEmail] = useState("");
   const [allowInvites, setAllowInvites] = useState(false);
   const [savingNoti, setSavingNoti] = useState(false);
+  const [elo, setElo] = useState<{
+    singles?: { R?: number; K?: number; matches?: number } | null;
+    doubles?: { R?: number; K?: number; matches?: number } | null;
+    version?: string | null;
+    updatedAt?: string | null;
+  } | null>(null);
 
   useEffect(() => {
     return onAuthStateChanged(auth, (u) => {
@@ -115,6 +124,15 @@ export default function ProfilePage() {
             : "",
         bio: typeof p?.bio === "string" ? p?.bio : "",
         level: typeof p?.level === "string" ? p?.level : "",
+      });
+      const eloBlock = (p?.elo as any) || {};
+      setElo({
+        singles: (eloBlock?.singles as any) || null,
+        doubles: (eloBlock?.doubles as any) || null,
+        version:
+          typeof eloBlock?.version === "string" ? eloBlock.version : null,
+        updatedAt:
+          typeof eloBlock?.updatedAt === "string" ? eloBlock.updatedAt : null,
       });
       try {
         const [sum, months, fr, opp] = await Promise.all([
@@ -163,18 +181,19 @@ export default function ProfilePage() {
     };
   }, [user?.uid]);
 
+  // Redirect unauthenticated users to /auth once auth state is known
+  useEffect(() => {
+    if (authReady && !user) {
+      try {
+        router.replace(`/auth?returnTo=${encodeURIComponent("/profile")}`);
+      } catch {}
+    }
+  }, [authReady, user, router]);
+
   if (!authReady) return <LoadingScreen message="Loading…" />;
 
   if (authReady && !user) {
-    return (
-      <main className="mx-auto max-w-md p-4 text-sm">
-        <Card>
-          <div className="text-gray-600">
-            Please sign in to view your profile.
-          </div>
-        </Card>
-      </main>
-    );
+    return <LoadingScreen message="Redirecting…" />;
   }
 
   return (
@@ -260,6 +279,16 @@ export default function ProfilePage() {
             </div>
           )}
         </Card>
+      </section>
+
+      <section className="mb-4">
+        <RatingsCard
+          singles={elo?.singles}
+          doubles={elo?.doubles}
+          version={elo?.version || null}
+          updatedAt={elo?.updatedAt || null}
+          isSelf={true}
+        />
       </section>
 
       <section className="mb-4">

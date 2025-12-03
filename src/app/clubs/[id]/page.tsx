@@ -38,6 +38,7 @@ import type { Session } from "@/types/player";
 import { createClubSessionFeedMessage } from "@/lib/firestoreClubs";
 import { subscribeClubVenues, type ClubVenue } from "@/lib/firestoreClubs";
 import { SessionCard as UnifiedSessionCard } from "@/components/session/SessionCard";
+import ClubEloLeaderboard from "@/components/clubs/ClubEloLeaderboard";
 
 const clubPermissionErrorMessages = {
   "permission-denied":
@@ -456,6 +457,16 @@ function ClubDetailPageInner() {
         <Card>
           <ClubStats clubId={id} memberUids={(club.memberUids || []) as any} />
         </Card>
+      </section>
+
+      {/* Club Elo Leaderboard with mode toggle (Doubles primary) */}
+      <section className="mb-4">
+        <ClubEloLeaderboard
+          memberUids={(club.memberUids || []) as string[]}
+          usernames={usernameMap}
+          defaultMode="doubles"
+          limit={10}
+        />
       </section>
 
       <section className="mb-4 grid grid-cols-1 gap-4 md:grid-cols-3">

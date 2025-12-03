@@ -37,6 +37,9 @@ function CourtCard({
   const enqueue = useStore((s) => s.enqueueToCourt);
   const dequeue = useStore((s) => s.removeFromCourtQueue);
   const clearQueue = useStore((s) => s.clearCourtQueue);
+  const lastAutoAssignError = useStore(
+    (s) => (s as any).lastAutoAssignError
+  ) as { msg: string; courtIndex?: number } | undefined;
   // Auto-fill is now always enabled by default; toggle removed
 
   const canEndAny = court.playerIds.length > 0;
@@ -161,7 +164,12 @@ function CourtCard({
   return (
     <div className="rounded-xl border border-gray-200 p-3">
       <div className="mb-2 flex items-center justify-between">
-        <div className="font-semibold">Court {idx + 1}</div>
+        <div className="flex items-center gap-2">
+          <div className="font-semibold">Court {idx + 1}</div>
+          <span className="rounded-full border px-2 py-0.5 text-[10px] text-gray-700">
+            {(court.mode || "doubles") === "singles" ? "Singles" : "Doubles"}
+          </span>
+        </div>
         {!session.ended && !court.inProgress && isOrganizer && (
           <button
             onClick={() => setRemoveOpen(true)}
@@ -184,46 +192,78 @@ function CourtCard({
           {court.playerIds.length}/
           {(court.mode || "doubles") === "singles" ? 2 : 4}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           {court.inProgress && (
             <div className="text-[11px] text-gray-500">
               Queued: {(court.queue || []).length}
             </div>
           )}
           {!session.ended && !court.inProgress && isOrganizer && (
-            <button
-              onClick={() =>
-                useStore.getState().autoAssignCourt(session.id, idx)
-              }
-              className="rounded-lg border border-gray-300 px-2 py-1 text-xs"
-            >
-              Auto-assign
-            </button>
-          )}
-          {!session.ended &&
-            !court.inProgress &&
-            isOrganizer &&
-            (session as any).__lastAutoAssignError && (
-              <div
-                className="text-[11px] text-red-500"
-                title={(session as any).__lastAutoAssignError}
+            <div className="flex flex-wrap items-center gap-1">
+              <button
+                onClick={() =>
+                  useStore.getState().autoAssignCourt(session.id, idx)
+                }
+                className="rounded border px-2 py-1 text-xs"
+                title="Auto-assign this court"
               >
-                {(session as any).__lastAutoAssignError}
+                Auto
+              </button>
+              <button
+                onClick={() =>
+                  useStore.getState().clearCourtAssignments(session.id, idx)
+                }
+                className="rounded border px-2 py-1 text-xs"
+                title="Clear this court"
+              >
+                Clear
+              </button>
+              <div className="flex overflow-hidden rounded border">
+                <button
+                  onClick={() => setCourtMode(session.id, idx, "singles")}
+                  disabled={!!session.ended}
+                  className={`px-2 py-1 text-xs ${
+                    (court.mode || "doubles") === "singles"
+                      ? "bg-gray-100"
+                      : "bg-white"
+                  }`}
+                  title="Singles"
+                >
+                  S
+                </button>
+                <button
+                  onClick={() => setCourtMode(session.id, idx, "doubles")}
+                  disabled={!!session.ended}
+                  className={`border-l px-2 py-1 text-xs ${
+                    (court.mode || "doubles") === "doubles"
+                      ? "bg-gray-100"
+                      : "bg-white"
+                  }`}
+                  title="Doubles"
+                >
+                  D
+                </button>
               </div>
-            )}
-          {/* Remove button moved to top-right icon */}
-          {!court.inProgress && isOrganizer && (
-            <Select
-              value={court.mode || "doubles"}
-              onChange={(v) =>
-                setCourtMode(session.id, idx, v as "singles" | "doubles")
-              }
-              disabled={!!session.ended}
-              className="rounded-lg border border-gray-300 px-2 py-1 text-xs"
-            >
-              <option value="singles">Singles</option>
-              <option value="doubles">Doubles</option>
-            </Select>
+              {(court.queue || []).length > 0 && (
+                <button
+                  onClick={() => clearQueue(session.id, idx)}
+                  className="rounded border px-2 py-1 text-xs"
+                  title="Clear queue"
+                >
+                  Clear Q
+                </button>
+              )}
+              {lastAutoAssignError &&
+                lastAutoAssignError.courtIndex === idx &&
+                lastAutoAssignError.msg && (
+                  <div
+                    className="ml-1 text-[11px] text-red-500"
+                    title={lastAutoAssignError.msg}
+                  >
+                    {lastAutoAssignError.msg}
+                  </div>
+                )}
+            </div>
           )}
           {!court.inProgress ? (
             <button
@@ -365,7 +405,7 @@ function CourtCard({
                       : "Umpire mode is active; only the umpire can end the game"
                     : undefined
                 }
-                className="rounded-lg border border-gray-300 px-2 py-1 text-xs disabled:opacity-50"
+                className="rounded-lg border border-red-300 px-2 py-1 text-xs disabled:opacity-50 bg-red-50 text-red-700 "
               >
                 End game
               </button>

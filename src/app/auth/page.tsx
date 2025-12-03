@@ -72,6 +72,12 @@ function AuthPageInner() {
   if (!authReady)
     return <LoadingScreen message="Checking your sign-in status…" />;
 
+  // After redirect-based sign-in, we may have a user but still be checking profile
+  // Show a loading state to avoid exposing the sign-in UI again
+  if (authReady && userUid && !profileChecked) {
+    return <LoadingScreen message="Signing you in…" />;
+  }
+
   // Gate on username if signed in but missing username
   if (authReady && userUid && profileChecked && needsUsername) {
     return (

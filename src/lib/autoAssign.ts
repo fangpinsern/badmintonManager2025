@@ -40,11 +40,11 @@ const DEFAULT_WEIGHTS: Weights = {
 
 function buildConfig(ss: Session): InternalCfg {
   const cfg = ss.autoAssignConfig || {};
-  const priority = cfg.priority || "competitiveness";
+  const priority = cfg.priority || "variety";
   const w: Weights = { ...DEFAULT_WEIGHTS, ...(cfg.weights || {}) };
   if (priority === "variety") {
     w.closeW = w.closeW / 2;
-    w.partnerRepeatW = w.partnerRepeatW * 2;
+    w.partnerRepeatW = w.partnerRepeatW * 3;
     w.oppRepeatW = w.oppRepeatW * 2;
   } else if (priority === "rest") {
     w.restW = w.restW * 2;
@@ -91,7 +91,8 @@ function buildCoCounts(ss: Session): Map<string, Map<string, number>> {
     const m = co.get(x)!;
     m.set(y, (m.get(y) || 0) + 1);
   };
-  for (const g of ss.games || []) {
+  // Ignore voided games for partner history
+  for (const g of (ss.games || []).filter((gg) => !gg.voided)) {
     const ids =
       g.players && g.players.length ? g.players : [...g.sideA, ...g.sideB];
     for (let i = 0; i < ids.length; i++) {

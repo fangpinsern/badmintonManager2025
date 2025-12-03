@@ -8,7 +8,6 @@ import { Card } from "@/components/layout";
 import { formatSessionTitle } from "@/lib/helper";
 import { AutoAssignSettingsButton } from "@/components/session/autoAssignSettingsButton";
 import { formatDuration } from "@/lib/helper";
-import { ShareClaimsButton } from "@/components/session/rowKebabMenu";
 import { EndSessionModal } from "@/components/session/endSessionModal";
 import { AddCourtButton } from "@/components/session/addCourtButton";
 import { CourtCard } from "@/components/session/courtCard";
@@ -16,8 +15,9 @@ import { GameEditModal } from "@/components/session/gameEditModal";
 import { GameDetailsModal } from "@/components/session/GameDetailsModal";
 import { ConfirmModal } from "@/components/session/confirmModal";
 import LoadingScreen from "@/components/LoadingScreen";
+import { GamesList } from "@/components/session/GamesList";
 import Link from "next/link";
-import { toUsernameSlug } from "@/lib/helper";
+import { SessionStatsPanel } from "@/components/session/SessionStatsPanel";
 import UsernameModal from "@/components/UsernameModal";
 import { Select } from "@/components/layout";
 import { RowKebabMenu } from "@/components/session/rowKebabMenu";
@@ -296,9 +296,10 @@ function SessionManager({ onBack }: { onBack: () => void }) {
     useState<string>("");
   const [editGameId, setEditGameId] = useState<string | null>(null);
   const [detailsGameId, setDetailsGameId] = useState<string | null>(null);
-  const [gamesFilter, setGamesFilter] = useState<string>("");
-  const [gamesPage, setGamesPage] = useState<number>(1); // 10 per page
   const [usernameMap, setUsernameMap] = useState<Record<string, string>>({});
+  const [playerSort, setPlayerSort] = useState<"alpha" | "games" | "gameOpp">(
+    "alpha"
+  );
 
   // Drag-and-drop removed; assignments are via dropdowns only
 
@@ -354,27 +355,22 @@ function SessionManager({ onBack }: { onBack: () => void }) {
       const aIn = inGameIdSet.has(a.id);
       const bIn = inGameIdSet.has(b.id);
       if (aIn !== bIn) return aIn ? 1 : -1; // in-game at bottom
-      const aGames = a.gamesPlayed ?? 0;
-      const bGames = b.gamesPlayed ?? 0;
-      if (aGames !== bGames) return aGames - bGames; // least to most
+      if (playerSort === "games") {
+        const aGames = a.gamesPlayed ?? 0;
+        const bGames = b.gamesPlayed ?? 0;
+        if (aGames !== bGames) return aGames - bGames; // least to most
+      }
+      if (playerSort === "gameOpp") {
+        const aGames = a.gamesPlayed ?? 0;
+        const bGames = b.gamesPlayed ?? 0;
+        if (aGames !== bGames) return bGames - aGames; // most to least
+      }
       return a.name.localeCompare(b.name);
     });
     return clone;
-  }, [session, inGameIdSet]);
+  }, [session, inGameIdSet, playerSort]);
 
-  const filteredGames = useMemo(() => {
-    const all = (session && session.games) || [];
-    if (!gamesFilter) return all as any[];
-    return (all as any[]).filter(
-      (g) => g.sideA.includes(gamesFilter) || g.sideB.includes(gamesFilter)
-    );
-  }, [session, gamesFilter]);
-  const pageSize = 10;
-  const pagedGames = useMemo(() => {
-    const start = 0;
-    const end = gamesPage * pageSize;
-    return filteredGames.slice(start, end);
-  }, [filteredGames, gamesPage]);
+  // Games list filtering and pagination moved into GamesList component
 
   // Username search/add removed
 
@@ -957,260 +953,62 @@ function SessionManager({ onBack }: { onBack: () => void }) {
           showPaymentOptions={!!session.clubId}
         />
       )}
-      {session.ended && session.stats && (
+      <SessionStatsPanel session={session} usernameMap={usernameMap} />
+
+      {((isOrganizer && !session.ended && !session.clubId) ||
+        session.clubId) && (
         <Card>
-          <div className="mb-2 flex items-center justify-between">
-            <h3 className="text-base font-semibold">Session statistics</h3>
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => downloadSessionJson(session)}
-                className="rounded-lg border border-gray-300 px-2 py-1 text-xs"
-              >
-                Export JSON
-              </button>
-              {!session.ended && <ShareClaimsButton sessionId={session.id} />}
-            </div>
-          </div>
-          <div className="grid grid-cols-2 gap-2 text-sm">
-            <div className="rounded-lg bg-gray-50 p-2">
-              <div className="text-xs text-gray-500">Total games</div>
-              <div className="font-medium">{session.stats.totalGames}</div>
-            </div>
-            {(() => {
-              try {
-                const uid = auth.currentUser?.uid || null;
-                if (!uid) return null;
-                const myIds = (session.players || [])
-                  .filter((p) => p.accountUid === uid)
-                  .map((p) => p.id);
-                if (!myIds.length) return null;
-                const nonVoided = (session.games || []).filter(
-                  (g) => !g.voided && typeof g.caloriesEstimate === "number"
-                );
-                const seen = new Set<string>();
-                let sum = 0;
-                for (const g of nonVoided) {
-                  const ids =
-                    (g.players && g.players.length
-                      ? g.players
-                      : [...(g.sideA || []), ...(g.sideB || [])]) || [];
-                  const participated = myIds.some((id) => ids.includes(id));
-                  if (participated && !seen.has(g.id)) {
-                    sum += Number(g.caloriesEstimate || 0);
-                    seen.add(g.id);
-                  }
-                }
-                return (
-                  <div className="rounded-lg bg-orange-50 p-2">
-                    <div className="text-xs text-orange-700">
-                      Your estimated calories
-                    </div>
-                    <div className="font-medium">{sum} kcal</div>
-                  </div>
-                );
-              } catch {
-                return null;
-              }
-            })()}
-            {typeof session.stats.shuttlesUsed !== "undefined" && (
-              <div className="rounded-lg bg-lime-50 p-2">
-                <div className="text-xs text-lime-700">Shuttlecocks used</div>
-                <div className="font-medium">{session.stats.shuttlesUsed}</div>
+          {isOrganizer && !session.ended && !session.clubId && (
+            <button
+              onClick={() => {
+                setSelectedClubId(session.clubId || "");
+                setClubLinkOpen(true);
+              }}
+              title="Add session to a club"
+              aria-label="Add session to a club"
+              className="rounded-xl border px-2 py-1.5"
+            >
+              Add to club
+            </button>
+          )}
+          {session.clubId && (
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="text-[11px] text-gray-600">
+                This is a club session
               </div>
-            )}
-            {session.stats.topWinner && (
-              <div className="rounded-lg bg-green-50 p-2">
-                <div className="text-xs text-green-700">Top winner</div>
-                <div className="font-medium">
-                  {session.stats.topWinner.name}
-                </div>
-                <div className="text-xs text-green-700">
-                  {session.stats.topWinner.wins} wins ·{" "}
-                  {Math.round(session.stats.topWinner.winRate * 100)}%
-                </div>
+              <div className="flex items-center gap-2">
+                <Link
+                  href={`/clubs/${session.clubId}`}
+                  className="rounded border px-2 py-1 text-xs"
+                >
+                  Club
+                </Link>
+                {isOrganizer && !session.ended && (
+                  <>
+                    <button
+                      onClick={() => {
+                        setSelectedClubId(session.clubId || "");
+                        setClubLinkOpen(true);
+                      }}
+                      className="rounded border px-2 py-1 text-xs"
+                    >
+                      Change club
+                    </button>
+                    <button
+                      onClick={() => {
+                        setRemoveClubOpen(true);
+                      }}
+                      className="rounded border px-2 py-1 text-xs"
+                    >
+                      Remove from club
+                    </button>
+                  </>
+                )}
               </div>
-            )}
-            {session.stats.topLoser && (
-              <div className="rounded-lg bg-red-50 p-2">
-                <div className="text-xs text-red-700">Top loser</div>
-                <div className="font-medium">{session.stats.topLoser.name}</div>
-                <div className="text-xs text-red-700">
-                  {session.stats.topLoser.wins} wins ·{" "}
-                  {session.stats.topLoser.losses} losses
-                </div>
-              </div>
-            )}
-            {session.stats.topScorer && (
-              <div className="rounded-lg bg-indigo-50 p-2">
-                <div className="text-xs text-indigo-700">Top scorer</div>
-                <div className="font-medium">
-                  {session.stats.topScorer.name}
-                </div>
-                <div className="text-xs text-indigo-700">
-                  {session.stats.topScorer.points} pts
-                </div>
-              </div>
-            )}
-            {session.stats.mostActive && (
-              <div className="rounded-lg bg-amber-50 p-2">
-                <div className="text-xs text-amber-700">Most active</div>
-                <div className="font-medium">
-                  {session.stats.mostActive.name}
-                </div>
-                <div className="text-xs text-amber-700">
-                  {session.stats.mostActive.games} games
-                </div>
-              </div>
-            )}
-            {session.stats.bestPair && (
-              <div className="col-span-2 rounded-lg bg-teal-50 p-2">
-                <div className="text-xs text-teal-700">Best pair</div>
-                <div className="font-medium">
-                  {session.stats.bestPair.names.join(" & ")}
-                </div>
-                <div className="text-xs text-teal-700">
-                  {session.stats.bestPair.wins} wins together
-                </div>
-              </div>
-            )}
-            {session.stats.longestDuration && (
-              <div className="col-span-2 rounded-lg bg-fuchsia-50 p-2">
-                <div className="text-xs text-fuchsia-700">
-                  Longest duration on court
-                </div>
-                <div className="font-medium">
-                  {session.stats.longestDuration.names.join(" & ")}
-                </div>
-                <div className="text-xs text-fuchsia-700">
-                  {formatDuration(session.stats.longestDuration.durationMs)}
-                </div>
-              </div>
-            )}
-            {session.stats.mostIntenseGame && (
-              <div className="col-span-2 rounded-lg bg-sky-50 p-2">
-                <div className="text-xs text-sky-700">Most intense game</div>
-                <div className="text-xs text-sky-700">
-                  Court {session.stats.mostIntenseGame.courtIndex + 1} ·{" "}
-                  {new Date(
-                    session.stats.mostIntenseGame.endedAt
-                  ).toLocaleTimeString([], {
-                    hour: "2-digit",
-                    minute: "2-digit",
-                  })}
-                </div>
-                <div className="font-medium">
-                  {session.stats.mostIntenseGame.namesA.join(" & ")} vs{" "}
-                  {session.stats.mostIntenseGame.namesB.join(" & ")}
-                </div>
-                <div className="text-xs text-sky-700">
-                  {session.stats.mostIntenseGame.scoreA}–
-                  {session.stats.mostIntenseGame.scoreB} ·{" "}
-                  {session.stats.mostIntenseGame.totalPoints} pts in{" "}
-                  {formatDuration(session.stats.mostIntenseGame.durationMs)} (
-                  {Math.round(session.stats.mostIntenseGame.secondsPerPoint)}{" "}
-                  s/pt)
-                </div>
-              </div>
-            )}
-          </div>
-          {!!(
-            session.stats.leaderboard && session.stats.leaderboard.length
-          ) && (
-            <div className="mt-3">
-              <div className="mb-1 text-xs font-medium text-gray-600">
-                Leaderboard
-              </div>
-              <ul className="divide-y rounded-lg border">
-                {session.stats.leaderboard.map((p) => (
-                  <li
-                    key={p.playerId}
-                    className="flex items-center justify-between px-2 py-1 text-sm"
-                  >
-                    <div className="truncate">
-                      {(() => {
-                        const sp = session.players.find(
-                          (pp) => pp.id === p.playerId
-                        );
-                        console.log("sp", sp);
-                        const uid = sp?.accountUid;
-                        const uname = uid ? usernameMap[uid] : undefined;
-                        const slug = uname ? toUsernameSlug(uname) : null;
-                        const finalUname = uname || sp?.accountUsername;
-                        return uid && finalUname ? (
-                          <Link
-                            href={`/profile/${finalUname}`}
-                            className="text-sky-700 hover:underline"
-                          >
-                            {p.name}
-                          </Link>
-                        ) : (
-                          <span>{p.name}</span>
-                        );
-                      })()}
-                    </div>
-                    <div className="ml-2 shrink-0 text-xs text-gray-600">
-                      {p.wins}W {p.losses}L · {Math.round(p.winRate * 100)}% ·{" "}
-                      {p.points}pts
-                    </div>
-                  </li>
-                ))}
-              </ul>
             </div>
           )}
         </Card>
       )}
-
-      <Card>
-        {isOrganizer && !session.ended && !session.clubId && (
-          <button
-            onClick={() => {
-              setSelectedClubId(session.clubId || "");
-              setClubLinkOpen(true);
-            }}
-            title="Add session to a club"
-            aria-label="Add session to a club"
-            className="rounded-xl border px-2 py-1.5"
-          >
-            Add to club
-          </button>
-        )}
-        {session.clubId && (
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="text-[11px] text-gray-600">
-              This is a club session
-            </div>
-            <div className="flex items-center gap-2">
-              <Link
-                href={`/clubs/${session.clubId}`}
-                className="rounded border px-2 py-1 text-xs"
-              >
-                Club
-              </Link>
-              {isOrganizer && !session.ended && (
-                <>
-                  <button
-                    onClick={() => {
-                      setSelectedClubId(session.clubId || "");
-                      setClubLinkOpen(true);
-                    }}
-                    className="rounded border px-2 py-1 text-xs"
-                  >
-                    Change club
-                  </button>
-                  <button
-                    onClick={() => {
-                      setRemoveClubOpen(true);
-                    }}
-                    className="rounded border px-2 py-1 text-xs"
-                  >
-                    Remove from club
-                  </button>
-                </>
-              )}
-            </div>
-          </div>
-        )}
-      </Card>
 
       {removeClubOpen && isOrganizer && (
         <ConfirmModal
@@ -1226,7 +1024,7 @@ function SessionManager({ onBack }: { onBack: () => void }) {
         />
       )}
 
-      {canManage && (
+      {canManage && !session.ended && (
         <Card>
           <h3 className="mb-3 text-base font-semibold">Add players</h3>
           <div className="space-y-2">
@@ -1471,7 +1269,21 @@ function SessionManager({ onBack }: { onBack: () => void }) {
       {/* Players and Courts */}
       <div className="space-y-3 layout-grid">
         <Card>
-          <h3 className="mb-2 text-base font-semibold">Players</h3>
+          <div className="mb-2 flex items-center justify-between">
+            <h3 className="text-base font-semibold">Players</h3>
+            <div className="flex items-center gap-2 w-1/2">
+              <span className="text-gray-600">Sort</span>
+              <Select
+                value={playerSort}
+                onChange={(v) => setPlayerSort(v as any)}
+                aria-label="Sort players"
+              >
+                <option value="alpha">Alphabetical (A–Z)</option>
+                <option value="games">Games played (fewest first)</option>
+                <option value="gameOpp">Games played (most first)</option>
+              </Select>
+            </div>
+          </div>
           <div className="mb-3 flex flex-wrap items-center gap-3 text-[11px] text-gray-600">
             <span
               className="inline-flex items-center gap-1"
@@ -1553,7 +1365,7 @@ function SessionManager({ onBack }: { onBack: () => void }) {
           {session.players.length === 0 ? (
             <p className="text-gray-500">No players yet. Add some above.</p>
           ) : (
-            <div className="space-y-2">
+            <div className="space-y-3">
               {sortedPlayers.map((p) => {
                 const currentIdx = getPlayerCourtIndex(session, p.id);
                 const inGame = inGameIdSet.has(p.id);
@@ -1630,7 +1442,9 @@ function SessionManager({ onBack }: { onBack: () => void }) {
                         )}
                       </div>
                       <div className="col-span-8 min-w-0 truncate">
-                        <span className="block truncate">{p.name}</span>
+                        <span className="block truncate text-base">
+                          {p.name}
+                        </span>
                       </div>
                       <div className="col-span-2 flex items-center gap-2 justify-start shrink-0">
                         {/* no separate dot; icon color indicates Me */}
@@ -1750,275 +1564,76 @@ function SessionManager({ onBack }: { onBack: () => void }) {
           )}
         </Card>
 
-        <Card>
-          <div className="mb-3 flex items-center justify-between">
-            <h3 className="text-base font-semibold">Courts</h3>
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-gray-500">
-                Unassigned: {unassigned.length}
-              </span>
-              {!session.ended && canManage && (
-                <AddCourtButton sessionId={session.id} />
-              )}
-            </div>
-          </div>
-          <div className="grid grid-cols-1 gap-3">
-            {session.courts.map((court, idx) => (
-              <CourtCard
-                key={court.id}
-                session={session}
-                court={court}
-                idx={idx}
-                isOrganizer={canManage}
-                isMainOrganizer={isOrganizer}
-                organizerUid={organizerUid || undefined}
-              />
-            ))}
-          </div>
-        </Card>
-      </div>
-      <Card>
-        <div className="mb-3 flex items-center justify-between">
-          <h3 className="text-base font-semibold">Games</h3>
-          <div className="flex items-center gap-2">
-            <Select value={gamesFilter} onChange={setGamesFilter}>
-              <option value="">All players</option>
-              {session.players.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-            </Select>
-          </div>
-        </div>
-        {!session.games || session.games.length === 0 ? (
-          <p className="text-gray-500">No games recorded yet.</p>
-        ) : (
-          <div className="space-y-2">
-            {pagedGames.map((g) => {
-              const selected = gamesFilter || "";
-              const playedA = selected && g.sideA.includes(selected);
-              const playedB = selected && g.sideB.includes(selected);
-              const resultForSelected = selected
-                ? g.voided
-                  ? "void"
-                  : g.winner === "draw"
-                  ? "draw"
-                  : playedA
-                  ? g.winner === "A"
-                    ? "win"
-                    : "loss"
-                  : playedB
-                  ? g.winner === "B"
-                    ? "win"
-                    : "loss"
-                  : ""
-                : "";
-              return (
-                <div
-                  key={g.id}
-                  className="rounded-xl border border-gray-200 p-3"
-                >
-                  <div className="flex items-center justify-between">
-                    <div className="text-sm font-medium">
-                      Court {g.courtIndex + 1}
-                    </div>
-                    <div className="text-xs text-gray-500">
-                      {new Date(g.endedAt).toLocaleTimeString([], {
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      })}
-                      {typeof g.durationMs !== "undefined" && (
-                        <span className="ml-2 rounded-full bg-gray-100 px-2 py-0.5 text-[10px] text-gray-700">
-                          {formatDuration(g.durationMs)}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                  <div className="mt-1 text-sm">
-                    {g.voided ? (
-                      <span className="rounded bg-red-50 px-2 py-0.5 text-red-700">
-                        Voided
-                      </span>
-                    ) : (
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="whitespace-nowrap">
-                          Score: {g.scoreA}–{g.scoreB} · Winner: {g.winner}
-                        </span>
-                        {g.endedByRole && (
-                          <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[10px] text-gray-700 whitespace-nowrap">
-                            Ended By{" "}
-                            {g.endedByRole === "organizer"
-                              ? "Organizer"
-                              : "Co-organizer"}
-                          </span>
-                        )}
-                        {typeof g.caloriesEstimate === "number" && (
-                          <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[10px] text-gray-700 whitespace-nowrap">
-                            Est. {g.caloriesEstimate} kcal
-                          </span>
-                        )}
-                        {selected && (playedA || playedB) && !g.voided && (
-                          <span
-                            className={`whitespace-nowrap rounded px-2 py-0.5 text-[10px] ${
-                              resultForSelected === "win"
-                                ? "bg-green-50 text-green-700"
-                                : resultForSelected === "loss"
-                                ? "bg-red-50 text-red-700"
-                                : "bg-gray-100 text-gray-700"
-                            }`}
+        {!session.ended && (
+          <Card>
+            <div className="mb-3 flex items-center justify-between">
+              <h3 className="text-base font-semibold">Courts</h3>
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-gray-500">
+                  Unassigned: {unassigned.length}
+                </span>
+                {!session.ended &&
+                  canManage &&
+                  (() => {
+                    const allFull = (session.courts || []).every((c) => {
+                      const cap = (c.mode || "doubles") === "singles" ? 2 : 4;
+                      return c.playerIds.length >= cap;
+                    });
+                    return (
+                      <>
+                        {allFull ? (
+                          <button
+                            onClick={() =>
+                              (useStore.getState() as any).clearAllCourts?.(
+                                session.id
+                              )
+                            }
+                            className="rounded border px-2 py-1 text-xs"
+                            title="Clear all courts (skip those in progress)"
                           >
-                            {resultForSelected}
-                          </span>
+                            Clear all
+                          </button>
+                        ) : (
+                          <button
+                            onClick={() =>
+                              (
+                                useStore.getState() as any
+                              ).autoAssignAllCourts?.(session.id)
+                            }
+                            className="rounded border px-2 py-1 text-xs"
+                            title="Auto-assign players to all courts with empty slots"
+                          >
+                            Auto-assign all
+                          </button>
                         )}
-                      </div>
-                    )}
-                  </div>
-                  <div className="mt-1 text-xs text-gray-500 truncate">
-                    A:{" "}
-                    {g.sideA
-                      .map((pid: string) => ({
-                        id: pid,
-                        name:
-                          session.players.find((pp) => pp.id === pid)?.name ||
-                          "(deleted)",
-                      }))
-                      .map((p: { id: string; name: string }) => (
-                        <span
-                          key={`A-${p.id}`}
-                          className={
-                            gamesFilter && p.id === gamesFilter
-                              ? "font-semibold text-gray-800"
-                              : ""
-                          }
-                        >
-                          {p.name}
-                        </span>
-                      ))
-                      .reduce(
-                        (prev: any[] | null, cur: any) =>
-                          prev === null ? [cur] : [...prev, " & ", cur],
-                        null as any
-                      )}
-                    <br />
-                    B:{" "}
-                    {g.sideB
-                      .map((pid: string) => ({
-                        id: pid,
-                        name:
-                          session.players.find((pp) => pp.id === pid)?.name ||
-                          "(deleted)",
-                      }))
-                      .map((p: { id: string; name: string }) => (
-                        <span
-                          key={`B-${p.id}`}
-                          className={
-                            gamesFilter && p.id === gamesFilter
-                              ? "font-semibold text-gray-800"
-                              : ""
-                          }
-                        >
-                          {p.name}
-                        </span>
-                      ))
-                      .reduce(
-                        (prev: any[] | null, cur: any) =>
-                          prev === null ? [cur] : [...prev, " & ", cur],
-                        null as any
-                      )}
-                  </div>
-                  {g.umpireSummary && (
-                    <div className="mt-1 flex flex-wrap items-center gap-2">
-                      {typeof g.umpireSummary.avgRallyDurationMs ===
-                        "number" && (
-                        <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[10px] text-gray-700">
-                          {(() => {
-                            const s = g.umpireSummary!;
-                            const secs =
-                              (s.avgRallyDurationMs as number) / 1000;
-                            return `${secs.toFixed(1)}s avg rally`;
-                          })()}
-                        </span>
-                      )}
-                      {typeof g.umpireSummary.longestRallyDurationMs ===
-                        "number" && (
-                        <span className="rounded-full bg-indigo-50 px-2 py-0.5 text-[10px] text-indigo-700">
-                          {(() => {
-                            const s = g.umpireSummary!;
-                            const secs =
-                              (s.longestRallyDurationMs as number) / 1000;
-                            return `Longest ${secs.toFixed(1)}s`;
-                          })()}
-                        </span>
-                      )}
-                      {!!(
-                        g.umpireSummary.mvps && g.umpireSummary.mvps.length
-                      ) && (
-                        <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] text-emerald-700">
-                          {(() => {
-                            const mvps = g.umpireSummary!.mvps!;
-                            const parts = mvps.map((mvp: any) => {
-                              const pl =
-                                session.players.find(
-                                  (pp) => pp.id === mvp.playerId
-                                ) || null;
-                              const name = pl?.name || "(deleted)";
-                              const w =
-                                typeof mvp.winners === "number"
-                                  ? mvp.winners
-                                  : 0;
-                              const l =
-                                typeof mvp.losers === "number" ? mvp.losers : 0;
-                              return `${name} (${w}W, ${l}E)`;
-                            });
-                            return `${
-                              mvps.length > 1 ? "MVPs" : "MVP"
-                            }: ${parts.join(" & ")}`;
-                          })()}
-                        </span>
-                      )}
-                    </div>
-                  )}
-                  <div className="mt-2 flex justify-end gap-2">
-                    {(g.umpireHistory &&
-                      (g.umpireHistory as any[]).length > 0) ||
-                    g.umpireSummary ? (
-                      <button
-                        onClick={() => setDetailsGameId(g.id)}
-                        className="rounded border px-2 py-0.5 text-xs"
-                      >
-                        Details
-                      </button>
-                    ) : null}
-                    {!session.ended && (
-                      <button
-                        onClick={() => setEditGameId(g.id)}
-                        className="rounded border px-2 py-0.5 text-xs"
-                      >
-                        Edit
-                      </button>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-            {filteredGames.length > pagedGames.length ? (
-              <div className="mt-2 flex justify-center">
-                <button
-                  onClick={() => setGamesPage((p) => p + 1)}
-                  className="rounded border px-2 py-1 text-xs"
-                >
-                  See more
-                </button>
+                        <AddCourtButton sessionId={session.id} />
+                      </>
+                    );
+                  })()}
               </div>
-            ) : (
-              <div className="mt-2 text-center text-[11px] text-gray-500">
-                End of list
-              </div>
-            )}
-          </div>
+            </div>
+            <div className="grid grid-cols-1 gap-3">
+              {session.courts.map((court, idx) => (
+                <CourtCard
+                  key={court.id}
+                  session={session}
+                  court={court}
+                  idx={idx}
+                  isOrganizer={canManage}
+                  isMainOrganizer={isOrganizer}
+                  organizerUid={organizerUid || undefined}
+                />
+              ))}
+            </div>
+          </Card>
         )}
-      </Card>
+      </div>
+      <GamesList
+        session={session}
+        isSessionEnded={!!session.ended}
+        onOpenEdit={(id) => setEditGameId(id)}
+        onOpenDetails={(id) => setDetailsGameId(id)}
+      />
       <GameEditModal
         session={session}
         gameId={editGameId}

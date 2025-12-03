@@ -2165,8 +2165,152 @@ async function commitWritesChunked(token, env, writes, chunkSize = 450) {
     await commitWrites(token, env, chunk);
   }
 }
+// Similar to batchWriteIgnoreIdempotentErrors, but returns a boolean success array
+// indicating which writes were applied (status.code === 0). Order matches input.
+async function batchWriteGetSuccessFlags(token, env, writes, chunkSize = 450) {
+  const flags = new Array(writes.length).fill(false);
+  const { url: baseUrl } = fsBases(env.GCP_PROJECT_ID, env.FIRESTORE_DB);
+  let outIdx = 0;
+  for (let i = 0; i < writes.length; i += chunkSize) {
+    const chunk = writes.slice(i, i + chunkSize);
+    try {
+      const res = await fetch(`${baseUrl}:batchWrite`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ writes: chunk }),
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        let msg = text;
+        try {
+          const j = JSON.parse(text);
+          if (j?.error)
+            msg = `${j.error.status || ""} ${j.error.code || ""} — ${
+              j.error.message || ""
+            }`;
+        } catch {}
+        console.log(
+          `batchWriteGetSuccessFlags http error: ${res.status} ${msg}`
+        );
+        // mark these as false and continue
+        outIdx += chunk.length;
+        continue;
+      }
+      const j = await res.json();
+      const statuses = Array.isArray(j?.status) ? j.status : [];
+      for (let k = 0; k < chunk.length; k++) {
+        const s = statuses[k];
+        const ok = s && Number(s.code || 0) === 0;
+        flags[outIdx + k] = !!ok;
+      }
+      outIdx += chunk.length;
+    } catch (e) {
+      console.log("batchWriteGetSuccessFlags parse/error", e);
+      outIdx += chunk.length;
+    }
+  }
+  return flags;
+}
 function isAlreadyApplied(e) {
   return /FAILED_PRECONDITION|ALREADY_EXISTS/i.test(String(e?.message || ""));
+}
+
+// Batch-get Firestore documents by relative paths. Returns a Map<path, docJson>.
+// Handles Firestore's NDJSON or aggregated JSON responses.
+async function batchGetDocs(token, env, paths, chunkSize = 300) {
+  const out = new Map();
+  if (!paths || !paths.length) return out;
+  const { url: baseUrl, name: nameBase } = fsBases(
+    env.GCP_PROJECT_ID,
+    env.FIRESTORE_DB
+  );
+  for (let i = 0; i < paths.length; i += chunkSize) {
+    const chunk = paths.slice(i, i + chunkSize);
+    const documents = chunk.map((p) => `${nameBase}/${p}`);
+    try {
+      const res = await fetch(`${baseUrl}:batchGet`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ documents }),
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        let msg = text;
+        try {
+          const j = JSON.parse(text);
+          if (j?.error)
+            msg = `${j.error.status || ""} ${j.error.code || ""} — ${
+              j.error.message || ""
+            }`;
+        } catch {}
+        console.log(`batchGetDocs error: ${res.status} ${msg}`);
+        continue;
+      }
+      const text = await res.text();
+      const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0);
+      if (lines.length > 1) {
+        // NDJSON stream
+        for (const line of lines) {
+          try {
+            const obj = JSON.parse(line);
+            const found = obj && obj.found;
+            const missing = obj && obj.missing;
+            if (found && found.name) {
+              const full = String(found.name);
+              const path = full.startsWith(`${nameBase}/`)
+                ? full.slice(nameBase.length + 1)
+                : full;
+              out.set(path, found);
+            } else if (missing) {
+              const full = String(missing);
+              const path = full.startsWith(`${nameBase}/`)
+                ? full.slice(nameBase.length + 1)
+                : full;
+              if (!out.has(path)) out.set(path, null);
+            }
+          } catch {}
+        }
+      } else {
+        // Aggregated JSON (fallback)
+        try {
+          const obj = JSON.parse(text);
+          const responses = Array.isArray(obj?.responses)
+            ? obj.responses
+            : Array.isArray(obj)
+            ? obj
+            : [];
+          for (const r of responses) {
+            const found = r && r.found;
+            const missing = r && r.missing;
+            if (found && found.name) {
+              const full = String(found.name);
+              const path = full.startsWith(`${nameBase}/`)
+                ? full.slice(nameBase.length + 1)
+                : full;
+              out.set(path, found);
+            } else if (missing) {
+              const full = String(missing);
+              const path = full.startsWith(`${nameBase}/`)
+                ? full.slice(nameBase.length + 1)
+                : full;
+              if (!out.has(path)) out.set(path, null);
+            }
+          }
+        } catch {
+          // Ignore parse errors; proceed
+        }
+      }
+    } catch (e) {
+      console.log("batchGetDocs fetch error", e);
+    }
+  }
+  return out;
 }
 
 // CORS
@@ -2563,6 +2707,94 @@ export class NotificationMailbox {
       await this.state.storage.put("alarmAt", when);
     }
   }
+}
+
+// Fanout Durable Object: accepts many {userId, event} items and forwards to per-user Mailbox DOs
+export class NotificationFanout {
+  constructor(state, env) {
+    this.state = state;
+    this.env = env;
+  }
+
+  async fetch(req) {
+    const url = new URL(req.url);
+    if (req.method === "POST" && url.pathname.endsWith("/fanout/enqueue")) {
+      const { items } = await req.json();
+      if (!Array.isArray(items) || !items.length)
+        return new Response("bad", { status: 400 });
+      const existing = (await this.state.storage.get("q")) || [];
+      const nextQ = existing.concat(
+        items
+          .map((it) => {
+            const userId = it && it.userId ? String(it.userId) : "";
+            const ev = it && it.ev ? it.ev : null;
+            if (!userId || !ev) return null;
+            return { userId, ev };
+          })
+          .filter(Boolean)
+      );
+      await this.state.storage.put("q", nextQ);
+      // process a chunk now; schedule alarm for the rest
+      try {
+        await this._processChunk();
+      } catch (e) {
+        try {
+          console.log("[Fanout] process error", e);
+        } catch {}
+      }
+      const remaining = (await this.state.storage.get("q")) || [];
+      if (remaining.length) {
+        const when = Date.now() + 1000;
+        await this.state.storage.setAlarm(when);
+        await this.state.storage.put("alarmAt", when);
+      }
+      return new Response("OK");
+    }
+    return new Response("Not Found", { status: 404 });
+  }
+
+  async alarm() {
+    try {
+      await this.state.storage.delete("alarmAt");
+    } catch {}
+    await this._processChunk();
+    const remaining = (await this.state.storage.get("q")) || [];
+    if (remaining.length) {
+      const when = Date.now() + 1000;
+      await this.state.storage.setAlarm(when);
+      await this.state.storage.put("alarmAt", when);
+    }
+  }
+
+  // Process up to MAX_PER_RUN items to keep subrequests < 50
+  async _processChunk() {
+    const MAX_PER_RUN = 40;
+    const q = (await this.state.storage.get("q")) || [];
+    if (!q.length) return;
+    const chunk = q.slice(0, MAX_PER_RUN);
+    const rest = q.slice(MAX_PER_RUN);
+    await this.state.storage.put("q", rest);
+    for (const it of chunk) {
+      try {
+        await enqueueEvent(this.env, it.userId, it.ev);
+      } catch (e) {
+        try {
+          console.log("[Fanout] enqueue error", it.userId, e);
+        } catch {}
+      }
+    }
+  }
+}
+
+async function enqueueFanout(env, items) {
+  const id = env.FANOUT.idFromName("global");
+  const stub = env.FANOUT.get(id);
+  const res = await stub.fetch("https://do/fanout/enqueue", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ items }),
+  });
+  return res;
 }
 
 // Durable Object: per-club weekly reminder scheduler for Telegram
@@ -3314,14 +3546,13 @@ async function computeEloAndChemistry({
 
   const userElo = new Map();
   {
-    const readPromises = Array.from(allLinkedUids).map(async (uid) => {
+    const paths = Array.from(allLinkedUids).map((uid) => `${userCol}/${uid}`);
+    const docs = await batchGetDocs(token, env, paths);
+    for (const uid of allLinkedUids) {
+      const p = `${userCol}/${uid}`;
+      const doc = docs.get(p);
       try {
-        const res = await fetch(`${baseUrl}/${userCol}/${uid}`, {
-          headers: { authorization: `Bearer ${token}` },
-        });
-        if (!res.ok) throw new Error(String(res.status));
-        const doc = await res.json();
-        const f = doc.fields || {};
+        const f = (doc && doc.fields) || {};
         const elo = jsonFromFields(f.elo) || {};
         const singles = elo.singles || { R: 1500, K: 32, matches: 0 };
         const doubles = elo.doubles || { R: 1500, K: 32, matches: 0 };
@@ -3337,46 +3568,63 @@ async function computeEloAndChemistry({
             matches: Number(doubles.matches ?? 0),
           },
         });
-      } catch (e) {
-        try {
-          console.log("readUserElo error", uid, e);
-        } catch {}
+      } catch {
         userElo.set(uid, {
           singles: { R: 1500, K: 32, matches: 0 },
           doubles: { R: 1500, K: 32, matches: 0 },
         });
       }
-    });
-    await Promise.all(readPromises);
+    }
   }
 
   const friendEdgeColName = isTest ? "friendEdges_test" : "friendEdges";
   const chemistryByEdge = new Map();
+  // Prefetch chemistry for all doubles teammate pairs observed across games
+  {
+    const neededEdges = new Set();
+    for (const g of games) {
+      const mode = g.mode === "singles" ? "singles" : "doubles";
+      if (mode !== "doubles") continue;
+      const aU = (Array.isArray(g.sideA) ? g.sideA : [])
+        .map((pid) => pidToUid.get(pid))
+        .filter(Boolean);
+      const bU = (Array.isArray(g.sideB) ? g.sideB : [])
+        .map((pid) => pidToUid.get(pid))
+        .filter(Boolean);
+      if (aU.length >= 2) {
+        const [x, y] = aU.slice(0, 2).sort();
+        neededEdges.add(`${x}__${y}`);
+      }
+      if (bU.length >= 2) {
+        const [x, y] = bU.slice(0, 2).sort();
+        neededEdges.add(`${x}__${y}`);
+      }
+    }
+    const paths = Array.from(neededEdges).map(
+      (ek) => `${friendEdgeColName}/${ek}`
+    );
+    const docs = await batchGetDocs(token, env, paths);
+    for (const ek of neededEdges) {
+      const p = `${friendEdgeColName}/${ek}`;
+      const doc = docs.get(p);
+      try {
+        const f = (doc && doc.fields) || {};
+        const chem = jsonFromFields(f.chemistry) || {};
+        const last = jsonFromFields(f.lastPlayedAt) || "";
+        chemistryByEdge.set(ek, {
+          delta: Number(chem.delta ?? 0),
+          lastPlayedAt: String(last || ""),
+        });
+      } catch {
+        chemistryByEdge.set(ek, { delta: 0, lastPlayedAt: "" });
+      }
+    }
+  }
   async function getChem(edgeKey) {
     if (chemistryByEdge.has(edgeKey)) return chemistryByEdge.get(edgeKey);
-    try {
-      const res = await fetch(`${baseUrl}/${friendEdgeColName}/${edgeKey}`, {
-        headers: { authorization: `Bearer ${token}` },
-      });
-      if (!res.ok) throw new Error(String(res.status));
-      const doc = await res.json();
-      const f = doc.fields || {};
-      const chem = jsonFromFields(f.chemistry) || {};
-      const last = jsonFromFields(f.lastPlayedAt) || "";
-      const row = {
-        delta: Number(chem.delta ?? 0),
-        lastPlayedAt: String(last || ""),
-      };
-      chemistryByEdge.set(edgeKey, row);
-      return row;
-    } catch (e) {
-      try {
-        console.log("getChem error", edgeKey, e);
-      } catch {}
-      const row = { delta: 0, lastPlayedAt: "" };
-      chemistryByEdge.set(edgeKey, row);
-      return row;
-    }
+    const row = { delta: 0, lastPlayedAt: "" };
+    chemistryByEdge.set(edgeKey, row);
+    return row;
   }
 
   const updatedUsers = new Set();
@@ -3534,15 +3782,11 @@ async function commitPerUserStats({
   env,
   token,
 }) {
-  const gateWrites = [];
-  const writes = [];
+  // Create monthly gates for all users (batch), capture success flags
+  const monthlyGateWrites = [];
   for (const uid of uids) {
-    const agg = perUser[uid];
-    const monthPath = `${rootCol}/${uid}/monthly/${endMonth}`;
-    const sumPath = `${rootCol}/${uid}`;
-
     const monthlyTaskKey = `stats:monthly:${endMonth}:${uid}:${sessionKey}`;
-    gateWrites.push(
+    monthlyGateWrites.push(
       makeUpdatePrecondCreate(
         `${rootCol}/${uid}/gates/${monthlyTaskKey}`,
         {
@@ -3555,35 +3799,16 @@ async function commitPerUserStats({
         env
       )
     );
-    writes.push(
-      makeUpdateMaskWrite(
-        monthPath,
-        { month: endMonth, appliedSessions: { [sessionKey]: true } },
-        ["month", maskPath(`appliedSessions.${sessionKey}`)],
-        env
-      )
-    );
-    writes.push(
-      makeTransformWrite(
-        monthPath,
-        [
-          inc("singles.games", agg.singles.games),
-          inc("singles.wins", agg.singles.wins),
-          inc("singles.durationMin", agg.singles.durationMin),
-          inc("doubles.games", agg.doubles.games),
-          inc("doubles.wins", agg.doubles.wins),
-          inc("doubles.durationMin", agg.doubles.durationMin),
-          inc("totals.games", agg.totals.games),
-          inc("totals.wins", agg.totals.wins),
-          inc("totals.durationMin", agg.totals.durationMin),
-          reqTime("updatedAt"),
-        ],
-        env
-      )
-    );
+  }
+  const monthlyOk = monthlyGateWrites.length
+    ? await batchWriteGetSuccessFlags(token, env, monthlyGateWrites)
+    : [];
 
+  // Create summary gates for all users (batch), capture success flags
+  const summaryGateWrites = [];
+  for (const uid of uids) {
     const summaryTaskKey = `stats:summary:${uid}:${sessionKey}`;
-    gateWrites.push(
+    summaryGateWrites.push(
       makeUpdatePrecondCreate(
         `${rootCol}/${uid}/gates/${summaryTaskKey}`,
         {
@@ -3596,29 +3821,70 @@ async function commitPerUserStats({
         env
       )
     );
-    writes.push(makeUpdateMaskWrite(sumPath, { uid }, ["uid"], env));
-    writes.push(
-      makeTransformWrite(
-        sumPath,
-        [
-          inc("totals.games", agg.totals.games),
-          inc("totals.wins", agg.totals.wins),
-          inc("totals.durationMin", agg.totals.durationMin),
-          inc("totals.singles.games", agg.singles.games),
-          inc("totals.singles.wins", agg.singles.wins),
-          inc("totals.singles.durationMin", agg.singles.durationMin),
-          inc("totals.doubles.games", agg.doubles.games),
-          inc("totals.doubles.wins", agg.doubles.wins),
-          inc("totals.doubles.durationMin", agg.doubles.durationMin),
-          arrayUnion("recentForm", agg.recent.slice().reverse()),
-          reqTime("updatedAt"),
-        ],
-        env
-      )
-    );
   }
-  if (gateWrites.length)
-    await batchWriteIgnoreIdempotentErrors(token, env, gateWrites);
+  const summaryOk = summaryGateWrites.length
+    ? await batchWriteGetSuccessFlags(token, env, summaryGateWrites)
+    : [];
+
+  // Apply increments only where corresponding gate was newly created
+  const writes = [];
+  for (let i = 0; i < uids.length; i++) {
+    const uid = uids[i];
+    const agg = perUser[uid];
+    const monthPath = `${rootCol}/${uid}/monthly/${endMonth}`;
+    const sumPath = `${rootCol}/${uid}`;
+
+    if (monthlyOk[i]) {
+      writes.push(
+        makeUpdateMaskWrite(
+          monthPath,
+          { month: endMonth, appliedSessions: { [sessionKey]: true } },
+          ["month", maskPath(`appliedSessions.${sessionKey}`)],
+          env
+        )
+      );
+      writes.push(
+        makeTransformWrite(
+          monthPath,
+          [
+            inc("singles.games", agg.singles.games),
+            inc("singles.wins", agg.singles.wins),
+            inc("singles.durationMin", agg.singles.durationMin),
+            inc("doubles.games", agg.doubles.games),
+            inc("doubles.wins", agg.doubles.wins),
+            inc("doubles.durationMin", agg.doubles.durationMin),
+            inc("totals.games", agg.totals.games),
+            inc("totals.wins", agg.totals.wins),
+            inc("totals.durationMin", agg.totals.durationMin),
+            reqTime("updatedAt"),
+          ],
+          env
+        )
+      );
+    }
+    if (summaryOk[i]) {
+      writes.push(makeUpdateMaskWrite(sumPath, { uid }, ["uid"], env));
+      writes.push(
+        makeTransformWrite(
+          sumPath,
+          [
+            inc("totals.games", agg.totals.games),
+            inc("totals.wins", agg.totals.wins),
+            inc("totals.durationMin", agg.totals.durationMin),
+            inc("totals.singles.games", agg.singles.games),
+            inc("totals.singles.wins", agg.singles.wins),
+            inc("totals.singles.durationMin", agg.singles.durationMin),
+            inc("totals.doubles.games", agg.doubles.games),
+            inc("totals.doubles.wins", agg.doubles.wins),
+            inc("totals.doubles.durationMin", agg.doubles.durationMin),
+            arrayUnion("recentForm", agg.recent.slice().reverse()),
+            reqTime("updatedAt"),
+          ],
+          env
+        )
+      );
+    }
+  }
   if (writes.length) await commitWritesChunked(token, env, writes);
 }
 
@@ -3631,13 +3897,12 @@ async function commitEloWrites({
   env,
   token,
 }) {
-  const gateWrites = [];
-  const writes = [];
-  for (const uid of updatedUsers) {
-    const pr = userElo.get(uid);
-    if (!pr) continue;
+  // Create gates for elo writes (batch), only apply updates if gate is new
+  const gates = [];
+  const users = Array.from(updatedUsers || []);
+  for (const uid of users) {
     const eloTaskKey = `elo:session:${organizerUid}_${sessionId}`;
-    gateWrites.push(
+    gates.push(
       makeUpdatePrecondCreate(
         `${userCol}/${uid}/gates/${eloTaskKey}`,
         {
@@ -3650,6 +3915,16 @@ async function commitEloWrites({
         env
       )
     );
+  }
+  const ok = gates.length
+    ? await batchWriteGetSuccessFlags(token, env, gates)
+    : [];
+  const writes = [];
+  for (let i = 0; i < users.length; i++) {
+    if (!ok[i]) continue;
+    const uid = users[i];
+    const pr = userElo.get(uid);
+    if (!pr) continue;
     writes.push(
       makeUpdateMaskWrite(
         `${userCol}/${uid}`,
@@ -3665,8 +3940,6 @@ async function commitEloWrites({
       )
     );
   }
-  if (gateWrites.length)
-    await batchWriteIgnoreIdempotentErrors(token, env, gateWrites);
   if (writes.length) await commitWritesChunked(token, env, writes);
 }
 
@@ -3681,10 +3954,10 @@ async function commitFriendEdgesAndMirrors({
   chemistryByEdge,
 }) {
   const friendEdgeCol = isTest ? "friendEdges_test" : "friendEdges";
+  // Gates in one batch to determine which edges are new for this session
+  const edges = Array.from(pairAgg);
   const gateWrites = [];
-  const writes = [];
-  for (const [edgeKey, agg] of pairAgg) {
-    const { u1, u2, games, wins, durationMin, lastEndedAt } = agg;
+  for (const [edgeKey] of edges) {
     gateWrites.push(
       makeUpdatePrecondCreate(
         `${friendEdgeCol}/${edgeKey}/bySession/${sessionKey}`,
@@ -3692,6 +3965,15 @@ async function commitFriendEdgesAndMirrors({
         env
       )
     );
+  }
+  const allowed = gateWrites.length
+    ? await batchWriteGetSuccessFlags(token, env, gateWrites)
+    : [];
+  const writes = [];
+  for (let i = 0; i < edges.length; i++) {
+    if (!allowed[i]) continue;
+    const [edgeKey, agg] = edges[i];
+    const { u1, u2, games, wins, durationMin, lastEndedAt } = agg;
     writes.push(
       makeUpdateMaskWrite(
         `${friendEdgeCol}/${edgeKey}`,
@@ -3805,8 +4087,6 @@ async function commitFriendEdgesAndMirrors({
       )
     );
   }
-  if (gateWrites.length)
-    await batchWriteIgnoreIdempotentErrors(token, env, gateWrites);
   if (writes.length) await commitWritesChunked(token, env, writes);
 }
 
@@ -3820,10 +4100,9 @@ async function commitOpponentEdgesAndMirrors({
   token,
 }) {
   const opponentEdgeCol = isTest ? "opponentEdges_test" : "opponentEdges";
+  const items = Array.from(oppAgg);
   const gateWrites = [];
-  const writes = [];
-  for (const [pairKey, agg] of oppAgg) {
-    const { u1, u2, singles, doubles, totals, lastEndedAt } = agg;
+  for (const [pairKey] of items) {
     gateWrites.push(
       makeUpdatePrecondCreate(
         `${opponentEdgeCol}/${pairKey}/bySession/${sessionKey}`,
@@ -3831,6 +4110,15 @@ async function commitOpponentEdgesAndMirrors({
         env
       )
     );
+  }
+  const allowed = gateWrites.length
+    ? await batchWriteGetSuccessFlags(token, env, gateWrites)
+    : [];
+  const writes = [];
+  for (let i = 0; i < items.length; i++) {
+    if (!allowed[i]) continue;
+    const [pairKey, agg] = items[i];
+    const { u1, u2, singles, doubles, totals, lastEndedAt } = agg;
     writes.push(
       makeUpdateMaskWrite(
         `${opponentEdgeCol}/${pairKey}`,
@@ -3964,27 +4252,29 @@ async function commitOpponentEdgesAndMirrors({
       )
     );
   }
-  if (gateWrites.length)
-    await batchWriteIgnoreIdempotentErrors(token, env, gateWrites);
   if (writes.length) await commitWritesChunked(token, env, writes);
 }
 
 async function notifyStatsUpdate({ uids, organizerUid, sessionId, env }) {
   console.log("notifying uids", uids);
+  const items = [];
   for (const uid of uids) {
-    const ev = {
-      idempotencyKey: `stats:${organizerUid}:${sessionId}:${uid}`,
-      type: "stats_update",
-      title: "Session Ended. View your stats now",
-      url: `/session/${sessionId}?u=${uid}`,
-      occurredAt: new Date().toISOString(),
-    };
-    try {
-      const res = await enqueueEvent(env, uid, ev);
-      console.log("enqueueEvent res", res);
-    } catch (e) {
-      console.log("enqueueEvent error", e);
-    }
+    items.push({
+      userId: uid,
+      ev: {
+        idempotencyKey: `stats:${organizerUid}:${sessionId}:${uid}`,
+        type: "stats_update",
+        title: "Session Ended. View your stats now",
+        url: `/session/${sessionId}?u=${uid}`,
+        occurredAt: new Date().toISOString(),
+      },
+    });
+  }
+  try {
+    const res = await enqueueFanout(env, items);
+    console.log("enqueueFanout res", res);
+  } catch (e) {
+    console.log("enqueueFanout error", e);
   }
 }
 
@@ -4024,16 +4314,15 @@ async function commitClubPerUserStats({
   env,
   token,
 }) {
-  const gateWrites = [];
-  const writes = [];
+  const memberUids = [];
   for (const uid of uids) {
-    if (!memberSet.has(uid)) continue;
-    const agg = perUser[uid];
-    const basePath = `${clubsCol}/${clubId}/userStats/${uid}`;
-    const monthPath = `${basePath}/monthly/${endMonth}`;
-
+    if (memberSet.has(uid)) memberUids.push(uid);
+  }
+  const monthlyGates = [];
+  for (const uid of memberUids) {
     const monthlyTaskKey = `stats:monthly:${endMonth}:${uid}:${sessionKey}`;
-    gateWrites.push(
+    const basePath = `${clubsCol}/${clubId}/userStats/${uid}`;
+    monthlyGates.push(
       makeUpdatePrecondCreate(
         `${basePath}/gates/${monthlyTaskKey}`,
         {
@@ -4046,35 +4335,15 @@ async function commitClubPerUserStats({
         env
       )
     );
-    writes.push(
-      makeUpdateMaskWrite(
-        monthPath,
-        { month: endMonth, appliedSessions: { [sessionKey]: true } },
-        ["month", maskPath(`appliedSessions.${sessionKey}`)],
-        env
-      )
-    );
-    writes.push(
-      makeTransformWrite(
-        monthPath,
-        [
-          inc("singles.games", agg.singles.games),
-          inc("singles.wins", agg.singles.wins),
-          inc("singles.durationMin", agg.singles.durationMin),
-          inc("doubles.games", agg.doubles.games),
-          inc("doubles.wins", agg.doubles.wins),
-          inc("doubles.durationMin", agg.doubles.durationMin),
-          inc("totals.games", agg.totals.games),
-          inc("totals.wins", agg.totals.wins),
-          inc("totals.durationMin", agg.totals.durationMin),
-          reqTime("updatedAt"),
-        ],
-        env
-      )
-    );
-
+  }
+  const monthlyOk = monthlyGates.length
+    ? await batchWriteGetSuccessFlags(token, env, monthlyGates)
+    : [];
+  const summaryGates = [];
+  for (const uid of memberUids) {
     const summaryTaskKey = `stats:summary:${uid}:${sessionKey}`;
-    gateWrites.push(
+    const basePath = `${clubsCol}/${clubId}/userStats/${uid}`;
+    summaryGates.push(
       makeUpdatePrecondCreate(
         `${basePath}/gates/${summaryTaskKey}`,
         {
@@ -4087,33 +4356,69 @@ async function commitClubPerUserStats({
         env
       )
     );
-    // ensure summary doc exists (uid, clubId fields)
-    writes.push(
-      makeUpdateMaskWrite(basePath, { uid, clubId }, ["uid", "clubId"], env)
-    );
-    // increment summary counters & append recent slice (club summary uses top-level singles/doubles)
-    writes.push(
-      makeTransformWrite(
-        basePath,
-        [
-          inc("totals.games", agg.totals.games),
-          inc("totals.wins", agg.totals.wins),
-          inc("totals.durationMin", agg.totals.durationMin),
-          inc("singles.games", agg.singles.games),
-          inc("singles.wins", agg.singles.wins),
-          inc("singles.durationMin", agg.singles.durationMin),
-          inc("doubles.games", agg.doubles.games),
-          inc("doubles.wins", agg.doubles.wins),
-          inc("doubles.durationMin", agg.doubles.durationMin),
-          arrayUnion("recentForm", agg.recent.slice().reverse()),
-          reqTime("updatedAt"),
-        ],
-        env
-      )
-    );
   }
-  if (gateWrites.length)
-    await batchWriteIgnoreIdempotentErrors(token, env, gateWrites);
+  const summaryOk = summaryGates.length
+    ? await batchWriteGetSuccessFlags(token, env, summaryGates)
+    : [];
+  const writes = [];
+  for (let i = 0; i < memberUids.length; i++) {
+    const uid = memberUids[i];
+    const agg = perUser[uid];
+    const basePath = `${clubsCol}/${clubId}/userStats/${uid}`;
+    const monthPath = `${basePath}/monthly/${endMonth}`;
+    if (monthlyOk[i]) {
+      writes.push(
+        makeUpdateMaskWrite(
+          monthPath,
+          { month: endMonth, appliedSessions: { [sessionKey]: true } },
+          ["month", maskPath(`appliedSessions.${sessionKey}`)],
+          env
+        )
+      );
+      writes.push(
+        makeTransformWrite(
+          monthPath,
+          [
+            inc("singles.games", agg.singles.games),
+            inc("singles.wins", agg.singles.wins),
+            inc("singles.durationMin", agg.singles.durationMin),
+            inc("doubles.games", agg.doubles.games),
+            inc("doubles.wins", agg.doubles.wins),
+            inc("doubles.durationMin", agg.doubles.durationMin),
+            inc("totals.games", agg.totals.games),
+            inc("totals.wins", agg.totals.wins),
+            inc("totals.durationMin", agg.totals.durationMin),
+            reqTime("updatedAt"),
+          ],
+          env
+        )
+      );
+    }
+    if (summaryOk[i]) {
+      writes.push(
+        makeUpdateMaskWrite(basePath, { uid, clubId }, ["uid", "clubId"], env)
+      );
+      writes.push(
+        makeTransformWrite(
+          basePath,
+          [
+            inc("totals.games", agg.totals.games),
+            inc("totals.wins", agg.totals.wins),
+            inc("totals.durationMin", agg.totals.durationMin),
+            inc("singles.games", agg.singles.games),
+            inc("singles.wins", agg.singles.wins),
+            inc("singles.durationMin", agg.singles.durationMin),
+            inc("doubles.games", agg.doubles.games),
+            inc("doubles.wins", agg.doubles.wins),
+            inc("doubles.durationMin", agg.doubles.durationMin),
+            arrayUnion("recentForm", agg.recent.slice().reverse()),
+            reqTime("updatedAt"),
+          ],
+          env
+        )
+      );
+    }
+  }
   if (writes.length) await commitWritesChunked(token, env, writes);
 }
 
@@ -4128,12 +4433,14 @@ async function commitClubFriendEdgesAndMirrors({
   token,
   chemistryByEdge,
 }) {
-  const gateWrites = [];
-  const writes = [];
+  const items = [];
   for (const [edgeKey, agg] of pairAgg) {
-    const { u1, u2, games, wins, durationMin, lastEndedAt } = agg;
+    const { u1, u2 } = agg;
     if (!memberSet.has(u1) || !memberSet.has(u2)) continue;
-
+    items.push([edgeKey, agg]);
+  }
+  const gateWrites = [];
+  for (const [edgeKey] of items) {
     const edgePath = `${clubsCol}/${clubId}/friendEdges/${edgeKey}`;
     gateWrites.push(
       makeUpdatePrecondCreate(
@@ -4142,6 +4449,16 @@ async function commitClubFriendEdgesAndMirrors({
         env
       )
     );
+  }
+  const allowed = gateWrites.length
+    ? await batchWriteGetSuccessFlags(token, env, gateWrites)
+    : [];
+  const writes = [];
+  for (let i = 0; i < items.length; i++) {
+    if (!allowed[i]) continue;
+    const [edgeKey, agg] = items[i];
+    const { u1, u2, games, wins, durationMin, lastEndedAt } = agg;
+    const edgePath = `${clubsCol}/${clubId}/friendEdges/${edgeKey}`;
     writes.push(
       makeUpdateMaskWrite(
         edgePath,
@@ -4207,8 +4524,6 @@ async function commitClubFriendEdgesAndMirrors({
         env
       )
     );
-
-    // Per-user mirrors under club scope
     const mirrorA = `${clubsCol}/${clubId}/userStats/${u1}/friends/${u2}`;
     const mirrorB = `${clubsCol}/${clubId}/userStats/${u2}/friends/${u1}`;
     writes.push(
@@ -4260,8 +4575,6 @@ async function commitClubFriendEdgesAndMirrors({
       )
     );
   }
-  if (gateWrites.length)
-    await batchWriteIgnoreIdempotentErrors(token, env, gateWrites);
   if (writes.length) await commitWritesChunked(token, env, writes);
 }
 
@@ -4275,12 +4588,14 @@ async function commitClubOpponentEdgesAndMirrors({
   env,
   token,
 }) {
-  const gateWrites = [];
-  const writes = [];
+  const items = [];
   for (const [pairKey, agg] of oppAgg) {
-    const { u1, u2, singles, doubles, totals, lastEndedAt } = agg;
+    const { u1, u2 } = agg;
     if (!memberSet.has(u1) || !memberSet.has(u2)) continue;
-
+    items.push([pairKey, agg]);
+  }
+  const gateWrites = [];
+  for (const [pairKey] of items) {
     const edgePath = `${clubsCol}/${clubId}/opponentEdges/${pairKey}`;
     gateWrites.push(
       makeUpdatePrecondCreate(
@@ -4289,6 +4604,16 @@ async function commitClubOpponentEdgesAndMirrors({
         env
       )
     );
+  }
+  const allowed = gateWrites.length
+    ? await batchWriteGetSuccessFlags(token, env, gateWrites)
+    : [];
+  const writes = [];
+  for (let i = 0; i < items.length; i++) {
+    if (!allowed[i]) continue;
+    const [pairKey, agg] = items[i];
+    const { u1, u2, singles, doubles, totals, lastEndedAt } = agg;
+    const edgePath = `${clubsCol}/${clubId}/opponentEdges/${pairKey}`;
     writes.push(
       makeUpdateMaskWrite(
         edgePath,
@@ -4356,8 +4681,6 @@ async function commitClubOpponentEdgesAndMirrors({
         env
       )
     );
-
-    // Per-user mirrors under club scope
     const mirrorA = `${clubsCol}/${clubId}/userStats/${u1}/opponents/${u2}`;
     const mirrorB = `${clubsCol}/${clubId}/userStats/${u2}/opponents/${u1}`;
     writes.push(
@@ -4427,8 +4750,6 @@ async function commitClubOpponentEdgesAndMirrors({
       )
     );
   }
-  if (gateWrites.length)
-    await batchWriteIgnoreIdempotentErrors(token, env, gateWrites);
   if (writes.length) await commitWritesChunked(token, env, writes);
 }
 
@@ -4496,15 +4817,12 @@ async function commitClubPerUserAttendance({
   env,
   token,
 }) {
-  const gateWrites = [];
-  const writes = [];
-  for (const uid of Array.isArray(attendeeUids) ? attendeeUids : []) {
+  const attendees = Array.isArray(attendeeUids) ? attendeeUids : [];
+  const monthlyGates = [];
+  for (const uid of attendees) {
     const basePath = `${clubsCol}/${clubId}/userStats/${uid}`;
-    const monthPath = `${basePath}/monthly/${endMonth}`;
-
-    // Monthly attendance gate and increment
     const monthlyKey = `attendance:${endMonth}:${uid}:${sessionKey}`;
-    gateWrites.push(
+    monthlyGates.push(
       makeUpdatePrecondCreate(
         `${basePath}/gates/${monthlyKey}`,
         {
@@ -4517,20 +4835,15 @@ async function commitClubPerUserAttendance({
         env
       )
     );
-    writes.push(
-      makeUpdateMaskWrite(monthPath, { month: endMonth }, ["month"], env)
-    );
-    writes.push(
-      makeTransformWrite(
-        monthPath,
-        [inc("attendance.sessions", 1), reqTime("updatedAt")],
-        env
-      )
-    );
-
-    // Summary attendance gate and increment
+  }
+  const monthlyOk = monthlyGates.length
+    ? await batchWriteGetSuccessFlags(token, env, monthlyGates)
+    : [];
+  const summaryGates = [];
+  for (const uid of attendees) {
+    const basePath = `${clubsCol}/${clubId}/userStats/${uid}`;
     const summaryKey = `attendance:summary:${uid}:${sessionKey}`;
-    gateWrites.push(
+    summaryGates.push(
       makeUpdatePrecondCreate(
         `${basePath}/gates/${summaryKey}`,
         {
@@ -4543,19 +4856,39 @@ async function commitClubPerUserAttendance({
         env
       )
     );
-    // ensure summary doc exists
-    writes.push(
-      makeUpdateMaskWrite(basePath, { uid, clubId }, ["uid", "clubId"], env)
-    );
-    writes.push(
-      makeTransformWrite(
-        basePath,
-        [inc("attendance.sessions", 1), reqTime("updatedAt")],
-        env
-      )
-    );
   }
-  if (gateWrites.length)
-    await batchWriteIgnoreIdempotentErrors(token, env, gateWrites);
+  const summaryOk = summaryGates.length
+    ? await batchWriteGetSuccessFlags(token, env, summaryGates)
+    : [];
+  const writes = [];
+  for (let i = 0; i < attendees.length; i++) {
+    const uid = attendees[i];
+    const basePath = `${clubsCol}/${clubId}/userStats/${uid}`;
+    const monthPath = `${basePath}/monthly/${endMonth}`;
+    if (monthlyOk[i]) {
+      writes.push(
+        makeUpdateMaskWrite(monthPath, { month: endMonth }, ["month"], env)
+      );
+      writes.push(
+        makeTransformWrite(
+          monthPath,
+          [inc("attendance.sessions", 1), reqTime("updatedAt")],
+          env
+        )
+      );
+    }
+    if (summaryOk[i]) {
+      writes.push(
+        makeUpdateMaskWrite(basePath, { uid, clubId }, ["uid", "clubId"], env)
+      );
+      writes.push(
+        makeTransformWrite(
+          basePath,
+          [inc("attendance.sessions", 1), reqTime("updatedAt")],
+          env
+        )
+      );
+    }
+  }
   if (writes.length) await commitWritesChunked(token, env, writes);
 }

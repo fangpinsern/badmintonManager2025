@@ -10,7 +10,7 @@ export default function FaqPage() {
       <p className="mt-1 text-gray-600">Answers to common questions.</p>
 
       <div className="mt-6">
-        <FaqContent />
+        <FaqContent includeRatings />
       </div>
 
       <div className="mt-8">
