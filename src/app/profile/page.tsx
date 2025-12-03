@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { auth } from "@/lib/firebase";
 import { Card } from "@/components/layout";
 import LoadingScreen from "@/components/LoadingScreen";
@@ -41,6 +42,7 @@ import {
 } from "@/lib/firestoreUserSensitive";
 
 export default function ProfilePage() {
+  const router = useRouter();
   const [user, setUser] = useState<{
     uid: string;
     displayName?: string | null;
@@ -179,18 +181,19 @@ export default function ProfilePage() {
     };
   }, [user?.uid]);
 
+  // Redirect unauthenticated users to /auth once auth state is known
+  useEffect(() => {
+    if (authReady && !user) {
+      try {
+        router.replace(`/auth?returnTo=${encodeURIComponent("/profile")}`);
+      } catch {}
+    }
+  }, [authReady, user, router]);
+
   if (!authReady) return <LoadingScreen message="Loading…" />;
 
   if (authReady && !user) {
-    return (
-      <main className="mx-auto max-w-md p-4 text-sm">
-        <Card>
-          <div className="text-gray-600">
-            Please sign in to view your profile.
-          </div>
-        </Card>
-      </main>
-    );
+    return <LoadingScreen message="Redirecting…" />;
   }
 
   return (
