@@ -245,6 +245,34 @@ export default function RatingsExplainerPage() {
           </ul>
         </div>
 
+        <div className="rounded-lg border bg-white p-4 text-gray-700">
+          <h2 className="text-base font-semibold">Model versions</h2>
+          <div className="mt-3 overflow-x-auto">
+            <table className="w-full text-[12px] border-collapse">
+              <thead>
+                <tr className="border-b">
+                  <th className="p-2 text-left font-medium text-gray-700">
+                    Version
+                  </th>
+                  <th className="p-2 text-left font-medium text-gray-700">
+                    Release date
+                  </th>
+                  <th className="p-2 text-left font-medium text-gray-700">
+                    Description
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr className="border-b">
+                  <td className="p-2">v0.1</td>
+                  <td className="p-2">2025-12-03</td>
+                  <td className="p-2">Initial version</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
         <div className="pt-2">
           <Link href="/profile" className="rounded border px-3 py-1.5 text-xs">
             ← Back to profile
