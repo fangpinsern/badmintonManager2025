@@ -8,12 +8,33 @@ import {
   computeCompetitiveNextQueue,
   applyEloAfterGame,
 } from "@/lib/autoAssign";
+import { logAnalyticsEvent } from "@/lib/analytics";
+
+// Analytics tracking state for auto-assign (ephemeral, not persisted)
+interface AutoAssignAnalyticsState {
+  // Key: `${sessionId}:${courtIndex}`
+  clickCounts: Record<string, number>;
+  // Timestamp of first auto-assign click for this court (to calculate time-to-start)
+  firstClickTimestamp: Record<string, number>;
+  // Timestamp of last auto-assign click for this court
+  lastClickTimestamp: Record<string, number>;
+  // Track if manual adjustment happened after auto-assign
+  manualAdjustments: Record<string, number>;
+  // Session-level aggregation: total auto-assign clicks per session
+  sessionTotalClicks: Record<string, number>;
+  // Session-level: total games started per session (for ratio calculation)
+  sessionGamesStarted: Record<string, number>;
+}
 
 interface StoreState {
   sessions: Session[];
   platformPlayers: PlatformPlayer[];
   // UI-only transient error for auto-assign, not persisted to Firestore
   lastAutoAssignError?: { msg: string; courtIndex?: number };
+  // Ephemeral tracking for auto-assign analytics (not persisted)
+  autoAssignAnalytics: AutoAssignAnalyticsState;
+  // Legacy: kept for backwards compatibility during transition
+  autoAssignClickCounts: Record<string, number>;
   linkPlayerToAccount: (
     sessionId: string,
     playerId: string,
@@ -139,6 +160,15 @@ interface StoreState {
 const useStore = create<StoreState>()((set, _get) => ({
   sessions: [],
   platformPlayers: [],
+  autoAssignClickCounts: {},
+  autoAssignAnalytics: {
+    clickCounts: {},
+    firstClickTimestamp: {},
+    lastClickTimestamp: {},
+    manualAdjustments: {},
+    sessionTotalClicks: {},
+    sessionGamesStarted: {},
+  },
   linkPlayerToAccount: (sessionId, playerId, accountUid) =>
     set((s) => ({
       sessions: s.sessions.map((ss) => {
@@ -449,23 +479,53 @@ const useStore = create<StoreState>()((set, _get) => ({
     })),
 
   setPlayerPair: (sessionId, courtIndex, playerId, pair) =>
-    set((s) => ({
-      sessions: s.sessions.map((ss) => {
-        if (ss.id !== sessionId) return ss;
-        if (ss.ended) return ss;
-        const courts = ss.courts.map((c, i) => {
-          if (i !== courtIndex) return c;
-          if (c.inProgress) return c; // lock while in progress
-          if (!c.playerIds.includes(playerId)) return c; // must be on this court
-          let pairA = (c.pairA || []).filter((pid) => pid !== playerId);
-          let pairB = (c.pairB || []).filter((pid) => pid !== playerId);
-          if (pair === "A" && pairA.length < 2) pairA = [...pairA, playerId];
-          if (pair === "B" && pairB.length < 2) pairB = [...pairB, playerId];
-          return { ...c, pairA, pairB };
+    set((s) => {
+      const clickKey = `${sessionId}:${courtIndex}`;
+      const analytics = s.autoAssignAnalytics;
+      
+      // Track if this is a manual adjustment after auto-assign
+      const hadAutoAssign = (analytics.clickCounts[clickKey] || 0) > 0;
+      
+      let nextAnalytics = analytics;
+      if (hadAutoAssign) {
+        const currentAdjustments = analytics.manualAdjustments[clickKey] || 0;
+        nextAnalytics = {
+          ...analytics,
+          manualAdjustments: {
+            ...analytics.manualAdjustments,
+            [clickKey]: currentAdjustments + 1,
+          },
+        };
+
+        // Log manual adjustment event (only if after auto-assign)
+        void logAnalyticsEvent("auto_assign_manual_adjustment", {
+          session_id: sessionId,
+          court_index: courtIndex,
+          adjustment_type: pair === null ? "remove_from_pair" : `add_to_pair_${pair}`,
+          adjustment_count: currentAdjustments + 1,
+          auto_assign_clicks: analytics.clickCounts[clickKey] || 0,
         });
-        return { ...ss, courts };
-      }),
-    })),
+      }
+
+      return {
+        sessions: s.sessions.map((ss) => {
+          if (ss.id !== sessionId) return ss;
+          if (ss.ended) return ss;
+          const courts = ss.courts.map((c, i) => {
+            if (i !== courtIndex) return c;
+            if (c.inProgress) return c; // lock while in progress
+            if (!c.playerIds.includes(playerId)) return c; // must be on this court
+            let pairA = (c.pairA || []).filter((pid) => pid !== playerId);
+            let pairB = (c.pairB || []).filter((pid) => pid !== playerId);
+            if (pair === "A" && pairA.length < 2) pairA = [...pairA, playerId];
+            if (pair === "B" && pairB.length < 2) pairB = [...pairB, playerId];
+            return { ...c, pairA, pairB };
+          });
+          return { ...ss, courts };
+        }),
+        autoAssignAnalytics: nextAnalytics,
+      };
+    }),
 
   endGame: (
     sessionId,
@@ -914,14 +974,18 @@ const useStore = create<StoreState>()((set, _get) => ({
     })),
 
   startGame: (sessionId, courtIndex) =>
-    set((s) => ({
-      sessions: s.sessions.map((ss) => {
+    set((s) => {
+      let gameStarted = false;
+      let courtMode: "singles" | "doubles" = "doubles";
+
+      const nextSessions = s.sessions.map((ss) => {
         if (ss.id !== sessionId) return ss;
         if (ss.ended) return ss;
         const c = ss.courts[courtIndex];
         if (!c) return ss;
         if (c.inProgress) return ss;
         const isSingles = (c.mode || "doubles") === "singles";
+        courtMode = isSingles ? "singles" : "doubles";
         const requiredPerTeam = isSingles ? 1 : 2;
         const ready =
           (c.pairA?.length || 0) === requiredPerTeam &&
@@ -936,14 +1000,100 @@ const useStore = create<StoreState>()((set, _get) => ({
         });
         const hasBusy = c.playerIds.some((pid) => busyElsewhere.has(pid));
         if (hasBusy) return ss;
+        gameStarted = true;
         const courts = ss.courts.map((cc, i) =>
           i === courtIndex
             ? { ...cc, inProgress: true, startedAt: new Date().toISOString() }
             : cc
         );
         return { ...ss, courts };
-      }),
-    })),
+      });
+
+      // If game started, log analytics with comprehensive auto-assign journey data
+      if (gameStarted) {
+        const clickKey = `${sessionId}:${courtIndex}`;
+        const now = Date.now();
+        const analytics = s.autoAssignAnalytics;
+        
+        const autoAssignClickCount = analytics.clickCounts[clickKey] || 0;
+        const firstClickTime = analytics.firstClickTimestamp[clickKey];
+        const lastClickTime = analytics.lastClickTimestamp[clickKey];
+        const manualAdjustmentCount = analytics.manualAdjustments[clickKey] || 0;
+        
+        // Calculate time from first auto-assign to game start (in seconds)
+        const timeFromFirstAutoAssign = firstClickTime 
+          ? Math.round((now - firstClickTime) / 1000) 
+          : undefined;
+        // Calculate time from last auto-assign to game start (in seconds)
+        const timeFromLastAutoAssign = lastClickTime 
+          ? Math.round((now - lastClickTime) / 1000) 
+          : undefined;
+
+        // Get session config for analytics
+        const session = s.sessions.find((ss) => ss.id === sessionId);
+        const config = session?.autoAssignConfig;
+        const totalPlayersInSession = session?.players.length || 0;
+        const totalCourtsInSession = session?.courts.length || 0;
+        const gamesPlayedInSession = session?.games.length || 0;
+
+        // Log game start event with comprehensive auto-assign journey data
+        void logAnalyticsEvent("game_started", {
+          session_id: sessionId,
+          court_index: courtIndex,
+          court_mode: courtMode,
+          // Core auto-assign metrics
+          auto_assign_clicks_before_start: autoAssignClickCount,
+          used_auto_assign: autoAssignClickCount > 0,
+          // Time tracking (in seconds)
+          seconds_from_first_auto_assign: timeFromFirstAutoAssign,
+          seconds_from_last_auto_assign: timeFromLastAutoAssign,
+          // Manual adjustment tracking
+          manual_adjustments_after_auto_assign: manualAdjustmentCount,
+          had_manual_adjustments: manualAdjustmentCount > 0,
+          // Configuration
+          priority: config?.priority || "default",
+          respect_gender: config?.respectGender || "soft",
+          blacklist_mode: config?.blacklistMode || "hard",
+          // Session context
+          total_players: totalPlayersInSession,
+          total_courts: totalCourtsInSession,
+          games_played_in_session: gamesPlayedInSession,
+        });
+
+        // Update session-level game counter
+        const nextSessionGamesStarted = {
+          ...analytics.sessionGamesStarted,
+          [sessionId]: (analytics.sessionGamesStarted[sessionId] || 0) + 1,
+        };
+
+        // Reset tracking for this court
+        const nextAnalytics: AutoAssignAnalyticsState = {
+          ...analytics,
+          clickCounts: { ...analytics.clickCounts },
+          firstClickTimestamp: { ...analytics.firstClickTimestamp },
+          lastClickTimestamp: { ...analytics.lastClickTimestamp },
+          manualAdjustments: { ...analytics.manualAdjustments },
+          sessionTotalClicks: analytics.sessionTotalClicks,
+          sessionGamesStarted: nextSessionGamesStarted,
+        };
+        delete nextAnalytics.clickCounts[clickKey];
+        delete nextAnalytics.firstClickTimestamp[clickKey];
+        delete nextAnalytics.lastClickTimestamp[clickKey];
+        delete nextAnalytics.manualAdjustments[clickKey];
+
+        // Legacy support
+        const nextClickCounts = { ...s.autoAssignClickCounts };
+        delete nextClickCounts[clickKey];
+
+        return {
+          sessions: nextSessions,
+          autoAssignClickCounts: nextClickCounts,
+          autoAssignAnalytics: nextAnalytics,
+        };
+      }
+
+      return { sessions: nextSessions };
+    }),
 
   setCourtMode: (sessionId, courtIndex, mode) =>
     set((s) => ({
@@ -1125,6 +1275,10 @@ const useStore = create<StoreState>()((set, _get) => ({
   autoAssignCourt: (sessionId, courtIndex) =>
     set((s) => {
       let errorMsg: string | undefined = undefined;
+      let assignSuccess = false;
+      let isReroll = false;
+      let playersAssigned = 0;
+      let courtMode: "singles" | "doubles" = "doubles";
       const nextSessions = s.sessions.map((ss) => {
         if (ss.id !== sessionId) return ss;
         if (ss.ended) return ss;
@@ -1134,6 +1288,7 @@ const useStore = create<StoreState>()((set, _get) => ({
         }));
         const court = courts[courtIndex];
         if (!court || court.inProgress) return ss;
+        courtMode = (court.mode || "doubles") as "singles" | "doubles";
         const result = computeCompetitiveAssignmentForCourt(
           { ...ss, courts },
           courtIndex
@@ -1144,11 +1299,12 @@ const useStore = create<StoreState>()((set, _get) => ({
           return ss;
         }
         const { playerIdsToAdd, pairA, pairB } = result;
-        const cap = (court.mode || "doubles") === "singles" ? 2 : 4;
+        const cap = courtMode === "singles" ? 2 : 4;
         if (playerIdsToAdd.length === 0 && court.playerIds.length >= cap) {
           // Reroll case: replace current players with proposed matchup
+          isReroll = true;
           const proposedIds =
-            (court.mode || "doubles") === "singles"
+            courtMode === "singles"
               ? [pairA[0], pairB[0]].filter(Boolean)
               : [...(pairA || []), ...(pairB || [])];
           if (proposedIds.length === cap) {
@@ -1156,6 +1312,8 @@ const useStore = create<StoreState>()((set, _get) => ({
             court.pairA = pairA.slice(0);
             court.pairB = pairB.slice(0);
             errorMsg = undefined;
+            assignSuccess = true;
+            playersAssigned = cap;
           } else {
             // Fallback to preserving existing players if proposal invalid
             court.pairA = pairA.slice(0);
@@ -1166,10 +1324,14 @@ const useStore = create<StoreState>()((set, _get) => ({
           // Gap-fill / initial assignment: only add missing players
           for (const pid of playerIdsToAdd) {
             if (court.playerIds.length >= cap) break;
-            if (!court.playerIds.includes(pid)) court.playerIds.push(pid);
+            if (!court.playerIds.includes(pid)) {
+              court.playerIds.push(pid);
+              playersAssigned++;
+            }
           }
           court.pairA = pairA.slice(0);
           court.pairB = pairB.slice(0);
+          assignSuccess = playersAssigned > 0 || playerIdsToAdd.length === 0;
           errorMsg =
             playerIdsToAdd.length === 0
               ? "Auto-assign found no eligible players to add."
@@ -1177,7 +1339,66 @@ const useStore = create<StoreState>()((set, _get) => ({
         }
         return { ...ss, courts };
       });
-      const out: Partial<StoreState> = { sessions: nextSessions };
+
+      // Track auto-assign analytics with timestamps
+      const clickKey = `${sessionId}:${courtIndex}`;
+      const now = Date.now();
+      const analytics = s.autoAssignAnalytics;
+      
+      const prevCount = analytics.clickCounts[clickKey] || 0;
+      const nextCount = prevCount + 1;
+      const isFirstClick = prevCount === 0;
+      
+      // Update analytics state
+      const nextAnalytics: AutoAssignAnalyticsState = {
+        ...analytics,
+        clickCounts: { ...analytics.clickCounts, [clickKey]: nextCount },
+        lastClickTimestamp: { ...analytics.lastClickTimestamp, [clickKey]: now },
+        firstClickTimestamp: isFirstClick 
+          ? { ...analytics.firstClickTimestamp, [clickKey]: now }
+          : analytics.firstClickTimestamp,
+        manualAdjustments: { ...analytics.manualAdjustments }, // reset manual adjustments on new auto-assign
+        sessionTotalClicks: {
+          ...analytics.sessionTotalClicks,
+          [sessionId]: (analytics.sessionTotalClicks[sessionId] || 0) + 1,
+        },
+        sessionGamesStarted: analytics.sessionGamesStarted,
+      };
+      // Reset manual adjustments counter when auto-assign is clicked
+      delete nextAnalytics.manualAdjustments[clickKey];
+
+      // Legacy support
+      const nextClickCounts = { ...s.autoAssignClickCounts, [clickKey]: nextCount };
+
+      // Get session config for analytics
+      const session = s.sessions.find((ss) => ss.id === sessionId);
+      const config = session?.autoAssignConfig;
+      const totalPlayersInSession = session?.players.length || 0;
+      const totalCourtsInSession = session?.courts.length || 0;
+
+      // Log analytics event with enhanced data
+      void logAnalyticsEvent("auto_assign_court", {
+        session_id: sessionId,
+        court_index: courtIndex,
+        court_mode: courtMode,
+        success: assignSuccess,
+        is_reroll: isReroll,
+        players_assigned: playersAssigned,
+        click_count: nextCount,
+        is_first_click: isFirstClick,
+        priority: config?.priority || "default",
+        respect_gender: config?.respectGender || "soft",
+        blacklist_mode: config?.blacklistMode || "hard",
+        total_players: totalPlayersInSession,
+        total_courts: totalCourtsInSession,
+        error_msg: errorMsg || undefined,
+      });
+
+      const out: Partial<StoreState> = {
+        sessions: nextSessions,
+        autoAssignClickCounts: nextClickCounts,
+        autoAssignAnalytics: nextAnalytics,
+      };
       // Set transient error scoped to this court
       if (typeof errorMsg !== "undefined") {
         out.lastAutoAssignError = errorMsg
@@ -1205,6 +1426,11 @@ const useStore = create<StoreState>()((set, _get) => ({
   autoAssignAllCourts: (sessionId) =>
     set((s) => {
       let errorMsg: string | undefined = undefined;
+      // Track analytics data outside the map
+      let courtsFilledCount = 0;
+      let skippedCourtsCount = 0;
+      const eligibleCourtIndices: number[] = [];
+
       const nextSessions = s.sessions.map((ss) => {
         if (ss.id !== sessionId) return ss;
         if (ss.ended) return ss;
@@ -1224,37 +1450,51 @@ const useStore = create<StoreState>()((set, _get) => ({
           const need = cap - c.playerIds.length;
           if (need > 0) {
             eligible.push({ index: i, need, cap });
+            eligibleCourtIndices.push(i);
           }
         }
         if (!eligible.length) {
           errorMsg = "No courts with empty slots to auto-assign.";
           return ss;
         }
+        // Build set of valid player IDs to filter out stale court references
+        const validPlayerIds = new Set<string>(ss.players.map((p) => p.id));
         // Count currently unassigned players (only these are available)
-        const assigned = new Set<string>(courts.flatMap((c) => c.playerIds));
-        let remainingAvailable = ss.players.filter(
-          (p) => !assigned.has(p.id)
+        // Also exclude players in autoAssignExclude
+        const excluded = new Set(ss.autoAssignExclude || []);
+        const assigned = new Set<string>(
+          courts.flatMap((c) => c.playerIds.filter((pid) => validPlayerIds.has(pid)))
+        );
+        const initialAvailable = ss.players.filter(
+          (p) => !assigned.has(p.id) && !excluded.has(p.id)
         ).length;
+        let remainingAvailable = initialAvailable;
         // To maximize fully filled courts, prioritize those needing fewer players first
         eligible.sort((a, b) => a.need - b.need);
-        let anyAssigned = false;
+        const skippedCourts: number[] = [];
         for (const e of eligible) {
           if (remainingAvailable < e.need) {
             // Skip courts we cannot fully fill; avoid partial fills
+            skippedCourts.push(e.index + 1); // 1-indexed for user display
             continue;
           }
           const res = computeCompetitiveAssignmentForCourt(
             { ...ss, courts },
             e.index
           );
-          if (!res) continue;
+          if (!res) {
+            skippedCourts.push(e.index + 1);
+            continue;
+          }
           const { playerIdsToAdd, pairA, pairB } = res;
           // Only accept if we can fully fill this court in one go
           if (
             !Array.isArray(playerIdsToAdd) ||
             playerIdsToAdd.length !== e.need
-          )
+          ) {
+            skippedCourts.push(e.index + 1);
             continue;
+          }
           // Apply assignment (gap-fill only; do not change existing players)
           const c = courts[e.index];
           for (const pid of playerIdsToAdd) {
@@ -1267,17 +1507,86 @@ const useStore = create<StoreState>()((set, _get) => ({
           // Update suggested pairs (these include existing players)
           c.pairA = pairA.slice(0);
           c.pairB = pairB.slice(0);
-          anyAssigned = true;
+          courtsFilledCount++;
         }
-        if (!anyAssigned) {
-          errorMsg =
-            "No eligible full assignments found. Add more players or relax constraints.";
+        skippedCourtsCount = skippedCourts.length;
+        // Build informative error message
+        if (courtsFilledCount === 0) {
+          const totalNeeded = eligible.reduce((sum, e) => sum + e.need, 0);
+          const shortage = totalNeeded - initialAvailable;
+          if (shortage > 0) {
+            errorMsg = `Not enough players. Need ${shortage} more to fill any court.`;
+          } else {
+            errorMsg =
+              "No eligible assignments found. Check gender/blacklist constraints.";
+          }
+        } else if (skippedCourts.length > 0) {
+          // Some courts filled, some skipped
+          const totalNeeded = skippedCourts.reduce((sum, courtNum) => {
+            const e = eligible.find((x) => x.index + 1 === courtNum);
+            return sum + (e?.need || 0);
+          }, 0);
+          errorMsg = `Filled ${courtsFilledCount} court(s). Court${skippedCourts.length > 1 ? "s" : ""} ${skippedCourts.join(", ")} skipped (need ${totalNeeded} more player${totalNeeded > 1 ? "s" : ""}).`;
         }
         return { ...ss, courts };
       });
+
+      // Get session config for analytics
+      const session = s.sessions.find((ss) => ss.id === sessionId);
+      const config = session?.autoAssignConfig;
+      const now = Date.now();
+      const analytics = s.autoAssignAnalytics;
+
+      // Log analytics event for auto-assign all
+      void logAnalyticsEvent("auto_assign_all_courts", {
+        session_id: sessionId,
+        total_courts: session?.courts.length || 0,
+        courts_filled: courtsFilledCount,
+        courts_skipped: skippedCourtsCount,
+        eligible_courts: eligibleCourtIndices.length,
+        success: courtsFilledCount > 0,
+        priority: config?.priority || "default",
+        respect_gender: config?.respectGender || "soft",
+        blacklist_mode: config?.blacklistMode || "hard",
+        total_players: session?.players.length || 0,
+        error_msg: errorMsg || undefined,
+      });
+
+      // Increment click counts for all eligible courts
+      const nextClickCounts = { ...s.autoAssignClickCounts };
+      const nextAnalytics: AutoAssignAnalyticsState = {
+        ...analytics,
+        clickCounts: { ...analytics.clickCounts },
+        firstClickTimestamp: { ...analytics.firstClickTimestamp },
+        lastClickTimestamp: { ...analytics.lastClickTimestamp },
+        manualAdjustments: { ...analytics.manualAdjustments },
+        sessionTotalClicks: {
+          ...analytics.sessionTotalClicks,
+          [sessionId]: (analytics.sessionTotalClicks[sessionId] || 0) + eligibleCourtIndices.length,
+        },
+        sessionGamesStarted: analytics.sessionGamesStarted,
+      };
+      
+      for (const idx of eligibleCourtIndices) {
+        const key = `${sessionId}:${idx}`;
+        const prevCount = nextAnalytics.clickCounts[key] || 0;
+        const isFirstClick = prevCount === 0;
+        
+        nextClickCounts[key] = (nextClickCounts[key] || 0) + 1;
+        nextAnalytics.clickCounts[key] = prevCount + 1;
+        nextAnalytics.lastClickTimestamp[key] = now;
+        if (isFirstClick) {
+          nextAnalytics.firstClickTimestamp[key] = now;
+        }
+        // Reset manual adjustments on new auto-assign
+        delete nextAnalytics.manualAdjustments[key];
+      }
+
       const out: Partial<StoreState> = {
         sessions: nextSessions,
         lastAutoAssignError: errorMsg ? { msg: errorMsg } : undefined,
+        autoAssignClickCounts: nextClickCounts,
+        autoAssignAnalytics: nextAnalytics,
       };
       if (errorMsg) {
         setTimeout(() => {
@@ -1292,7 +1601,7 @@ const useStore = create<StoreState>()((set, _get) => ({
               return {} as any;
             });
           } catch {}
-        }, 3000);
+        }, 5000); // Extended to 5s for longer messages
       }
       return out as any;
     }),
@@ -1300,6 +1609,9 @@ const useStore = create<StoreState>()((set, _get) => ({
   autoAssignNext: (sessionId, courtIndex) =>
     set((s) => {
       let errorMsg: string | undefined = undefined;
+      let assignSuccess = false;
+      let courtMode: "singles" | "doubles" = "doubles";
+
       const nextSessions = s.sessions.map((ss) => {
         if (ss.id !== sessionId) return ss;
         if (ss.ended) return ss;
@@ -1309,6 +1621,10 @@ const useStore = create<StoreState>()((set, _get) => ({
           nextA: [...(c.nextA || [])],
           nextB: [...(c.nextB || [])],
         }));
+        const court = courts[courtIndex];
+        if (court) {
+          courtMode = (court.mode || "doubles") as "singles" | "doubles";
+        }
         const result = computeCompetitiveNextQueue(
           { ...ss, courts },
           courtIndex
@@ -1321,8 +1637,25 @@ const useStore = create<StoreState>()((set, _get) => ({
         courts[courtIndex].queue = queue;
         courts[courtIndex].nextA = nextA;
         courts[courtIndex].nextB = nextB;
+        assignSuccess = true;
         return { ...ss, courts };
       });
+
+      // Get session config for analytics
+      const session = s.sessions.find((ss) => ss.id === sessionId);
+      const config = session?.autoAssignConfig;
+
+      // Log analytics event
+      void logAnalyticsEvent("auto_assign_next", {
+        session_id: sessionId,
+        court_index: courtIndex,
+        court_mode: courtMode,
+        success: assignSuccess,
+        priority: config?.priority || "default",
+        respect_gender: config?.respectGender || "soft",
+        error_msg: errorMsg || undefined,
+      });
+
       const out: Partial<StoreState> = {
         sessions: nextSessions,
         lastAutoAssignError: errorMsg
@@ -1349,23 +1682,78 @@ const useStore = create<StoreState>()((set, _get) => ({
     }),
 
   clearCourtAssignments: (sessionId, courtIndex) =>
-    set((s) => ({
-      sessions: s.sessions.map((ss) => {
-        if (ss.id !== sessionId) return ss;
-        const courts = ss.courts.map((c, i) => {
-          if (i !== courtIndex) return c;
-          if (c.inProgress) return c; // do not clear active court
-          return {
-            ...c,
-            playerIds: [],
-            pairA: [],
-            pairB: [],
-            // keep queue/nextA/nextB unchanged to preserve organizer planning if any
-          };
+    set((s) => {
+      // Track if user had auto-assigned before clearing (signals dissatisfaction)
+      const clickKey = `${sessionId}:${courtIndex}`;
+      const now = Date.now();
+      const analytics = s.autoAssignAnalytics;
+      
+      const autoAssignClickCount = analytics.clickCounts[clickKey] || 0;
+      const firstClickTime = analytics.firstClickTimestamp[clickKey];
+      const lastClickTime = analytics.lastClickTimestamp[clickKey];
+      const manualAdjustmentCount = analytics.manualAdjustments[clickKey] || 0;
+
+      // Log analytics for clear action with comprehensive data
+      if (autoAssignClickCount > 0) {
+        // Calculate time from auto-assign to clear (in seconds)
+        const timeFromFirstAutoAssign = firstClickTime 
+          ? Math.round((now - firstClickTime) / 1000) 
+          : undefined;
+        const timeFromLastAutoAssign = lastClickTime 
+          ? Math.round((now - lastClickTime) / 1000) 
+          : undefined;
+
+        void logAnalyticsEvent("auto_assign_cleared", {
+          session_id: sessionId,
+          court_index: courtIndex,
+          auto_assign_clicks_before_clear: autoAssignClickCount,
+          seconds_from_first_auto_assign: timeFromFirstAutoAssign,
+          seconds_from_last_auto_assign: timeFromLastAutoAssign,
+          manual_adjustments_before_clear: manualAdjustmentCount,
+          // Quick clear = likely immediate dissatisfaction
+          was_quick_clear: timeFromLastAutoAssign !== undefined && timeFromLastAutoAssign < 10,
         });
-        return { ...ss, courts };
-      }),
-    })),
+      }
+
+      // Reset all tracking for this court
+      const nextAnalytics: AutoAssignAnalyticsState = {
+        ...analytics,
+        clickCounts: { ...analytics.clickCounts },
+        firstClickTimestamp: { ...analytics.firstClickTimestamp },
+        lastClickTimestamp: { ...analytics.lastClickTimestamp },
+        manualAdjustments: { ...analytics.manualAdjustments },
+        sessionTotalClicks: analytics.sessionTotalClicks,
+        sessionGamesStarted: analytics.sessionGamesStarted,
+      };
+      delete nextAnalytics.clickCounts[clickKey];
+      delete nextAnalytics.firstClickTimestamp[clickKey];
+      delete nextAnalytics.lastClickTimestamp[clickKey];
+      delete nextAnalytics.manualAdjustments[clickKey];
+
+      // Legacy support
+      const nextClickCounts = { ...s.autoAssignClickCounts };
+      delete nextClickCounts[clickKey];
+
+      return {
+        sessions: s.sessions.map((ss) => {
+          if (ss.id !== sessionId) return ss;
+          const courts = ss.courts.map((c, i) => {
+            if (i !== courtIndex) return c;
+            if (c.inProgress) return c; // do not clear active court
+            return {
+              ...c,
+              playerIds: [],
+              pairA: [],
+              pairB: [],
+              // keep queue/nextA/nextB unchanged to preserve organizer planning if any
+            };
+          });
+          return { ...ss, courts };
+        }),
+        autoAssignClickCounts: nextClickCounts,
+        autoAssignAnalytics: nextAnalytics,
+      };
+    }),
 
   clearAllCourts: (sessionId) =>
     set((s) => ({
@@ -1410,14 +1798,42 @@ const useStore = create<StoreState>()((set, _get) => ({
     })),
 
   updateSessionConfig: (sessionId, partial) =>
-    set((s) => ({
-      sessions: s.sessions.map((ss) => {
-        if (ss.id !== sessionId) return ss;
-        const prev = ss.autoAssignConfig || {};
-        const next = { ...prev, ...partial } as Session["autoAssignConfig"];
-        return { ...ss, autoAssignConfig: next };
-      }),
-    })),
+    set((s) => {
+      // Get current config for comparison
+      const session = s.sessions.find((ss) => ss.id === sessionId);
+      const prevConfig = session?.autoAssignConfig || {};
+      
+      // Determine what changed
+      const changedFields: string[] = [];
+      for (const key of Object.keys(partial) as Array<keyof typeof partial>) {
+        if (partial[key] !== prevConfig[key]) {
+          changedFields.push(key);
+        }
+      }
+
+      // Log config change analytics
+      if (changedFields.length > 0) {
+        void logAnalyticsEvent("auto_assign_config_changed", {
+          session_id: sessionId,
+          changed_fields: changedFields.join(","),
+          new_priority: partial.priority || prevConfig.priority || "default",
+          new_respect_gender: partial.respectGender || prevConfig.respectGender || "soft",
+          new_blacklist_mode: partial.blacklistMode || prevConfig.blacklistMode || "hard",
+          // Track session-level auto-assign usage at time of config change
+          session_total_auto_assign_clicks: s.autoAssignAnalytics.sessionTotalClicks[sessionId] || 0,
+          session_games_started: s.autoAssignAnalytics.sessionGamesStarted[sessionId] || 0,
+        });
+      }
+
+      return {
+        sessions: s.sessions.map((ss) => {
+          if (ss.id !== sessionId) return ss;
+          const prev = ss.autoAssignConfig || {};
+          const next = { ...prev, ...partial } as Session["autoAssignConfig"];
+          return { ...ss, autoAssignConfig: next };
+        }),
+      };
+    }),
 
   updateSessionMeta: (sessionId, partial) =>
     set((s) => ({
@@ -1566,23 +1982,79 @@ const useStore = create<StoreState>()((set, _get) => ({
     })),
 
   endSession: (sessionId, shuttlesUsed) =>
-    set((s) => ({
-      sessions: s.sessions.map((ss) => {
-        if (ss.id !== sessionId) return ss;
-        if (ss.ended) return ss;
-        if ((ss.courts || []).some((c) => c.inProgress)) return ss; // block if any game in progress
-        const stats = {
-          ...computeSessionStats(ss),
-          shuttlesUsed:
-            typeof shuttlesUsed === "number" &&
-            isFinite(shuttlesUsed) &&
-            shuttlesUsed >= 0
-              ? Math.floor(shuttlesUsed)
-              : undefined,
-        };
-        return { ...ss, ended: true, endedAt: new Date().toISOString(), stats };
-      }),
-    })),
+    set((s) => {
+      const analytics = s.autoAssignAnalytics;
+      const session = s.sessions.find((ss) => ss.id === sessionId);
+      
+      // Log session-level auto-assign analytics summary
+      if (session && !session.ended) {
+        const sessionTotalClicks = analytics.sessionTotalClicks[sessionId] || 0;
+        const sessionGamesStarted = analytics.sessionGamesStarted[sessionId] || 0;
+        const totalGamesInSession = session.games.length;
+        
+        void logAnalyticsEvent("session_ended_auto_assign_summary", {
+          session_id: sessionId,
+          total_players: session.players.length,
+          total_courts: session.courts.length,
+          total_games: totalGamesInSession,
+          // Auto-assign usage metrics
+          total_auto_assign_clicks: sessionTotalClicks,
+          games_using_auto_assign: sessionGamesStarted,
+          auto_assign_clicks_per_game: totalGamesInSession > 0 
+            ? Math.round((sessionTotalClicks / totalGamesInSession) * 100) / 100 
+            : 0,
+          // Usage ratio: what percentage of games used auto-assign?
+          auto_assign_usage_rate: totalGamesInSession > 0 
+            ? Math.round((sessionGamesStarted / totalGamesInSession) * 100) 
+            : 0,
+          // Configuration used
+          priority: session.autoAssignConfig?.priority || "default",
+          respect_gender: session.autoAssignConfig?.respectGender || "soft",
+          blacklist_mode: session.autoAssignConfig?.blacklistMode || "hard",
+        });
+      }
+
+      // Clean up session-level tracking
+      const nextAnalytics: AutoAssignAnalyticsState = {
+        ...analytics,
+        sessionTotalClicks: { ...analytics.sessionTotalClicks },
+        sessionGamesStarted: { ...analytics.sessionGamesStarted },
+        // Also clean up any court-level tracking for this session
+        clickCounts: Object.fromEntries(
+          Object.entries(analytics.clickCounts).filter(([k]) => !k.startsWith(`${sessionId}:`))
+        ),
+        firstClickTimestamp: Object.fromEntries(
+          Object.entries(analytics.firstClickTimestamp).filter(([k]) => !k.startsWith(`${sessionId}:`))
+        ),
+        lastClickTimestamp: Object.fromEntries(
+          Object.entries(analytics.lastClickTimestamp).filter(([k]) => !k.startsWith(`${sessionId}:`))
+        ),
+        manualAdjustments: Object.fromEntries(
+          Object.entries(analytics.manualAdjustments).filter(([k]) => !k.startsWith(`${sessionId}:`))
+        ),
+      };
+      delete nextAnalytics.sessionTotalClicks[sessionId];
+      delete nextAnalytics.sessionGamesStarted[sessionId];
+
+      return {
+        sessions: s.sessions.map((ss) => {
+          if (ss.id !== sessionId) return ss;
+          if (ss.ended) return ss;
+          if ((ss.courts || []).some((c) => c.inProgress)) return ss; // block if any game in progress
+          const stats = {
+            ...computeSessionStats(ss),
+            shuttlesUsed:
+              typeof shuttlesUsed === "number" &&
+              isFinite(shuttlesUsed) &&
+              shuttlesUsed >= 0
+                ? Math.floor(shuttlesUsed)
+                : undefined,
+          };
+          return { ...ss, ended: true, endedAt: new Date().toISOString(), stats };
+        }),
+        autoAssignAnalytics: nextAnalytics,
+      };
+    }),
 
   addCoOrganizer: (sessionId, uid) =>
     set((s) => ({

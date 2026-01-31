@@ -265,11 +265,15 @@ export function computeCompetitiveAssignmentForCourt(
   if (need <= 0) {
     // Reroll behavior when the court is already full: propose a different matchup.
     // Pool for reroll: players not excluded and not assigned to other courts (allow current court players).
+    // Build set of valid player IDs to filter out stale court references
+    const validPlayerIds = new Set<string>(ss.players.map((p) => p.id));
     const excluded = new Set(ss.autoAssignExclude || []);
     const assignedElsewhere = new Set<string>();
     ss.courts.forEach((c, i) => {
       if (i !== courtIndex)
-        c.playerIds.forEach((pid) => assignedElsewhere.add(pid));
+        c.playerIds
+          .filter((pid) => validPlayerIds.has(pid))
+          .forEach((pid) => assignedElsewhere.add(pid));
     });
     const gamesPlayed: Record<string, number> = {};
     ss.players.forEach((p) => (gamesPlayed[p.id] = p.gamesPlayed ?? 0));
@@ -330,6 +334,12 @@ export function computeCompetitiveAssignmentForCourt(
         score: number;
         tie: string;
       } | null = null;
+      // For singles, "major change" means both players are different (completely new matchup)
+      let bestMajorChange: {
+        pair: [string, string];
+        score: number;
+        tie: string;
+      } | null = null;
       for (let i = 0; i < K; i++) {
         for (let j = i + 1; j < K; j++) {
           const a = poolBase[i].id;
@@ -356,6 +366,17 @@ export function computeCompetitiveAssignmentForCourt(
             currentSet.has(a) &&
             currentSet.has(b)
           );
+          // Count how many players overlap with current set
+          const overlapCount = (currentSet.has(a) ? 1 : 0) + (currentSet.has(b) ? 1 : 0);
+          const isMajorChange = overlapCount === 0; // Both players are new
+          if (isMajorChange) {
+            if (
+              !bestMajorChange ||
+              score < bestMajorChange.score ||
+              (score === bestMajorChange.score && tie < bestMajorChange.tie)
+            )
+              bestMajorChange = cand;
+          }
           if (isDifferentSet) {
             if (
               !bestAltSet ||
@@ -374,21 +395,31 @@ export function computeCompetitiveAssignmentForCourt(
           }
         }
       }
-      const pick = bestAltSet || bestAltKey || bestAny;
+      // Priority: major change (both players new) > any set change > key change > any
+      const pick = bestMajorChange || bestAltSet || bestAltKey || bestAny;
       if (!pick)
         return {
           playerIdsToAdd: [],
           pairA: court.pairA || [],
           pairB: court.pairB || [],
         };
-      outPairA = [pick.pair[0]];
-      outPairB = [pick.pair[1]];
+      // Randomize which player is "A" vs "B" to make reroll feel more "fresh"
+      // 50% chance to swap sides
+      if (Math.random() < 0.5) {
+        outPairA = [pick.pair[1]];
+        outPairB = [pick.pair[0]];
+      } else {
+        outPairA = [pick.pair[0]];
+        outPairB = [pick.pair[1]];
+      }
     } else {
       const K = Math.min(poolBase.length, cfg.maxKDoubles);
       const idxs: number[] = Array.from({ length: K }, (_, i) => i);
       let bestAny: DoublesPick | null = null;
       let bestAltKey: DoublesPick | null = null;
       let bestAltSet: DoublesPick | null = null;
+      // For doubles, "major change" means at least 2 players are different (50%+ of matchup changed)
+      let bestMajorChange: DoublesPick | null = null;
       const considerCombo = (ids: string[]) => {
         const splits: Array<[string, string, string, string]> = [
           [ids[0], ids[1], ids[2], ids[3]],
@@ -399,6 +430,10 @@ export function computeCompetitiveAssignmentForCourt(
           ids.length === currentSet.size &&
           ids.every((id) => currentSet.has(id))
         );
+        // Count how many players overlap with current set
+        const overlapCount = ids.filter((id) => currentSet.has(id)).length;
+        // Major change: at least 2 new players (overlap <= 2 means 2+ new players)
+        const isMajorChange = overlapCount <= 2;
         for (const [A, B, C, Dp] of splits) {
           const score = scoreDoublesSplit(
             ss,
@@ -423,6 +458,14 @@ export function computeCompetitiveAssignmentForCourt(
             (score === bestAny.score && key < bestAny.key)
           )
             bestAny = cand;
+          if (isMajorChange) {
+            if (
+              !bestMajorChange ||
+              score < bestMajorChange.score ||
+              (score === bestMajorChange.score && key < bestMajorChange.key)
+            )
+              bestMajorChange = cand;
+          }
           if (isDifferentSet) {
             if (
               !bestAltSet ||
@@ -459,7 +502,8 @@ export function computeCompetitiveAssignmentForCourt(
         }
       };
       choose(idxs, Math.min(4, K), 0, []);
-      const pick: DoublesPick | null = bestAltSet || bestAltKey || bestAny;
+      // Priority: major change (2+ new players) > any set change > key change > any
+      const pick: DoublesPick | null = bestMajorChange || bestAltSet || bestAltKey || bestAny;
       if (!pick)
         return {
           playerIdsToAdd: [],
@@ -467,14 +511,36 @@ export function computeCompetitiveAssignmentForCourt(
           pairB: court.pairB || [],
         };
       const p = pick as DoublesPick;
-      outPairA = [p.A, p.B];
-      outPairB = [p.C, p.Dp];
+      // Randomize team and player order to make reroll feel more "fresh"
+      // The scoring already determined these 4 players with this split are optimal,
+      // so randomizing order doesn't affect game quality
+      let teamA = [p.A, p.B];
+      let teamB = [p.C, p.Dp];
+      // 50% chance to swap teams (A becomes B, B becomes A)
+      if (Math.random() < 0.5) {
+        [teamA, teamB] = [teamB, teamA];
+      }
+      // 50% chance to swap order within each team
+      if (Math.random() < 0.5) {
+        teamA = [teamA[1], teamA[0]];
+      }
+      if (Math.random() < 0.5) {
+        teamB = [teamB[1], teamB[0]];
+      }
+      outPairA = teamA;
+      outPairB = teamB;
     }
 
     return { playerIdsToAdd: [], pairA: outPairA, pairB: outPairB };
   }
 
-  const assigned = new Set<string>(ss.courts.flatMap((c) => c.playerIds));
+  // Build set of valid player IDs to filter out stale court references
+  // This prevents issues when player IDs change (e.g., after linking accounts)
+  const validPlayerIds = new Set<string>(ss.players.map((p) => p.id));
+
+  const assigned = new Set<string>(
+    ss.courts.flatMap((c) => c.playerIds.filter((pid) => validPlayerIds.has(pid)))
+  );
   const excluded = new Set(ss.autoAssignExclude || []);
   const gamesPlayed: Record<string, number> = {};
   ss.players.forEach((p) => (gamesPlayed[p.id] = p.gamesPlayed ?? 0));
@@ -492,9 +558,13 @@ export function computeCompetitiveAssignmentForCourt(
   const isBL = buildBlacklistCheck(ss);
   const genders = gendersMap(ss);
 
-  const initialA = [...(court.pairA || [])];
-  const initialB = [...(court.pairB || [])];
-  const seeded = new Set<string>(court.playerIds);
+  // Filter court data to only include valid player IDs
+  const validCourtPlayerIds = court.playerIds.filter((pid) =>
+    validPlayerIds.has(pid)
+  );
+  const initialA = (court.pairA || []).filter((pid) => validPlayerIds.has(pid));
+  const initialB = (court.pairB || []).filter((pid) => validPlayerIds.has(pid));
+  const seeded = new Set<string>(validCourtPlayerIds);
   const candidateIds = poolBase.map((p) => p.id);
 
   const chosen: string[] = [];
@@ -502,7 +572,7 @@ export function computeCompetitiveAssignmentForCourt(
   let outPairB: string[] = [...initialB];
 
   if (isSingles) {
-    const seededOnCourt = court.playerIds;
+    const seededOnCourt = validCourtPlayerIds;
     const K = Math.min(candidateIds.length, cfg.maxKSingles);
     let best: { pair: [string, string]; score: number; tie: string } | null =
       null;
@@ -567,7 +637,8 @@ export function computeCompetitiveAssignmentForCourt(
     let bestSet: string[] = [];
 
     // Build set of all players that must be included (current court assignments)
-    const required = new Set<string>(court.playerIds);
+    // Use validCourtPlayerIds to exclude stale/invalid player references
+    const required = new Set<string>(validCourtPlayerIds);
     const considerCombo = (ids: string[]) => {
       const splits: Array<[string, string, string, string]> = [
         [ids[0], ids[1], ids[2], ids[3]],
@@ -639,10 +710,48 @@ export function computeCompetitiveAssignmentForCourt(
       outPairA = [bestSplit.A, bestSplit.B];
       outPairB = [bestSplit.C, bestSplit.Dp];
     } else {
-      // Fallback: if one side is seeded and the other is empty, try to fill the empty side greedily
+      // Fallback: handle various partially-filled or empty court scenarios
       const sideAEmpty = initialA.length === 0 && initialB.length > 0;
       const sideBEmpty = initialB.length === 0 && initialA.length > 0;
-      if (sideAEmpty || sideBEmpty) {
+      const bothSidesEmpty = initialA.length === 0 && initialB.length === 0;
+
+      if (bothSidesEmpty && validCourtPlayerIds.length === 0) {
+        // Completely empty court: pick 4 players greedily from pool
+        // This handles the case where K < 4 (not enough candidates for full enumeration)
+        const reqTotal = 4;
+        const pick: string[] = [];
+        const canTeammate = (x: string, y: string) => !isBL(x, y);
+
+        for (let i = 0; i < poolBase.length && pick.length < reqTotal; i++) {
+          const candidate = poolBase[i].id;
+          // Check blacklist: new player must not be blacklisted with any already-picked player
+          // For team formation, we only check blacklist within teams (pairs 0-1 and 2-3)
+          let blacklisted = false;
+          if (pick.length === 1) {
+            // Picking second player for team A
+            blacklisted = !canTeammate(pick[0], candidate);
+          } else if (pick.length === 3) {
+            // Picking fourth player for team B
+            blacklisted = !canTeammate(pick[2], candidate);
+          }
+          if (blacklisted) continue;
+
+          // Check gender constraint if hard mode
+          if (cfg.respectGender === "hard" && pick.length === 3) {
+            const four = [...pick, candidate];
+            if (!isGenderSplittable(four, genders)) continue;
+          }
+
+          pick.push(candidate);
+        }
+
+        if (pick.length === reqTotal) {
+          outPairA = [pick[0], pick[1]];
+          outPairB = [pick[2], pick[3]];
+          for (const id of pick) if (!seeded.has(id)) chosen.push(id);
+        }
+      } else if (sideAEmpty || sideBEmpty) {
+        // One side is seeded and the other is empty: fill the empty side greedily
         const reqTeam = 2;
         const pick: string[] = [];
         const canTeammate = (x: string, y: string) => !isBL(x, y);
@@ -689,14 +798,21 @@ export function computeCompetitiveNextQueue(
   const isSingles = (court.mode || "doubles") === "singles";
   const cap = isSingles ? 2 : 4;
 
+  // Build set of valid player IDs to filter out stale court references
+  const validPlayerIds = new Set<string>(ss.players.map((p) => p.id));
+
   // Eligible base: not excluded, not queued elsewhere, not on this court
   const queuedElsewhere = new Set<string>();
   ss.courts.forEach((c, i) => {
     if (i !== courtIndex)
-      (c.queue || []).forEach((pid) => queuedElsewhere.add(pid));
+      (c.queue || [])
+        .filter((pid) => validPlayerIds.has(pid))
+        .forEach((pid) => queuedElsewhere.add(pid));
   });
   const excluded = new Set(ss.autoAssignExclude || []);
-  const assigned = new Set<string>(ss.courts.flatMap((c) => c.playerIds));
+  const assigned = new Set<string>(
+    ss.courts.flatMap((c) => c.playerIds.filter((pid) => validPlayerIds.has(pid)))
+  );
   const gamesPlayed: Record<string, number> = {};
   ss.players.forEach((p) => (gamesPlayed[p.id] = p.gamesPlayed ?? 0));
   const baseSelectable = ss.players
@@ -707,14 +823,19 @@ export function computeCompetitiveNextQueue(
     .map((p) => ({ id: p.id, name: p.name, games: gamesPlayed[p.id] || 0 }));
   if (baseSelectable.length === 0) return null;
 
+  // Filter court.playerIds to only valid IDs
+  const validCourtPlayerIds = court.playerIds.filter((pid) =>
+    validPlayerIds.has(pid)
+  );
+
   // Prefer free players first, but also include those currently on the same court
   const pool = baseSelectable.filter(
-    (p) => !assigned.has(p.id) || court.playerIds.includes(p.id)
+    (p) => !assigned.has(p.id) || validCourtPlayerIds.includes(p.id)
   );
   if (pool.length < cap) return null;
 
   // Sort pool by priority: prefer not currently on this court, then fairness baseline
-  const onThisCourt = new Set(court.playerIds);
+  const onThisCourt = new Set(validCourtPlayerIds);
   pool.sort((a, b) => {
     const aOn = onThisCourt.has(a.id) ? 1 : 0;
     const bOn = onThisCourt.has(b.id) ? 1 : 0;
