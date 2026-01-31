@@ -1230,31 +1230,45 @@ const useStore = create<StoreState>()((set, _get) => ({
           errorMsg = "No courts with empty slots to auto-assign.";
           return ss;
         }
+        // Build set of valid player IDs to filter out stale court references
+        const validPlayerIds = new Set<string>(ss.players.map((p) => p.id));
         // Count currently unassigned players (only these are available)
-        const assigned = new Set<string>(courts.flatMap((c) => c.playerIds));
-        let remainingAvailable = ss.players.filter(
-          (p) => !assigned.has(p.id)
+        // Also exclude players in autoAssignExclude
+        const excluded = new Set(ss.autoAssignExclude || []);
+        const assigned = new Set<string>(
+          courts.flatMap((c) => c.playerIds.filter((pid) => validPlayerIds.has(pid)))
+        );
+        const initialAvailable = ss.players.filter(
+          (p) => !assigned.has(p.id) && !excluded.has(p.id)
         ).length;
+        let remainingAvailable = initialAvailable;
         // To maximize fully filled courts, prioritize those needing fewer players first
         eligible.sort((a, b) => a.need - b.need);
-        let anyAssigned = false;
+        let courtsFilledCount = 0;
+        const skippedCourts: number[] = [];
         for (const e of eligible) {
           if (remainingAvailable < e.need) {
             // Skip courts we cannot fully fill; avoid partial fills
+            skippedCourts.push(e.index + 1); // 1-indexed for user display
             continue;
           }
           const res = computeCompetitiveAssignmentForCourt(
             { ...ss, courts },
             e.index
           );
-          if (!res) continue;
+          if (!res) {
+            skippedCourts.push(e.index + 1);
+            continue;
+          }
           const { playerIdsToAdd, pairA, pairB } = res;
           // Only accept if we can fully fill this court in one go
           if (
             !Array.isArray(playerIdsToAdd) ||
             playerIdsToAdd.length !== e.need
-          )
+          ) {
+            skippedCourts.push(e.index + 1);
             continue;
+          }
           // Apply assignment (gap-fill only; do not change existing players)
           const c = courts[e.index];
           for (const pid of playerIdsToAdd) {
@@ -1267,11 +1281,25 @@ const useStore = create<StoreState>()((set, _get) => ({
           // Update suggested pairs (these include existing players)
           c.pairA = pairA.slice(0);
           c.pairB = pairB.slice(0);
-          anyAssigned = true;
+          courtsFilledCount++;
         }
-        if (!anyAssigned) {
-          errorMsg =
-            "No eligible full assignments found. Add more players or relax constraints.";
+        // Build informative error message
+        if (courtsFilledCount === 0) {
+          const totalNeeded = eligible.reduce((sum, e) => sum + e.need, 0);
+          const shortage = totalNeeded - initialAvailable;
+          if (shortage > 0) {
+            errorMsg = `Not enough players. Need ${shortage} more to fill any court.`;
+          } else {
+            errorMsg =
+              "No eligible assignments found. Check gender/blacklist constraints.";
+          }
+        } else if (skippedCourts.length > 0) {
+          // Some courts filled, some skipped
+          const totalNeeded = skippedCourts.reduce((sum, courtNum) => {
+            const e = eligible.find((x) => x.index + 1 === courtNum);
+            return sum + (e?.need || 0);
+          }, 0);
+          errorMsg = `Filled ${courtsFilledCount} court(s). Court${skippedCourts.length > 1 ? "s" : ""} ${skippedCourts.join(", ")} skipped (need ${totalNeeded} more player${totalNeeded > 1 ? "s" : ""}).`;
         }
         return { ...ss, courts };
       });
@@ -1292,7 +1320,7 @@ const useStore = create<StoreState>()((set, _get) => ({
               return {} as any;
             });
           } catch {}
-        }, 3000);
+        }, 5000); // Extended to 5s for longer messages
       }
       return out as any;
     }),

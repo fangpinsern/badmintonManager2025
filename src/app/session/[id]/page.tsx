@@ -61,6 +61,10 @@ function SessionManager({ onBack }: { onBack: () => void }) {
   const linkPlayerToAccount = useStore((s) => s.linkPlayerToAccount);
   const assign = useStore((s) => s.assignPlayerToCourt);
   const endSession = useStore((s) => s.endSession);
+  // Global auto-assign error (no courtIndex means it's from autoAssignAllCourts)
+  const lastAutoAssignError = useStore(
+    (s) => (s as any).lastAutoAssignError
+  ) as { msg: string; courtIndex?: number } | undefined;
 
   // Live Firestore session state
   const [session, setSession] = useState<Session | null>(null);
@@ -1612,6 +1616,14 @@ function SessionManager({ onBack }: { onBack: () => void }) {
                   })()}
               </div>
             </div>
+            {/* Global auto-assign error (no courtIndex means from autoAssignAllCourts) */}
+            {lastAutoAssignError &&
+              typeof lastAutoAssignError.courtIndex === "undefined" &&
+              lastAutoAssignError.msg && (
+                <div className="mb-2 text-[11px] text-red-500">
+                  {lastAutoAssignError.msg}
+                </div>
+              )}
             <div className="grid grid-cols-1 gap-3">
               {session.courts.map((court, idx) => (
                 <CourtCard
